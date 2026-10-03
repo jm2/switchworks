@@ -33,9 +33,11 @@ type Server struct {
 	mu    sync.Mutex
 	nodes map[string]*nodeConn
 	subs  map[string]map[chan model.Event]struct{}
-	fleet map[chan model.Event]struct{} // subscribers to every session's events
+	fleet map[chan FleetEvent]struct{} // fleet stream subscribers
+	acts  map[string]*activity         // session id -> recent activity
 
 	router *router
+	web    *webAuth
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup
@@ -84,8 +86,12 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 	}
 	s := &Server{cfg: cfg, dir: dir, store: st, ca: ca, logf: logf,
 		nodes: map[string]*nodeConn{}, subs: map[string]map[chan model.Event]struct{}{},
-		fleet: map[chan model.Event]struct{}{}}
+		fleet: map[chan FleetEvent]struct{}{}, acts: map[string]*activity{}}
+	if s.web, err = loadWebAuth(dir); err != nil {
+		return nil, fmt.Errorf("web sign-in key: %w", err)
+	}
 	s.router = newRouter(s, cfg.Guards)
+	s.rebuildActivity()
 	return s, nil
 }
 
@@ -174,6 +180,7 @@ func (s *Server) handleNode(c net.Conn) {
 	_ = s.store.UpsertHost(model.Host{ID: host, OS: hello.OS, Arch: hello.Arch, Version: hello.Version,
 		Adapters: hello.Adapters, Connected: true, LastSeen: time.Now()})
 	s.logf("node %s connected from %s (%s/%s, %s, adapters %v, %d sessions)", host, c.RemoteAddr(), hello.OS, hello.Arch, hello.Version, hello.Adapters, len(hello.Sessions))
+	s.publishHost(host)
 
 	acked := map[string]int64{}
 	for _, st := range hello.Sessions {
@@ -201,6 +208,7 @@ func (s *Server) handleNode(c net.Conn) {
 			_ = s.store.UpsertHost(h)
 		}
 		s.logf("node %s disconnected", host)
+		s.publishHost(host)
 	}
 }
 
@@ -300,6 +308,9 @@ func (s *Server) ingest(host string, evs []model.Event) error {
 	for _, ev := range stored {
 		s.project(ev)
 		s.publish(ev)
+		if s.track(ev) {
+			s.publishSession(ev.SessionID)
+		}
 		s.route(ev)
 	}
 	return err
@@ -403,14 +414,6 @@ func (s *Server) unsubscribe(sessionID string, ch chan model.Event) {
 func (s *Server) publish(ev model.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for ch := range s.fleet {
-		select {
-		case ch <- ev:
-		default:
-			delete(s.fleet, ch)
-			close(ch)
-		}
-	}
 	for ch := range s.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
@@ -508,9 +511,11 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	if err := s.store.CreateSession(sess); err != nil {
 		return model.Session{}, err
 	}
+	s.publishSession(sess.ID)
 	if _, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID,
 		Spawn: &wire.SpawnCmd{Session: sess, Spec: spec}}, 2*time.Minute); err != nil {
 		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusError })
+		s.publishSession(sess.ID)
 		return model.Session{}, fmt.Errorf("spawn on %s: %w", spec.Host, err)
 	}
 	out, _ := s.store.Session(sess.ID)

@@ -25,7 +25,7 @@ func testServer(t *testing.T, g Guards) *Server {
 		t.Fatal(err)
 	}
 	s := &Server{store: st, logf: t.Logf, nodes: map[string]*nodeConn{},
-		subs: map[string]map[chan model.Event]struct{}{}, fleet: map[chan model.Event]struct{}{}}
+		subs: map[string]map[chan model.Event]struct{}{}, fleet: map[chan FleetEvent]struct{}{}, acts: map[string]*activity{}}
 	s.router = newRouter(s, g)
 	t.Cleanup(func() {
 		s.router.close()

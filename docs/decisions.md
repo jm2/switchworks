@@ -98,3 +98,30 @@ parent's ask.
 depth, spawn host allowlist and a fleet-wide daily token budget. They stop
 runaway loops and spend; they are not an authorization system. People are
 not rate limited.
+
+## M3: web UI
+
+**Served by the coordinator, embedded in the binary.** No separate web
+server, no npm. Vanilla JavaScript over the same JSON API and SSE streams
+the CLI uses. That keeps one source of truth for behavior and makes the UI a
+thin client that is cheap to change.
+
+**A fleet stream instead of polling.** `GET /v1/stream` sends a snapshot
+(hosts, sessions, recent messages), then session, host and message updates.
+Session updates carry each session's last agent message and open approval
+prompts. The coordinator keeps that activity in memory and rebuilds it from
+the tail of each log at startup, so it is not a second source of state.
+
+**Cookie sign-in next to the bearer token.** Phones should not need the
+token pasted, so `swyd ui-link` mints one-time links (code in the URL
+fragment). The cookie is HMAC-signed, `HttpOnly`, `SameSite=Strict`, and
+cookie-authenticated writes need a custom header. That is the CSRF defense,
+with no token plumbing in the pages.
+
+**Certificates: install the CA or front it with Tailscale.** The private CA
+stays the default. `http_listen` plus `tailscale serve` gives a publicly
+trusted certificate without Switchyard handling ACME.
+
+**Approvals live by the composer.** On a phone the action you need is at
+the bottom, within reach, and the transcript only notes that an approval
+was requested and how it was answered.

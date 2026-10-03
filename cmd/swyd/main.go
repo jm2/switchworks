@@ -39,6 +39,7 @@ Messages:
   swyd reply <ask-id> <answer>    answer an agent's question
   swyd messages [session]         the fleet's message traffic
   swyd usage                      token use by host, model and day
+  swyd ui-link                    print a one-time sign-in link for the web UI
 
 Services:
   swyd coordinator init [flags]   create the CA, server certificate and admin token

@@ -106,9 +106,10 @@ type router struct {
 	buckets  map[string]*bucket
 	inflight map[string]bool
 
-	wake chan struct{}
-	stop chan struct{}
-	done chan struct{}
+	wake     chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func newRouter(s *Server, g Guards) *router {
@@ -120,7 +121,7 @@ func newRouter(s *Server, g Guards) *router {
 }
 
 func (r *router) close() {
-	close(r.stop)
+	r.stopOnce.Do(func() { close(r.stop) })
 	<-r.done
 }
 
@@ -171,6 +172,15 @@ func (r *router) loop() {
 			}(m)
 		}
 	}
+}
+
+// put stores a message and tells the fleet views.
+func (r *router) put(m model.Message) error {
+	if err := r.s.store.PutMessage(m); err != nil {
+		return err
+	}
+	r.s.fleetPublish("message", m)
+	return nil
 }
 
 func live(s model.Session) bool {
@@ -407,7 +417,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		for _, o := range opts {
 			o(&m)
 		}
-		if err := r.s.store.PutMessage(m); err != nil {
+		if err := r.put(m); err != nil {
 			return out, err
 		}
 		out = append(out, r.deliver(ctx, m))
@@ -444,7 +454,7 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	if m.ToUser != "" {
 		m.State, m.DeliveredAt = model.MsgDelivered, time.Now().UTC()
-		_ = r.s.store.PutMessage(m)
+		_ = r.put(m)
 		return m
 	}
 	sess, ok := r.s.store.Session(m.ToSession)
@@ -472,20 +482,20 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	if cur, ok := r.s.store.Message(m.ID); ok && cur.State == model.MsgAnswered {
 		return cur // answered while in flight
 	}
-	_ = r.s.store.PutMessage(m)
+	_ = r.put(m)
 	return m
 }
 
 func (r *router) fail(m model.Message, why string) model.Message {
 	m.State, m.Error = model.MsgFailed, why
-	_ = r.s.store.PutMessage(m)
+	_ = r.put(m)
 	r.notifySender(m, fmt.Sprintf("Your %s message %s to %s could not be delivered: %s", m.Kind, m.ID, m.To, why))
 	return m
 }
 
 func (r *router) expire(m model.Message) {
 	m.State, m.Error = model.MsgExpired, "expired before it could be delivered"
-	_ = r.s.store.PutMessage(m)
+	_ = r.put(m)
 	r.notifySender(m, fmt.Sprintf("Your %s message %s to %s expired before it could be delivered (its host was offline).", m.Kind, m.ID, m.To))
 }
 
@@ -502,7 +512,7 @@ func (r *router) notifySender(m model.Message, text string) {
 	n := model.Message{ID: ulid.New(), Kind: model.MsgSystem, From: model.SystemSender, To: sess.Path,
 		ToSession: sess.ID, ToPath: sess.Path, Text: text, Hops: m.Hops, State: model.MsgPending,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
-	if r.s.store.PutMessage(n) == nil {
+	if r.put(n) == nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -561,7 +571,7 @@ func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *
 			// A held reply, collected by the asker: it need not be
 			// delivered as a turn.
 			rep.State, rep.Inline, rep.DeliveredAt = model.MsgDelivered, true, time.Now().UTC()
-			_ = r.s.store.PutMessage(rep)
+			_ = r.put(rep)
 		}
 		return &rep
 	}
@@ -642,7 +652,7 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 	case now.Before(ask.HoldUntil) && rep.ToSession != "":
 		rep.NotBefore, held = ask.HoldUntil, true
 	}
-	if err := r.s.store.PutMessage(rep); err != nil {
+	if err := r.put(rep); err != nil {
 		r.mu.Unlock()
 		return fleet.ReplyResult{}, err
 	}
@@ -650,7 +660,7 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		ask = cur
 	}
 	ask.State, ask.ReplyID = model.MsgAnswered, rep.ID
-	_ = r.s.store.PutMessage(ask)
+	_ = r.put(ask)
 	for _, w := range ws {
 		w <- rep
 	}
@@ -774,7 +784,7 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 	m := model.Message{ID: ulid.New(), Kind: model.MsgDone, From: child.Path, FromSession: child.ID, To: parent.Path,
 		ToSession: parent.ID, ToPath: parent.Path, Text: text, Hops: hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
-	if r.s.store.PutMessage(m) == nil {
+	if r.put(m) == nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()

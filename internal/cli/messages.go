@@ -27,6 +27,23 @@ func init() {
 	commands["inbox"] = cmdInbox
 	commands["messages"] = cmdMessages
 	commands["usage"] = cmdUsage
+	commands["ui-link"] = cmdUILink
+}
+
+func cmdUILink(args []string, stdout, stderr io.Writer) int {
+	c, ok := client(stderr)
+	if !ok {
+		return 1
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	l, err := c.UILink(ctx)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, l.URL)
+	fmt.Fprintf(stderr, "(signs one browser in; works once, until %s)\n", l.ExpiresAt.Local().Format("15:04"))
+	return 0
 }
 
 func printSent(stdout io.Writer, res fleet.SendResult) {

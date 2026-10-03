@@ -33,6 +33,13 @@ type Config struct {
 	PublicNode     string `json:"public_node"` // host:port nodes dial for the event stream
 	AdminTokenHash string `json:"admin_token_hash"`
 	Guards         Guards `json:"guards,omitempty"`
+	// HTTPListen serves the API and web UI over plain HTTP too, for a
+	// reverse proxy on the same machine (e.g. `tailscale serve`). Bind it to
+	// loopback.
+	HTTPListen string `json:"http_listen,omitempty"`
+	// PublicUI is the web UI's URL as browsers reach it, used in login
+	// links (default https://<public_api>).
+	PublicUI string `json:"public_ui,omitempty"`
 }
 
 const configFile = "coordinator.json"
@@ -201,7 +208,24 @@ func mainRun(args []string, stderr io.Writer) int {
 			cancel()
 		}
 	}()
-	logger.Printf("%s %s: API on %s, nodes on %s", version.Name, version.Version, cfg.APIListen, cfg.NodeListen)
+	if cfg.HTTPListen != "" {
+		plainLn, err := net.Listen("tcp", cfg.HTTPListen)
+		if err != nil {
+			logger.Print(err)
+			return 1
+		}
+		go func() {
+			if err := srv.ServePlain(ctx, plainLn); err != nil && ctx.Err() == nil {
+				logger.Printf("plain HTTP listener: %v", err)
+			}
+		}()
+		logger.Printf("plain HTTP (for a local reverse proxy) on %s", cfg.HTTPListen)
+	}
+	ui := cfg.PublicUI
+	if ui == "" {
+		ui = "https://" + cfg.PublicAPI
+	}
+	logger.Printf("%s %s: API on %s, nodes on %s, web UI at %s", version.Name, version.Version, cfg.APIListen, cfg.NodeListen, ui)
 	if err := srv.ServeAPI(ctx, apiLn); err != nil {
 		logger.Printf("API: %v", err)
 	}

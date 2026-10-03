@@ -126,6 +126,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 type SessionView struct {
 	model.Session
 	Online bool `json:"online"`
+	// Preview is the session's last agent message (clipped).
+	Preview string `json:"preview,omitempty"`
+	// Approvals are the prompts waiting for a decision, oldest first.
+	Approvals []model.ApprovalRequested `json:"approvals,omitempty"`
 }
 
 func (c *Client) Hosts(ctx context.Context) ([]model.Host, error) {
@@ -273,6 +277,18 @@ type UsageReport struct {
 	ByModel        map[string]model.Usage `json:"by_model"`
 }
 
+// UILink is a one-time web sign-in link.
+type UILink struct {
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// UILink mints a one-time link that signs a browser in to the web UI.
+func (c *Client) UILink(ctx context.Context) (UILink, error) {
+	var out UILink
+	return out, c.do(ctx, "POST", "/v1/ui-links", map[string]any{}, &out)
+}
+
 func (c *Client) Usage(ctx context.Context) (UsageReport, error) {
 	var out UsageReport
 	return out, c.do(ctx, "GET", "/v1/usage", nil, &out)
@@ -362,6 +378,51 @@ func (c *Client) streamOnce(ctx context.Context, id string, after *int64, fn fun
 				}
 				data.Reset()
 			}
+		case strings.HasPrefix(line, "data: "):
+			data.WriteString(strings.TrimPrefix(line, "data: "))
+		}
+	}
+}
+
+// FleetStream follows GET /v1/stream once (no reconnect), calling fn with
+// each event's type ("hello", "session", "host", "message") and JSON data,
+// until ctx ends, the stream closes or fn returns false.
+func (c *Client) FleetStream(ctx context.Context, fn func(typ string, data json.RawMessage) bool) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/v1/stream", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		return &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(b))}
+	}
+	br := bufio.NewReaderSize(resp.Body, 1<<20)
+	var typ string
+	var data bytes.Buffer
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		switch {
+		case line == "":
+			if data.Len() > 0 {
+				if !fn(typ, json.RawMessage(append([]byte(nil), data.Bytes()...))) {
+					return nil
+				}
+				data.Reset()
+			}
+			typ = ""
+		case strings.HasPrefix(line, "event: "):
+			typ = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "data: "):
 			data.WriteString(strings.TrimPrefix(line, "data: "))
 		}

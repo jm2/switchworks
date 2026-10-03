@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package coord
+
+import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jm2/switchyard/internal/store"
+)
+
+func TestCookies(t *testing.T) {
+	a, err := loadWebAuth(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c := a.newCookie(now)
+	if !a.validCookie(c, now) {
+		t.Fatal("fresh cookie rejected")
+	}
+	if a.validCookie(c, now.Add(cookieTTL+time.Minute)) {
+		t.Fatal("expired cookie accepted")
+	}
+	bad := []byte(c)
+	bad[3] ^= 1
+	if a.validCookie(string(bad), now) || a.validCookie("x.y", now) || a.validCookie("", now) {
+		t.Fatal("tampered cookie accepted")
+	}
+	other, _ := loadWebAuth(t.TempDir())
+	if other.validCookie(c, now) {
+		t.Fatal("cookie valid under another key")
+	}
+	code := a.newCode(now, time.Minute)
+	if !a.useCode(code, now) || a.useCode(code, now) {
+		t.Fatal("login code must work exactly once")
+	}
+	if late := a.newCode(now, time.Minute); a.useCode(late, now.Add(2*time.Minute)) {
+		t.Fatal("expired login code accepted")
+	}
+}
+
+type webEnv struct {
+	srv   *Server
+	http  *httptest.Server
+	token string
+}
+
+func newWebEnv(t *testing.T) *webEnv {
+	t.Helper()
+	dir := t.TempDir()
+	token, err := Init(dir, []string{"127.0.0.1"}, 7480, 7481)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenFileStore(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewServer(dir, cfg, st, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	t.Cleanup(func() {
+		hs.Close()
+		s.Shutdown()
+		_ = st.Close()
+	})
+	return &webEnv{srv: s, http: hs, token: token}
+}
+
+func (e *webEnv) do(t *testing.T, method, path, body string, hdr map[string]string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, e.http.URL+path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func TestWebSignIn(t *testing.T) {
+	e := newWebEnv(t)
+	bearer := map[string]string{"Authorization": "Bearer " + e.token}
+
+	if r := e.do(t, "GET", "/", "", nil); r.StatusCode != 302 || r.Header.Get("Location") != "/login" {
+		t.Fatalf("GET / signed out: %d %s", r.StatusCode, r.Header.Get("Location"))
+	}
+	if r := e.do(t, "GET", "/login", "", nil); r.StatusCode != 200 || !strings.Contains(r.Header.Get("Content-Security-Policy"), "script-src 'self'") {
+		t.Fatalf("GET /login: %d %v", r.StatusCode, r.Header)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", nil); r.StatusCode != 401 {
+		t.Fatalf("API signed out: %d", r.StatusCode)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 401 {
+		t.Fatalf("bad bearer: %d", r.StatusCode)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"token":"wrong"}`, nil); r.StatusCode != 401 {
+		t.Fatalf("bad token sign-in: %d", r.StatusCode)
+	}
+	r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil)
+	if r.StatusCode != 200 || len(r.Cookies()) != 1 {
+		t.Fatalf("sign-in: %d %v", r.StatusCode, r.Cookies())
+	}
+	ck := r.Cookies()[0]
+	if !ck.HttpOnly || ck.SameSite != http.SameSiteStrictMode || ck.Secure { // plain HTTP test server: not Secure
+		t.Fatalf("cookie flags: %+v", ck)
+	}
+	cookie := map[string]string{"Cookie": ck.Name + "=" + ck.Value}
+
+	if r := e.do(t, "GET", "/", "", cookie); r.StatusCode != 200 {
+		t.Fatalf("GET / signed in: %d", r.StatusCode)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", cookie); r.StatusCode != 200 {
+		t.Fatalf("API with cookie: %d", r.StatusCode)
+	}
+	// Writes with a cookie need the CSRF header.
+	msg := `{"to":"user:jm","text":"hi"}`
+	if r := e.do(t, "POST", "/v1/messages", msg, cookie); r.StatusCode != 403 {
+		t.Fatalf("cookie write without CSRF header: %d", r.StatusCode)
+	}
+	withCSRF := map[string]string{"Cookie": cookie["Cookie"], "X-Swyd-CSRF": "1"}
+	if r := e.do(t, "POST", "/v1/messages", msg, withCSRF); r.StatusCode != 202 {
+		b, _ := io.ReadAll(r.Body)
+		t.Fatalf("cookie write with CSRF header: %d %s", r.StatusCode, b)
+	}
+	if r := e.do(t, "POST", "/v1/messages", msg, bearer); r.StatusCode != 202 {
+		t.Fatalf("bearer write: %d", r.StatusCode)
+	}
+
+	// One-time links.
+	r = e.do(t, "POST", "/v1/ui-links", `{}`, bearer)
+	var link struct {
+		URL string `json:"url"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&link)
+	_, code, ok := strings.Cut(link.URL, "/login#code=")
+	if r.StatusCode != 200 || !ok || !strings.HasPrefix(link.URL, "https://127.0.0.1:7480/") {
+		t.Fatalf("ui-link: %d %q", r.StatusCode, link.URL)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"code":"`+code+`"}`, nil); r.StatusCode != 200 {
+		t.Fatalf("code sign-in: %d", r.StatusCode)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"code":"`+code+`"}`, nil); r.StatusCode != 401 {
+		t.Fatalf("code reused: %d", r.StatusCode)
+	}
+
+	// Static files and the CA.
+	if r := e.do(t, "GET", "/static/app.js", "", nil); r.StatusCode != 200 || !strings.Contains(r.Header.Get("Content-Type"), "javascript") {
+		t.Fatalf("app.js: %d %s", r.StatusCode, r.Header.Get("Content-Type"))
+	}
+	if r := e.do(t, "GET", "/ca.crt", "", nil); r.StatusCode != 200 {
+		t.Fatalf("ca.crt: %d", r.StatusCode)
+	} else if b, _ := io.ReadAll(r.Body); !strings.Contains(string(b), "BEGIN CERTIFICATE") {
+		t.Fatal("ca.crt is not a certificate")
+	}
+
+	// Sign-in failures are throttled (one failure above, this makes ten).
+	for i := 0; i < 9; i++ {
+		e.do(t, "POST", "/ui/login", `{"token":"wrong"}`, nil)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
+		t.Fatalf("throttle: %d", r.StatusCode)
+	}
+}
+
+func TestFleetStream(t *testing.T) {
+	e := newWebEnv(t)
+	req, _ := http.NewRequest("GET", e.http.URL+"/v1/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	events := make(chan [2]string, 16)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		var typ string
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				typ = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				events <- [2]string{typ, strings.TrimPrefix(line, "data: ")}
+			}
+		}
+		close(events)
+	}()
+	next := func() [2]string {
+		select {
+		case ev := <-events:
+			return ev
+		case <-time.After(5 * time.Second):
+			t.Fatal("no event")
+		}
+		return [2]string{}
+	}
+	if ev := next(); ev[0] != "hello" || !strings.Contains(ev[1], `"sessions":[]`) {
+		t.Fatalf("first event: %v", ev)
+	}
+	e.do(t, "POST", "/v1/messages", `{"to":"user:jm","text":"ping","from":"user:ops"}`, map[string]string{"Authorization": "Bearer " + e.token})
+	ev := next()
+	if ev[0] != "message" || !strings.Contains(ev[1], `"text":"ping"`) || !strings.Contains(ev[1], `"from":"user:ops"`) {
+		t.Fatalf("message event: %v", ev)
+	}
+}

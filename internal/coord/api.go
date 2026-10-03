@@ -4,7 +4,6 @@ package coord
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +47,10 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /v1/messages/{id}", s.handleGetMessage)
 	authed.HandleFunc("POST /v1/messages/{id}/reply", s.handleReplyMessage)
 	authed.HandleFunc("GET /v1/usage", s.handleUsage)
-	mux.Handle("/v1/", s.requireToken(authed))
+	authed.HandleFunc("GET /v1/stream", s.handleFleetStream)
+	authed.HandleFunc("POST /v1/ui-links", s.handleUILink)
+	mux.Handle("/v1/", s.requireAuth(authed))
+	s.uiRoutes(mux)
 	return mux
 }
 
@@ -62,19 +64,6 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func (s *Server) requireToken(next http.Handler) http.Handler {
-	want := []byte(s.cfg.AdminTokenHash)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		tok, ok := strings.CutPrefix(auth, "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(pki.HashSecret(tok)), want) != 1 {
-			writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid token"))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func decodeBody(r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<20))
 	dec.DisallowUnknownFields()
@@ -86,6 +75,7 @@ func (s *Server) view(sess model.Session) apiclient.SessionView {
 	if !v.Online && sess.Status != model.StatusStopped && sess.Status != model.StatusGone {
 		v.Status = model.StatusOffline
 	}
+	s.fillActivity(&v)
 	return v
 }
 
@@ -174,6 +164,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	if id, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); err == nil && id > after {
+		after = id // an EventSource reconnecting
+	}
 	// Subscribe before reading the backlog so nothing falls in between.
 	ch := s.subscribe(id)
 	defer s.unsubscribe(id, ch)
@@ -562,6 +555,23 @@ func (s *Server) ServeAPI(ctx context.Context, ln net.Listener) error {
 		_ = srv.Shutdown(sctx)
 	}()
 	err = srv.ServeTLS(ln, "", "")
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// ServePlain serves the same API and UI without TLS, for a reverse proxy
+// on the same machine (Config.HTTPListen).
+func (s *Server) ServePlain(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+	err := srv.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

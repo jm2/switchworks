@@ -14,7 +14,7 @@ or Electron anywhere.
 
 ## Status
 
-Milestones M0–M2 of the [design and implementation plan](https://claude.ai/code/artifact/05bb9e2b-e9c4-4a2a-b46a-bbb91235d342):
+Milestones M0–M3 of the [design and implementation plan](https://claude.ai/code/artifact/05bb9e2b-e9c4-4a2a-b46a-bbb91235d342):
 
 - **M0**: Codex app-server client, `swyd dev run`. Verified against real Codex
   0.160.0 on linux/amd64: streaming, approvals, interrupt, resume.
@@ -28,11 +28,17 @@ Milestones M0–M2 of the [design and implementation plan](https://claude.ai/cod
   wait for offline hosts, and are bounded by hop, rate, spawn-depth and
   token-budget guards. Verified with two real Codex app-servers on two
   hosts. See [docs/messaging.md](docs/messaging.md).
+- **M3**: a phone-first web UI served by the coordinator: the live fleet,
+  session transcripts with approvals and a composer, an inbox for agents'
+  questions, message traffic and token usage. See
+  [docs/web-ui.md](docs/web-ui.md).
 - **Antigravity (`agy`)**: experimental adapter on documented headless
   behavior only. Not yet run against a real `agy`. No fleet tools yet.
 
-Not built yet: web UI (M3), observed sessions (M4), ACP agents (M5). See
+Not built yet: observed sessions (M4), ACP agents (M5). See
 [docs/status.md](docs/status.md).
+
+![Web UI on a phone](docs/img/web-ui.png)
 
 ## Quick start
 
@@ -77,6 +83,11 @@ swyd inbox                    # questions agents asked you
 swyd reply <ask-id> "ship it"
 swyd ask helper "status?"     # ask an agent yourself, wait for the answer
 ```
+
+The same things are in the browser at `https://t240.lan:7480/`. Run
+`swyd ui-link` to get a one-time sign-in link for your phone.
+[docs/web-ui.md](docs/web-ui.md) covers the certificate and
+`tailscale serve`.
 
 ## Harness requirements
 
@@ -125,6 +136,7 @@ make cross       # dist/swyd-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64
 | `internal/coord` | node listener, event store, projection, message router, HTTPS API + SSE |
 | `internal/mcp` | `swyd mcp`: the fleet tools as a stdio MCP server |
 | `internal/fleet` | fleet operation arguments and results |
+| `internal/web` | the web UI (embedded HTML, CSS, JS) |
 | `internal/store` | storage interface + file-backed implementation |
 | `internal/pki` | private CA, enrollment tokens |
 | `internal/wire` | node <-> coordinator protocol |
