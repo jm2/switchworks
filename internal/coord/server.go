@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package coord is the coordinator: it accepts node connections over mTLS,
 // stores every session's event log, projects session state from events,
 // forwards commands to nodes, and serves the HTTPS API.

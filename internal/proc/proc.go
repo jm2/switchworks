@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package proc starts child processes that can be torn down as a whole tree.
 //
 // On Linux and macOS the child gets its own process group and Kill signals the

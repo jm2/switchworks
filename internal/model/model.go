@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package model holds the records shared by node, coordinator and CLI: hosts,
 // sessions, events and their normalized payloads.
 package model

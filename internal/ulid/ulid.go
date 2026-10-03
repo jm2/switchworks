@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package ulid generates ULIDs: 128-bit, lexicographically sortable
 // identifiers (48-bit millisecond timestamp + 80 bits of randomness), encoded
 // as 26 Crockford base32 characters. IDs from one Generator are strictly

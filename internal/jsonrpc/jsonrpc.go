@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package jsonrpc is a small bidirectional JSON-RPC 2.0 peer over
 // newline-delimited JSON, as spoken by `codex app-server` on stdio.
 //

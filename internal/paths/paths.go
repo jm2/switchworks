@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package paths resolves Switchyard's default file locations.
 //
 // Everything lives under one base directory: $SWYD_HOME if set, otherwise

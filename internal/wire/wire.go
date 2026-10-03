@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package wire is the node <-> coordinator protocol: newline-delimited JSON
 // envelopes over one mutually authenticated TLS connection per node.
 //

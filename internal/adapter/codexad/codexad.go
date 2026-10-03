@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package codexad adapts `codex app-server` to the adapter interface.
 //
 // One app-server process per node hosts every managed thread; notifications

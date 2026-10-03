@@ -37,8 +37,6 @@ real-Codex test.
   `swyd approve`.
 - **`swyd attach --until-idle`** relies on seeing the turn start in the
   replayed window. Use a larger `--tail` for very chatty turns.
-- **No LICENSE file yet.** Waiting on your call: GPL-3.0 like xmat, or
-  another.
 
 ## Recommended before M2
 

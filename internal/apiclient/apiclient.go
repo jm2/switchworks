@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package apiclient talks to the coordinator's HTTPS API. It is used by the
 // CLI and by tests.
 package apiclient

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package codextest provides a scripted stand-in for `codex app-server`,
 // speaking the same JSONL JSON-RPC, for deterministic tests of everything
 // above the Codex client. Message shapes follow the committed 0.160.0 schema

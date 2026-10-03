@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package pki is Switchyard's small private CA: it issues the coordinator's
 // server certificate and each node's client certificate, and defines the
 // one-time enrollment token that carries the CA fingerprint so a new node can

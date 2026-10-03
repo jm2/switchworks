@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package cli implements the fleet commands of `swyd` (ls, spawn, attach,
 // send, ...), all through the coordinator's HTTPS API.
 package cli

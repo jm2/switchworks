@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package node is `swyd node`: it runs harness sessions on one workstation,
 // numbers and spools their events, keeps a link to the coordinator, and
 // executes the coordinator's commands.

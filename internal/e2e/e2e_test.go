@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package e2e runs a coordinator and node in-process over real mTLS sockets,
 // with the scripted fake app-server standing in for Codex, and drives them
 // through the same API client the CLI uses.

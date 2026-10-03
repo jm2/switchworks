@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package agyad adapts the Antigravity CLI (`agy`) to the adapter interface.
 //
 // EXPERIMENTAL. It relies only on documented headless behavior

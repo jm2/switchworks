@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package harness constructs adapters by name, so the node and the dev
 // commands share one list of supported harnesses.
 package harness

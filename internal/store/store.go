@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package store persists the coordinator's state: hosts, sessions, the
 // per-session event logs, and enrollment tokens.
 //

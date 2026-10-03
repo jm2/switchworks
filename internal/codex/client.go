@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package codex drives `codex app-server` over stdio JSON-RPC.
 package codex
 

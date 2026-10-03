@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Command swyd is Switchyard's single binary: coordinator, node, CLI and dev
 // tools are subcommands.
 package main

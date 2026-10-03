@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package adapter defines the boundary between Switchyard and an agent
 // harness (Codex, Antigravity, later ACP agents). Each harness implements
 // Adapter; everything above it (node, coordinator, UI) only sees the

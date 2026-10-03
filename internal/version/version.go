@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package version holds the project's name and version in one place, so the
 // working name ("Switchyard") can be changed without touching the rest of the
 // code. The Go module path and the binary name are the only other places the

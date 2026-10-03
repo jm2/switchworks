@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package devrun implements `swyd dev run`: drive one harness session
 // directly from the terminal, without a node or coordinator. It is the M0
 // smoke test on each host, and with --record it captures the raw protocol

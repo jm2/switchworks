@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package render prints a session's event stream to a terminal. It is shared
 // by `swyd dev run` (events straight from an adapter) and `swyd attach`
 // (events streamed from the coordinator).
