@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent (runs as you, in your login session).
+    cp dev.switchyard.node.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.switchyard.node.plist
+  Adjust the binary path. Logs go to /tmp/swyd-node.log.
+  LaunchAgents get a minimal PATH: set it so `codex` and `agy` resolve.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.switchyard.node</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/swyd</string>
+    <string>node</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/swyd-node.log</string>
+  <key>StandardErrorPath</key><string>/tmp/swyd-node.log</string>
+</dict>
+</plist>

@@ -1,0 +1,248 @@
+// Package devrun implements `swyd dev run`: drive one harness session
+// directly from the terminal, without a node or coordinator. It is the M0
+// smoke test on each host, and with --record it captures the raw protocol
+// stream for building fixtures.
+package devrun
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jm2/switchyard/internal/adapter"
+	"github.com/jm2/switchyard/internal/harness"
+	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/render"
+)
+
+// Main runs `swyd dev run [flags] <prompt>` and returns the exit code.
+func Main(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("dev run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	h := fs.String("harness", "codex", "harness: codex or agy")
+	cwd := fs.String("cwd", ".", "working directory for the session")
+	modelName := fs.String("model", "", "model override")
+	provider := fs.String("provider", "", "model provider override (codex)")
+	approval := fs.String("approval", "on-request", "codex approval policy: never, on-request, untrusted")
+	sandbox := fs.String("sandbox", "workspace-write", "sandbox: read-only, workspace-write, danger-full-access (agy: danger-full-access adds --dangerously-skip-permissions)")
+	codexBin := fs.String("codex-bin", "", "codex binary (default: codex on PATH)")
+	codexHome := fs.String("codex-home", "", "CODEX_HOME for app-server (default: codex's own)")
+	agyBin := fs.String("agy-bin", "", "agy binary (default: agy on PATH)")
+	record := fs.String("record", "", "write the raw protocol stream to this file (JSONL: {dir, line})")
+	autoApprove := fs.String("auto-approve", "", "answer every approval with this decision instead of asking (e.g. accept, cancel)")
+	verbose := fs.Bool("v", false, "verbose: show every event")
+	logs := fs.Bool("logs", false, "show harness stderr")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "usage: swyd dev run [flags] <prompt>\n\nRuns one turn directly against a harness and prints the stream.\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if prompt == "" {
+		fs.Usage()
+		return 2
+	}
+	absCwd, err := filepath.Abs(*cwd)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	var rec *recorder
+	if *record != "" {
+		f, err := os.Create(*record)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer f.Close()
+		rec = &recorder{w: f}
+	}
+	harnessStderr := io.Discard
+	if *logs {
+		harnessStderr = stderr
+	}
+	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Stderr: harnessStderr,
+		Logf: func(f string, a ...any) {
+			if *verbose {
+				fmt.Fprintf(stderr, "swyd: "+f+"\n", a...)
+			}
+		}}
+	if *codexHome != "" {
+		opts.CodexEnv = map[string]string{"CODEX_HOME": *codexHome}
+	}
+	if rec != nil {
+		opts.Tap = rec.tap
+	}
+	ad, err := harness.New(*h, opts)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	defer ad.Close()
+
+	r := render.New(stdout)
+	r.Verbose = *verbose
+	events := make(chan adapter.Event, 4096)
+	sink := func(e adapter.Event) { events <- e }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	spec := adapter.StartSpec{Name: "dev/run", Cwd: absCwd, Model: *modelName, Provider: *provider,
+		ApprovalPolicy: *approval, Sandbox: *sandbox}
+	sess, err := ad.Start(ctx, spec, sink)
+	if err != nil {
+		fmt.Fprintf(stderr, "start %s session: %v\n", *h, err)
+		return 1
+	}
+	if err := sess.Deliver(ctx, adapter.Input{Text: prompt}, adapter.DeliverQueue); err != nil {
+		fmt.Fprintf(stderr, "deliver prompt: %v\n", err)
+		return 1
+	}
+
+	sigc := make(chan os.Signal, 2)
+	signal.Notify(sigc, os.Interrupt)
+	defer signal.Stop(sigc)
+	interrupts := 0
+	approvals := newApprover(sess, *autoApprove, stderr)
+	var last model.Usage
+	for {
+		select {
+		case <-sigc:
+			interrupts++
+			if interrupts > 1 {
+				fmt.Fprintln(stderr, "\nswyd: second interrupt, exiting")
+				return 130
+			}
+			fmt.Fprintln(stderr, "\nswyd: interrupting turn (Ctrl-C again to quit)")
+			if err := sess.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+				fmt.Fprintf(stderr, "swyd: interrupt: %v\n", err)
+			}
+		case e := <-events:
+			payload, _ := json.Marshal(e.Payload)
+			r.Event(e.Kind, payload)
+			switch e.Kind {
+			case model.KindUsage:
+				last = e.Payload.(model.UsageEvent).Total
+			case model.KindApprovalRequested:
+				approvals.handle(ctx, e.Payload.(model.ApprovalRequested))
+			case model.KindTurnCompleted:
+				tc := e.Payload.(model.TurnCompleted)
+				// Drain trailing events briefly so usage is not lost.
+				drain(events, r, &last, 200*time.Millisecond)
+				r.Usage(last)
+				switch tc.Status {
+				case "completed":
+					return 0
+				case "interrupted":
+					return 130
+				default:
+					return 1
+				}
+			}
+		}
+	}
+}
+
+func drain(events chan adapter.Event, r *render.Renderer, last *model.Usage, d time.Duration) {
+	t := time.After(d)
+	for {
+		select {
+		case e := <-events:
+			payload, _ := json.Marshal(e.Payload)
+			r.Event(e.Kind, payload)
+			if e.Kind == model.KindUsage {
+				*last = e.Payload.(model.UsageEvent).Total
+			}
+		case <-t:
+			return
+		}
+	}
+}
+
+type recorder struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (r *recorder) tap(dir string, line []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := struct {
+		TS   string          `json:"ts"`
+		Dir  string          `json:"dir"`
+		Line json.RawMessage `json:"line"`
+	}{time.Now().UTC().Format(time.RFC3339Nano), dir, nil}
+	if json.Valid(line) {
+		rec.Line = line
+	} else {
+		b, _ := json.Marshal(string(line))
+		rec.Line = b
+	}
+	b, _ := json.Marshal(rec)
+	_, _ = r.w.Write(append(b, '\n'))
+}
+
+type approver struct {
+	h      adapter.Handle
+	auto   string
+	stderr io.Writer
+	in     *bufio.Reader
+}
+
+func newApprover(h adapter.Handle, auto string, stderr io.Writer) *approver {
+	return &approver{h: h, auto: auto, stderr: stderr, in: bufio.NewReader(os.Stdin)}
+}
+
+func (a *approver) handle(ctx context.Context, req model.ApprovalRequested) {
+	decide := func(d string) {
+		if err := a.h.Resolve(ctx, req.ApprovalID, d); err != nil {
+			fmt.Fprintf(a.stderr, "swyd: resolve: %v\n", err)
+		}
+	}
+	if a.auto != "" {
+		decide(a.auto)
+		return
+	}
+	options := req.Decisions
+	if len(options) == 0 {
+		options = []string{"accept", "acceptForSession", "decline", "cancel"}
+	}
+	var simple []string
+	for _, o := range options {
+		switch o {
+		case "accept", "acceptForSession", "decline", "cancel":
+			simple = append(simple, o)
+		}
+	}
+	go func() {
+		for {
+			fmt.Fprintf(a.stderr, "decision [%s]: ", strings.Join(simple, "/"))
+			line, err := a.in.ReadString('\n')
+			if err != nil {
+				fmt.Fprintln(a.stderr, "\nswyd: stdin closed; cancelling")
+				decide("cancel")
+				return
+			}
+			d := strings.TrimSpace(line)
+			for _, o := range simple {
+				if d == o || (len(d) == 1 && strings.HasPrefix(o, d)) {
+					decide(o)
+					return
+				}
+			}
+		}
+	}()
+}

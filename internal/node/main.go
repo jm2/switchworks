@@ -1,0 +1,197 @@
+package node
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/jm2/switchyard/internal/harness"
+	"github.com/jm2/switchyard/internal/paths"
+	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchyard/internal/version"
+)
+
+const configFile = "node.json"
+
+// LoadConfig reads node.json.
+func LoadConfig(dir string) (Config, error) {
+	var c Config
+	b, err := os.ReadFile(filepath.Join(dir, configFile))
+	if err != nil {
+		return c, err
+	}
+	return c, json.Unmarshal(b, &c)
+}
+
+// Main implements `swyd node ...`.
+func Main(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: swyd node enroll <token> | swyd node run [flags]")
+		return 2
+	}
+	switch args[0] {
+	case "enroll":
+		return mainEnroll(args[1:], stdout, stderr)
+	case "run":
+		return mainRun(args[1:], stderr)
+	}
+	fmt.Fprintf(stderr, "unknown node command %q\n", args[0])
+	return 2
+}
+
+// enrollResponse mirrors coord.EnrollResponse (kept separate to avoid an
+// import cycle between node and coordinator).
+type enrollResponse struct {
+	Host     string `json:"host"`
+	Cert     string `json:"cert"`
+	CA       string `json:"ca"`
+	NodeAddr string `json:"node_addr"`
+}
+
+// Enroll exchanges a one-time token for this host's certificate and writes
+// node.json, node.key, node.crt and ca.crt into dir.
+func Enroll(ctx context.Context, dir, token string, force bool) (Config, error) {
+	var cfg Config
+	tok, err := pki.DecodeToken(token)
+	if err != nil {
+		return cfg, err
+	}
+	if _, err := os.Stat(filepath.Join(dir, configFile)); err == nil && !force {
+		return cfg, fmt.Errorf("%s already enrolled (%s exists); use --force to re-enroll", dir, configFile)
+	}
+	keyPEM, csrPEM, err := pki.NewNodeKey(tok.Host)
+	if err != nil {
+		return cfg, err
+	}
+	apiHost, _, err := net.SplitHostPort(tok.API)
+	if err != nil {
+		return cfg, fmt.Errorf("token API address: %w", err)
+	}
+	client := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: pki.PinnedTLS(tok.Fingerprint, apiHost), Proxy: nil}}
+	body, _ := json.Marshal(map[string]string{"secret": tok.Secret, "csr": string(csrPEM)})
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://"+tok.API+"/v1/enroll", bytes.NewReader(body))
+	if err != nil {
+		return cfg, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return cfg, fmt.Errorf("enroll with %s: %w", tok.API, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return cfg, fmt.Errorf("enroll with %s: HTTP %d: %s", tok.API, resp.StatusCode, bytes.TrimSpace(b))
+	}
+	var er enrollResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		return cfg, err
+	}
+	if er.Host != tok.Host {
+		return cfg, errors.New("coordinator issued a certificate for a different host")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return cfg, err
+	}
+	for name, data := range map[string][]byte{"node.key": keyPEM, "node.crt": []byte(er.Cert), "ca.crt": []byte(er.CA)} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			return cfg, err
+		}
+	}
+	cfg = Config{Host: er.Host, CoordinatorAPI: tok.API, CoordinatorNode: er.NodeAddr,
+		DefaultApprovalPolicy: "on-request", DefaultSandbox: "workspace-write"}
+	b, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, configFile), append(b, '\n'), 0o600); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func mainEnroll(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node enroll", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", paths.NodeDir(), "node directory")
+	force := fs.Bool("force", false, "re-enroll even if this node is already enrolled")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: swyd node enroll [--dir DIR] [--force] <token>")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cfg, err := Enroll(ctx, *dir, fs.Arg(0), *force)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Enrolled %s with %s (event stream %s); config in %s\nNext: swyd node run\n",
+		cfg.Host, cfg.CoordinatorAPI, cfg.CoordinatorNode, *dir)
+	return 0
+}
+
+// HarnessOptions builds adapter options from node config, writing harness
+// logs under dir/logs.
+func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.Options, error) {
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
+		return harness.Options{}, err
+	}
+	logFile, err := os.OpenFile(filepath.Join(dir, "logs", "harness.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return harness.Options{}, err
+	}
+	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args,
+		Stderr: logFile, Logf: logf}
+	if cfg.Codex.Home != "" {
+		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}
+	}
+	return o, nil
+}
+
+func mainRun(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", paths.NodeDir(), "node directory")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	logger := log.New(stderr, "node: ", log.LstdFlags)
+	cfg, err := LoadConfig(*dir)
+	if err != nil {
+		logger.Printf("load config (run `swyd node enroll <token>` first): %v", err)
+		return 1
+	}
+	hopts, err := HarnessOptions(*dir, cfg, logger.Printf)
+	if err != nil {
+		logger.Print(err)
+		return 1
+	}
+	n, err := New(*dir, cfg, hopts, logger.Printf)
+	if err != nil {
+		logger.Print(err)
+		return 1
+	}
+	logger.Printf("%s %s node %s: harnesses %v, coordinator %s", version.Name, version.Version, cfg.Host, n.Adapters(), cfg.CoordinatorNode)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	_ = n.Run(ctx)
+	if err := n.Close(); err != nil {
+		logger.Printf("close: %v", err)
+	}
+	logger.Print("stopped")
+	return 0
+}

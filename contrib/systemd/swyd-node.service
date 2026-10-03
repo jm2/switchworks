@@ -1,0 +1,20 @@
+# User unit: runs as you, so the node inherits your Codex/agy sign-ins,
+# repositories and toolchains.
+#   install -Dm644 swyd-node.service ~/.config/systemd/user/swyd-node.service
+#   systemctl --user daemon-reload && systemctl --user enable --now swyd-node
+#   loginctl enable-linger "$USER"    # keep it running without a login session
+[Unit]
+Description=Switchyard node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/swyd node run
+Restart=on-failure
+RestartSec=3
+# Leave harness processes to swyd's own teardown on stop.
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,204 @@
+// Package wire is the node <-> coordinator protocol: newline-delimited JSON
+// envelopes over one mutually authenticated TLS connection per node.
+//
+// The design doc proposed gRPC; this build uses NDJSON over mTLS instead
+// because it needs no code generation or third-party modules, matches the
+// JSONL style of the harness protocols, and carries the same semantics: one
+// long-lived bidirectional stream per node, initiated by the node.
+//
+// Flow:
+//
+//	node  -> hello   {host, os, arch, version, adapters, sessions}
+//	coord -> welcome {acked: session -> last stored seq}
+//	node  -> events  {events}            (any time; resend after reconnect)
+//	coord -> ack     {acked}
+//	coord -> cmd     {id, op, ...}        node -> result {re: id, ok, error, data}
+//	either -> ping / pong                 (keepalive)
+package wire
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+
+	"github.com/jm2/switchyard/internal/model"
+)
+
+// ProtocolVersion is bumped on incompatible changes.
+const ProtocolVersion = 1
+
+// Envelope types.
+const (
+	THello   = "hello"
+	TWelcome = "welcome"
+	TEvents  = "events"
+	TAck     = "ack"
+	TCmd     = "cmd"
+	TResult  = "result"
+	TPing    = "ping"
+	TPong    = "pong"
+	TError   = "error"
+)
+
+// Envelope is one line on the wire.
+type Envelope struct {
+	Type string          `json:"t"`
+	ID   string          `json:"id,omitempty"`
+	Re   string          `json:"re,omitempty"`
+	P    json.RawMessage `json:"p,omitempty"`
+}
+
+// SessionState is a node's summary of one of its sessions.
+type SessionState struct {
+	ID        string           `json:"id"`
+	Path      string           `json:"path"`
+	Harness   string           `json:"harness"`
+	Status    string           `json:"status"`
+	LastSeq   int64            `json:"last_seq"`
+	NativeRef *model.NativeRef `json:"native_ref,omitempty"`
+}
+
+type Hello struct {
+	Protocol int            `json:"protocol"`
+	Host     string         `json:"host"`
+	OS       string         `json:"os"`
+	Arch     string         `json:"arch"`
+	Version  string         `json:"version"`
+	Adapters []string       `json:"adapters"`
+	Sessions []SessionState `json:"sessions"`
+}
+
+type Welcome struct {
+	Protocol int              `json:"protocol"`
+	Acked    map[string]int64 `json:"acked"`
+}
+
+type Events struct {
+	Events []model.Event `json:"events"`
+}
+
+type Ack struct {
+	Acked map[string]int64 `json:"acked"`
+}
+
+// Command ops.
+const (
+	OpSpawn     = "spawn"
+	OpDeliver   = "deliver"
+	OpInterrupt = "interrupt"
+	OpResolve   = "resolve"
+	OpStop      = "stop"
+)
+
+type Cmd struct {
+	Op      string         `json:"op"`
+	Session string         `json:"session"`
+	Spawn   *SpawnCmd      `json:"spawn,omitempty"`
+	Message *MessageCmd    `json:"message,omitempty"`
+	Resolve *ResolveCmd    `json:"resolve,omitempty"`
+	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+// SpawnCmd carries the coordinator's session record and the request.
+type SpawnCmd struct {
+	Session model.Session   `json:"session"`
+	Spec    model.SpawnSpec `json:"spec"`
+}
+
+type MessageCmd struct {
+	ID   string `json:"id"`
+	From string `json:"from"`
+	Text string `json:"text"`
+	Mode string `json:"mode,omitempty"` // queue (default) | steer
+}
+
+type ResolveCmd struct {
+	ApprovalID string `json:"approval_id"`
+	Decision   string `json:"decision"`
+}
+
+type Result struct {
+	OK    bool            `json:"ok"`
+	Error string          `json:"error,omitempty"`
+	Data  json.RawMessage `json:"data,omitempty"`
+}
+
+// MaxLine bounds one envelope (a large turn diff can be big).
+const MaxLine = 32 << 20
+
+// Conn frames envelopes over a stream. Send is safe for concurrent use;
+// Recv must be called from one goroutine.
+type Conn struct {
+	rw  io.ReadWriteCloser
+	br  *bufio.Reader
+	wmu sync.Mutex
+}
+
+// NewConn wraps a stream.
+func NewConn(rw io.ReadWriteCloser) *Conn {
+	return &Conn{rw: rw, br: bufio.NewReaderSize(rw, 1<<20)}
+}
+
+// Send writes one envelope with payload p (may be nil).
+func (c *Conn) Send(typ, id, re string, p any) error {
+	env := Envelope{Type: typ, ID: id, Re: re}
+	if p != nil {
+		b, err := json.Marshal(p)
+		if err != nil {
+			return err
+		}
+		env.P = b
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_, err = c.rw.Write(b)
+	return err
+}
+
+// ErrTooLong is returned for envelopes over MaxLine.
+var ErrTooLong = errors.New("wire: envelope too long")
+
+// Recv reads one envelope.
+func (c *Conn) Recv() (Envelope, error) {
+	var env Envelope
+	var line []byte
+	for {
+		chunk, err := c.br.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > MaxLine {
+			return env, ErrTooLong
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			return env, err
+		}
+		break
+	}
+	if err := json.Unmarshal(line, &env); err != nil {
+		return env, fmt.Errorf("wire: bad envelope: %w", err)
+	}
+	return env, nil
+}
+
+// Close closes the stream.
+func (c *Conn) Close() error { return c.rw.Close() }
+
+// Decode unmarshals an envelope payload.
+func Decode[T any](env Envelope) (T, error) {
+	var v T
+	if len(env.P) == 0 {
+		return v, nil
+	}
+	err := json.Unmarshal(env.P, &v)
+	return v, err
+}

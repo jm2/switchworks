@@ -1,0 +1,6 @@
+/swyd
+/swyd.exe
+/dist/
+*.test
+*.out
+/mock-codex-home/

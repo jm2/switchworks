@@ -1,0 +1,80 @@
+// Command swyd is Switchyard's single binary: coordinator, node, CLI and dev
+// tools are subcommands.
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+
+	"github.com/jm2/switchyard/internal/cli"
+	"github.com/jm2/switchyard/internal/coord"
+	"github.com/jm2/switchyard/internal/devrun"
+	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchyard/internal/version"
+)
+
+const usage = `swyd — %s %s: fleet control plane for coding agents
+
+Fleet:
+  swyd ls                         list sessions on every host
+  swyd hosts                      list enrolled hosts
+  swyd spawn <host> [flags] <prompt>
+                                  start a managed session on a host
+  swyd attach <session>           stream a session live (host/name or id)
+  swyd send <session> <text>      queue a message into a session
+  swyd interrupt <session>        cancel a session's active turn
+  swyd approve <session> <approval-id> <decision>
+  swyd stop <session>             stop managing a session
+  swyd events <session>           print a session's event log as JSON
+
+Services:
+  swyd coordinator init [flags]   create the CA, server certificate and admin token
+  swyd coordinator run [flags]    run the coordinator
+  swyd coordinator enroll-token <host>
+                                  print a one-time token to enroll a host
+  swyd coordinator cli-config     print a CLI config for this coordinator
+  swyd node enroll <token>        enroll this host with a coordinator
+  swyd node run [flags]           run the node service
+
+Development:
+  swyd dev run [flags] <prompt>   run one turn directly against a harness
+  swyd dev mock-provider          serve a fake model endpoint for token-free smoke tests
+
+  swyd version
+`
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintf(stderr, usage, version.Name, version.Version)
+		return 2
+	}
+	switch args[0] {
+	case "version", "--version", "-v":
+		fmt.Fprintf(stdout, "%s %s (%s %s/%s)\n", version.Bin, version.Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		return 0
+	case "help", "--help", "-h":
+		fmt.Fprintf(stdout, usage, version.Name, version.Version)
+		return 0
+	case "dev":
+		if len(args) >= 2 && args[1] == "run" {
+			return devrun.Main(args[2:], stdout, stderr)
+		}
+		if len(args) >= 2 && args[1] == "mock-provider" {
+			return devrun.MockMain(args[2:], stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "usage: swyd dev run [flags] <prompt> | swyd dev mock-provider [--codex-home DIR]")
+		return 2
+	case "coordinator":
+		return coord.Main(args[1:], stdout, stderr)
+	case "node":
+		return node.Main(args[1:], stdout, stderr)
+	default:
+		return cli.Main(args, stdout, stderr)
+	}
+}

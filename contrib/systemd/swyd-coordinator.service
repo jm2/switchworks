@@ -1,0 +1,17 @@
+# System or user unit for the coordinator host (e.g. t240).
+#   swyd coordinator init --host t240.lan,<ip>,<tailnet name>
+#   install -Dm644 swyd-coordinator.service ~/.config/systemd/user/
+#   systemctl --user enable --now swyd-coordinator && loginctl enable-linger "$USER"
+[Unit]
+Description=Switchyard coordinator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/swyd coordinator run
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
