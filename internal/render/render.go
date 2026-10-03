@@ -90,10 +90,27 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 			}
 			_ = json.Unmarshal(p.Raw, &u)
 			for _, c := range u.Content {
-				if c.Type == "text" {
-					r.line("> %s", c.Text)
+				if c.Type != "text" {
+					continue
 				}
+				// A routed message: "[switchyard msg=... from=... kind=...]\n..."
+				if hdr, body, ok := strings.Cut(c.Text, "\n"); ok && strings.HasPrefix(hdr, "[switchyard ") && strings.HasSuffix(hdr, "]") {
+					r.line("✉ %s", strings.TrimSuffix(strings.TrimPrefix(hdr, "[switchyard "), "]"))
+					for _, l := range strings.Split(body, "\n") {
+						r.line("  %s", l)
+					}
+					continue
+				}
+				r.line("> %s", c.Text)
 			}
+		case "mcpToolCall":
+			var m struct {
+				Server    string          `json:"server"`
+				Tool      string          `json:"tool"`
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			_ = json.Unmarshal(p.Raw, &m)
+			r.line("⇄ %s.%s %s", m.Server, m.Tool, clip(string(m.Arguments), 160))
 		default:
 			if r.Verbose {
 				r.line("── %s started", p.ItemType)
@@ -137,6 +154,32 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 				paths = append(paths, ch.Path)
 			}
 			r.line("  ✎ %s: %s", c.Status, strings.Join(paths, ", "))
+		case "mcpToolCall":
+			var m struct {
+				Status string `json:"status"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+				Result *struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result"`
+			}
+			_ = json.Unmarshal(p.Raw, &m)
+			out := ""
+			if m.Error != nil {
+				out = m.Error.Message
+			} else if m.Result != nil {
+				for _, c := range m.Result.Content {
+					if c.Type == "text" {
+						out = c.Text
+						break
+					}
+				}
+			}
+			r.line("  └ %s: %s", m.Status, clip(out, 200))
 		case "userMessage":
 		default:
 			if r.Verbose {
@@ -195,6 +238,10 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 		case model.KindMessageFailed:
 			r.line("!! message %s from %s failed: %s", p.MessageID, p.From, p.Error)
 		}
+	case model.KindSessionSettled:
+		if r.Verbose {
+			r.line("── settled: all queued work done")
+		}
 	case model.KindError:
 		var p model.ErrorEvent
 		_ = json.Unmarshal(payload, &p)
@@ -224,6 +271,15 @@ func (r *Renderer) Usage(u model.Usage) {
 	}
 	r.line("── tokens: in %d (cached %d, %.0f%%), out %d, reasoning %d, total %d",
 		u.InputTokens, u.CachedInputTokens, pct, u.OutputTokens, u.ReasoningTokens, u.TotalTokens)
+}
+
+// clip flattens s to one line of at most n runes.
+func clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len([]rune(s)) > n {
+		return string([]rune(s)[:n-1]) + "…"
+	}
+	return s
 }
 
 func orDash(s string) string {

@@ -19,6 +19,7 @@
 //   - "APPROVE": requests command approval and reports the decision
 //   - "SLOW":    stays in progress until turn/interrupt or turn/steer
 //   - "CRASH":   exits the process mid-turn
+//   - "CALL <tool> <json>", or a Switchyard ask: calls MCP tools (mcp.go)
 //   - otherwise: replies "echo: <prompt>" in three deltas
 package codextest
 
@@ -69,6 +70,8 @@ type server struct {
 	turns    map[string]*turn // threadId -> active turn
 	turnSeq  int
 	initDone bool
+
+	mcp mcpState
 }
 
 type turn struct {
@@ -206,6 +209,7 @@ func (s *server) handle(line []byte) {
 		s.saveThread(id)
 		s.mu.Unlock()
 		cwd := str("cwd")
+		s.mcp.setConfig(id, parseMCPConfig(p))
 		// Real app-server sends the response and thread/started back to back;
 		// emit the notification first to exercise early-notification buffering.
 		s.note("thread/started", map[string]any{"thread": threadObj(id, cwd, "idle")})
@@ -219,6 +223,7 @@ func (s *server) handle(line []byte) {
 			s.fail(m.ID, -32600, "thread not found: "+id)
 			return
 		}
+		s.mcp.setConfig(id, parseMCPConfig(p))
 		s.reply(m.ID, startResp(id, "/resumed"))
 	case "thread/name/set":
 		s.reply(m.ID, map[string]any{})
@@ -353,6 +358,10 @@ func (s *server) runTurn(t *turn, text string) {
 				reply = "steered: " + strings.TrimPrefix(msg, "steer:")
 			}
 		case <-time.After(30 * time.Second):
+		}
+	default:
+		if r, ok := s.scriptedTools(t, text); ok {
+			reply = r
 		}
 	}
 	if reply != "" {

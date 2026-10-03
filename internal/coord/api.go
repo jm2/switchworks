@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/pki"
 	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
 	"github.com/jm2/switchyard/internal/version"
 	"github.com/jm2/switchyard/internal/wire"
 )
@@ -43,6 +43,11 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /v1/sessions/{id}/stop", s.handleSimple(wire.OpStop))
 	authed.HandleFunc("POST /v1/sessions/{id}/approvals/{aid}", s.handleApprove)
 	authed.HandleFunc("POST /v1/enroll-tokens", s.handleEnrollToken)
+	authed.HandleFunc("POST /v1/messages", s.handlePostMessage)
+	authed.HandleFunc("GET /v1/messages", s.handleListMessages)
+	authed.HandleFunc("GET /v1/messages/{id}", s.handleGetMessage)
+	authed.HandleFunc("POST /v1/messages/{id}/reply", s.handleReplyMessage)
+	authed.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.Handle("/v1/", s.requireToken(authed))
 	return mux
 }
@@ -256,21 +261,180 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Mode {
-	case "", "queue", "steer":
+	case "", model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
 	default:
-		writeErr(w, 400, fmt.Errorf("unknown mode %q (queue, steer)", body.Mode))
+		writeErr(w, 400, fmt.Errorf("unknown mode %q (queue, steer, interrupt)", body.Mode))
 		return
 	}
-	if body.From == "" {
-		body.From = "user:cli"
-	}
-	msgID := ulid.New()
-	_, err := s.SessionCommand(r.Context(), r.PathValue("id"), wire.Cmd{Op: wire.OpDeliver,
-		Message: &wire.MessageCmd{ID: msgID, From: body.From, Text: body.Text, Mode: body.Mode}})
-	if s.commandError(w, err) {
+	from, err := userSender(body.From)
+	if err != nil {
+		writeErr(w, 400, err)
 		return
 	}
-	writeJSON(w, 202, apiclient.SendResult{MessageID: msgID})
+	sess, ok := s.store.Session(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, store.ErrNotFound)
+		return
+	}
+	if body.Mode == model.ModeSteer && !s.Online(sess.Host) {
+		writeErr(w, 409, fmt.Errorf("host %q: %w (steering needs a live session)", sess.Host, ErrOffline))
+		return
+	}
+	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode})
+	if err != nil {
+		writeErr(w, routeStatus(err), err)
+		return
+	}
+	m := msgs[0]
+	if m.State == model.MsgFailed {
+		writeErr(w, 409, errors.New(m.Error))
+		return
+	}
+	writeJSON(w, 202, apiclient.SendResult{MessageID: m.ID, State: m.State, Mode: m.Mode})
+}
+
+// routeStatus is the HTTP status for a routing error.
+func routeStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrRateLimit):
+		return 429
+	case errors.Is(err, ErrHopLimit), errors.Is(err, ErrBudget):
+		return 409
+	}
+	return 400
+}
+
+// userSender validates a "user:<name>" sender (default user:cli).
+func userSender(from string) (sender, error) {
+	if from == "" {
+		from = "user:cli"
+	}
+	if !strings.HasPrefix(from, "user:") {
+		return sender{}, errors.New(`from must look like "user:<name>"`)
+	}
+	if err := model.ValidateName("user", strings.TrimPrefix(from, "user:")); err != nil {
+		return sender{}, err
+	}
+	return sender{user: from}, nil
+}
+
+func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
+	var body apiclient.PostMessage
+	if err := decodeBody(r, &body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	from, err := userSender(body.From)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	switch body.Kind {
+	case "", model.MsgNotify, model.MsgBroadcast:
+		kind := model.MsgNotify
+		if body.Kind == model.MsgBroadcast {
+			kind = model.MsgBroadcast
+		}
+		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode, TTLSeconds: body.TTLSeconds})
+		if err != nil {
+			writeErr(w, routeStatus(err), err)
+			return
+		}
+		writeJSON(w, 202, fleet.SendResult{Messages: infos(msgs)})
+	case model.MsgAsk:
+		wait := 0
+		if body.WaitSeconds != nil {
+			wait = *body.WaitSeconds
+		}
+		res := s.router.ask(r.Context(), from, fleet.AskArgs{To: body.To, Text: body.Text, WaitSeconds: &wait, TTLSeconds: body.TTLSeconds})
+		if res.Status == fleet.AskFailed && res.MessageID == "" {
+			writeErr(w, 400, errors.New(res.Error))
+			return
+		}
+		writeJSON(w, 202, res)
+	default:
+		writeErr(w, 400, fmt.Errorf("unknown kind %q (notify, ask, broadcast)", body.Kind))
+	}
+}
+
+func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	f := store.MessageFilter{Session: q.Get("session"), ToUser: q.Get("inbox") == "1", Limit: limit}
+	msgs := s.store.Messages(f)
+	if msgs == nil {
+		msgs = []model.Message{}
+	}
+	writeJSON(w, 200, msgs)
+}
+
+func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.store.Message(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, store.ErrNotFound)
+		return
+	}
+	writeJSON(w, 200, m)
+}
+
+func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		From string `json:"from,omitempty"`
+		Text string `json:"text"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	from, err := userSender(body.From)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	res, err := s.router.reply(r.Context(), from, fleet.ReplyArgs{MessageID: r.PathValue("id"), Text: body.Text})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, res)
+}
+
+func addUsage(m map[string]model.Usage, k string, u model.Usage) {
+	cur := m[k]
+	cur.InputTokens += u.InputTokens
+	cur.CachedInputTokens += u.CachedInputTokens
+	cur.OutputTokens += u.OutputTokens
+	cur.ReasoningTokens += u.ReasoningTokens
+	cur.TotalTokens += u.TotalTokens
+	m[k] = cur
+}
+
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	rep := apiclient.UsageReport{Today: now.Format("2006-01-02"), MaxDailyTokens: s.router.guards.MaxDailyTokens,
+		Daily: map[string]int64{}, ByHost: map[string]model.Usage{}, ByModel: map[string]model.Usage{}}
+	for i := 0; i < 14; i++ {
+		d := now.AddDate(0, 0, -i).Format("2006-01-02")
+		if n := s.store.DailyTokens(d); n > 0 {
+			rep.Daily[d] = n
+		}
+	}
+	rep.TodayTokens = s.store.DailyTokens(rep.Today)
+	for _, sess := range s.store.Sessions() {
+		if sess.Usage == nil {
+			continue
+		}
+		addUsage(rep.ByHost, sess.Host, *sess.Usage)
+		m := sess.Model
+		if m == "" {
+			m = "unknown"
+		}
+		addUsage(rep.ByModel, m, *sess.Usage)
+	}
+	writeJSON(w, 200, rep)
 }
 
 func (s *Server) commandError(w http.ResponseWriter, err error) bool {

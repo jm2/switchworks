@@ -54,16 +54,29 @@ type Config struct {
 	// Defaults applied to spawns that do not set them.
 	DefaultApprovalPolicy string `json:"default_approval_policy,omitempty"` // codex: never | on-request | untrusted
 	DefaultSandbox        string `json:"default_sandbox,omitempty"`         // read-only | workspace-write | danger-full-access
+
+	// MCP controls the fleet tools attached to each Codex session.
+	MCP struct {
+		Disabled bool     `json:"disabled,omitempty"`
+		Command  string   `json:"command,omitempty"` // default: this swyd binary
+		Args     []string `json:"args,omitempty"`    // default: ["mcp"]
+	} `json:"mcp"`
 }
 
 // spool compaction threshold.
 const compactBytes = 1 << 20
 
 type queuedMsg struct {
-	ID   string `json:"id"`
-	From string `json:"from"`
-	Text string `json:"text"`
+	ID      string `json:"id"`
+	From    string `json:"from"`
+	Text    string `json:"text"`
+	Kind    string `json:"kind,omitempty"`
+	ReplyTo string `json:"reply_to,omitempty"`
 }
+
+// seenCap bounds the per-session list of delivered message ids kept for
+// deduplication of coordinator redeliveries.
+const seenCap = 512
 
 // record is a session's persisted state.
 type record struct {
@@ -75,6 +88,7 @@ type record struct {
 	Status    string            `json:"status"`
 	AckedSeq  int64             `json:"acked_seq"`
 	Queue     []queuedMsg       `json:"queue,omitempty"`
+	Seen      []string          `json:"seen,omitempty"` // recently accepted message ids
 	Stopped   bool              `json:"stopped,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 }
@@ -94,6 +108,15 @@ type session struct {
 	delta      *model.ItemDelta // coalescing buffer
 	deltaSince time.Time
 	delivering bool
+
+	// Settled detection: busy is set when a turn starts and cleared once the
+	// session is idle with an empty queue, at which point session.settled is
+	// emitted with the last turn's outcome.
+	activeTurn string
+	busy       bool
+	lastTurn   string
+	lastStatus string
+	lastText   string
 }
 
 // Node is a running node.
@@ -111,6 +134,12 @@ type Node struct {
 	conn   *wire.Conn
 	wake   chan struct{}
 
+	reqMu   sync.Mutex
+	reqs    map[string]chan reqReply // node -> coordinator requests in flight
+	local   *localAPI
+	mcpCmd  string
+	mcpArgs []string
+
 	stateMu sync.Mutex
 	closing chan struct{}
 	wg      sync.WaitGroup
@@ -126,7 +155,12 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 	}
 	n := &Node{dir: dir, cfg: cfg, logf: logf, hopts: hopts,
 		adapters: map[string]adapter.Adapter{}, sessions: map[string]*session{},
-		wake: make(chan struct{}, 1), closing: make(chan struct{})}
+		wake: make(chan struct{}, 1), closing: make(chan struct{}), reqs: map[string]chan reqReply{}}
+	if !cfg.MCP.Disabled {
+		if err := n.startLocal(); err != nil {
+			logf("fleet tools disabled: local API: %v", err)
+		}
+	}
 	recs, err := n.loadState()
 	if err != nil {
 		return nil, err
@@ -293,6 +327,22 @@ func (s *session) sink(ev adapter.Event) {
 	idle := false
 	save := false
 	switch ev.Kind {
+	case model.KindTurnStarted:
+		if p, ok := ev.Payload.(model.TurnStarted); ok {
+			s.activeTurn, s.busy = p.TurnID, true
+		}
+	case model.KindTurnCompleted:
+		if p, ok := ev.Payload.(model.TurnCompleted); ok {
+			if s.activeTurn == p.TurnID {
+				s.activeTurn = ""
+			}
+			s.lastTurn, s.lastStatus = p.TurnID, p.Status
+			idle = true // re-check delivery and settling now that the turn is done
+		}
+	case model.KindItemCompleted:
+		if p, ok := ev.Payload.(model.Item); ok && p.ItemType == "agentMessage" && p.Text != "" {
+			s.lastText = p.Text
+		}
 	case model.KindSessionRegistered:
 		if p, ok := ev.Payload.(model.SessionRegistered); ok {
 			ref := p.NativeRef
@@ -407,7 +457,9 @@ func (n *Node) resume(s *session) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	h, err := a.Resume(ctx, *rec.NativeRef, rec.Spec, s.sink)
+	spec := rec.Spec
+	spec.MCP = n.mcpFor(rec.ID, rec.Path)
+	h, err := a.Resume(ctx, *rec.NativeRef, spec, s.sink)
 	if err != nil {
 		n.logf("session %s: resume failed: %v", rec.Path, err)
 		s.emit(model.KindError, model.ErrorEvent{Message: "resume: " + err.Error()})
@@ -464,7 +516,9 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	n.mu.Lock()
 	n.sessions[s.rec.ID] = s
 	n.mu.Unlock()
-	h, err := a.Start(ctx, s.rec.Spec, s.sink)
+	startSpec := s.rec.Spec
+	startSpec.MCP = n.mcpFor(s.rec.ID, s.rec.Path)
+	h, err := a.Start(ctx, startSpec, s.sink)
 	if err != nil {
 		s.emit(model.KindError, model.ErrorEvent{Message: "start: " + err.Error()})
 		s.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusError, Detail: "start failed"})
@@ -509,49 +563,126 @@ func (s *session) handle() (adapter.Handle, error) {
 	return s.h, nil
 }
 
-// formatMessage renders a queued message for the agent. Messages from people
-// are passed through; messages from other sessions carry a header saying who
-// sent them (M2 adds reply tooling).
+// formatMessage renders a queued message for the agent. Plain messages
+// from people are passed through; everything else carries a one-line header
+// saying who sent it and how to answer.
 func formatMessage(m queuedMsg) string {
-	if strings.HasPrefix(m.From, "user:") {
+	kind := m.Kind
+	if kind == "" {
+		kind = model.MsgNotify
+	}
+	if strings.HasPrefix(m.From, "user:") && kind == model.MsgNotify {
 		return m.Text
 	}
-	return fmt.Sprintf("[%s msg=%s from=%s]\n%s", version.Slug, m.ID, m.From, m.Text)
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s msg=%s from=%s kind=%s", version.Slug, m.ID, m.From, kind)
+	if m.ReplyTo != "" {
+		fmt.Fprintf(&b, " re=%s", m.ReplyTo)
+	}
+	b.WriteString("]\n")
+	switch kind {
+	case model.MsgAsk:
+		fmt.Fprintf(&b, "(%s is waiting for an answer: reply with the fleet_reply tool, message_id=%s.)\n", m.From, m.ID)
+	case model.MsgReply:
+		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
+	}
+	b.WriteString(m.Text)
+	return b.String()
 }
 
-func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) error {
+func containsID(list []string, id string) bool {
+	for _, x := range list {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// deliver accepts a message into a session. Redeliveries of a message it
+// has already accepted are acknowledged without effect. Steering falls back
+// to queueing when there is no steerable turn; interrupt puts the message at
+// the head of the queue and cancels the running turn.
+func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (json.RawMessage, error) {
 	if m == nil || strings.TrimSpace(m.Text) == "" {
-		return errors.New("deliver: empty message")
+		return nil, errors.New("deliver: empty message")
 	}
 	h, err := s.handle()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	msg := queuedMsg{ID: m.ID, From: m.From, Text: m.Text}
-	if m.Mode == string(adapter.DeliverSteer) {
-		if !h.Caps().Steer {
-			return errors.New("this session cannot be steered; send without mode=steer to queue")
+	s.mu.Lock()
+	dup := containsID(s.rec.Seen, m.ID)
+	if !dup {
+		for _, q := range s.rec.Queue {
+			if q.ID == m.ID {
+				dup = true
+			}
 		}
-		if err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID}, adapter.DeliverSteer); err != nil {
-			return err
+	}
+	if dup {
+		s.mu.Unlock()
+		return model.Marshal(wire.DeliverResult{Mode: model.ModeQueue, Duplicate: true}), nil
+	}
+	s.rec.Seen = append(s.rec.Seen, m.ID)
+	if len(s.rec.Seen) > seenCap {
+		s.rec.Seen = s.rec.Seen[len(s.rec.Seen)-seenCap:]
+	}
+	s.mu.Unlock()
+	msg := queuedMsg{ID: m.ID, From: m.From, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo}
+	caps := h.Caps()
+	switch {
+	case m.Mode == model.ModeSteer && caps.Steer:
+		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID}, adapter.DeliverSteer)
+		if err == nil {
+			_ = n.saveState()
+			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer})
+			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer}), nil
 		}
-		s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: "steer"})
-		return nil
+		n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+	case m.Mode == model.ModeInterrupt && caps.Interrupt:
+		s.mu.Lock()
+		s.rec.Queue = append([]queuedMsg{msg}, s.rec.Queue...)
+		s.mu.Unlock()
+		_ = n.saveState()
+		s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeInterrupt})
+		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
+		}
+		go n.tryDeliver(s)
+		return model.Marshal(wire.DeliverResult{Mode: model.ModeInterrupt}), nil
 	}
 	s.mu.Lock()
 	s.rec.Queue = append(s.rec.Queue, msg)
 	s.mu.Unlock()
 	_ = n.saveState()
-	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: "queue"})
+	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeQueue})
 	go n.tryDeliver(s)
-	return nil
+	return model.Marshal(wire.DeliverResult{Mode: model.ModeQueue}), nil
 }
 
 // tryDeliver starts a turn with the next queued message if the session is idle.
 func (n *Node) tryDeliver(s *session) {
 	for {
 		s.mu.Lock()
-		if s.delivering || s.h == nil || s.rec.Stopped || len(s.rec.Queue) == 0 || s.h.Status() != model.StatusIdle {
+		if s.delivering || s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
+			s.mu.Unlock()
+			return
+		}
+		if len(s.rec.Queue) == 0 {
+			// Idle with nothing left to do: report that the session settled.
+			if s.busy && s.activeTurn == "" {
+				s.busy = false
+				text := s.lastText
+				if len(text) > 8000 {
+					text = text[:8000]
+				}
+				s.flushDeltaLocked()
+				s.appendLocked(model.KindSessionSettled, model.Settled{TurnID: s.lastTurn, TurnStatus: s.lastStatus, LastMessage: text})
+				s.mu.Unlock()
+				n.wakeSender()
+				return
+			}
 			s.mu.Unlock()
 			return
 		}
@@ -632,7 +763,9 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 		}
 		switch cmd.Op {
 		case wire.OpDeliver:
-			return n.deliver(ctx, s, cmd.Message)
+			var err error
+			data, err = n.deliver(ctx, s, cmd.Message)
+			return err
 		case wire.OpInterrupt:
 			h, err := s.handle()
 			if err != nil {
@@ -663,6 +796,9 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 // flushes state.
 func (n *Node) Close() error {
 	close(n.closing)
+	if n.local != nil {
+		n.local.close()
+	}
 	n.connMu.Lock()
 	if n.conn != nil {
 		_ = n.conn.Close()

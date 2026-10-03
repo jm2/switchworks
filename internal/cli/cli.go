@@ -329,10 +329,11 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	steer := fs.Bool("steer", false, "inject into the running turn instead of queueing a new one")
-	from := fs.String("from", "", "sender label (default user:cli)")
+	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
+	from := fs.String("from", "", "sender (default user:cli)")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd send [--steer] <session> <text>")
+		fmt.Fprintln(stderr, "usage: swyd send [--steer|--interrupt] <session> <text>")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -343,9 +344,15 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 1
 	}
-	mode := "queue"
-	if *steer {
-		mode = "steer"
+	mode := model.ModeQueue
+	switch {
+	case *steer && *intr:
+		fmt.Fprintln(stderr, "swyd send: --steer and --interrupt are exclusive")
+		return 2
+	case *steer:
+		mode = model.ModeSteer
+	case *intr:
+		mode = model.ModeInterrupt
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
@@ -353,7 +360,14 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "%s message %s to %s\n", map[string]string{"queue": "queued", "steer": "steered"}[mode], res.MessageID, s.Path)
+	how := map[string]string{model.ModeQueue: "queued", model.ModeSteer: "steered", model.ModeInterrupt: "interrupted with"}[res.Mode]
+	if how == "" {
+		how = "queued"
+	}
+	if res.State == model.MsgPending {
+		how = "holding (host offline)"
+	}
+	fmt.Fprintf(stdout, "%s message %s to %s\n", how, res.MessageID, s.Path)
 	return 0
 }
 

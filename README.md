@@ -14,7 +14,7 @@ or Electron anywhere.
 
 ## Status
 
-Milestones M0 and M1 of the [design and implementation plan](https://claude.ai/code/artifact/05bb9e2b-e9c4-4a2a-b46a-bbb91235d342):
+Milestones M0–M2 of the [design and implementation plan](https://claude.ai/code/artifact/05bb9e2b-e9c4-4a2a-b46a-bbb91235d342):
 
 - **M0**: Codex app-server client, `swyd dev run`. Verified against real Codex
   0.160.0 on linux/amd64: streaming, approvals, interrupt, resume.
@@ -22,11 +22,17 @@ Milestones M0 and M1 of the [design and implementation plan](https://claude.ai/c
   managed sessions across hosts, queue/steer delivery, approvals, survives
   node and coordinator restarts. Verified with real processes on
   linux/amd64. The other targets cross-compile but are untested.
+- **M2**: agent-to-agent messaging. Every managed Codex session gets fleet
+  tools over MCP (`fleet_list`, `fleet_send`, `fleet_ask`, `fleet_reply`,
+  `fleet_spawn`, ...). Messages are routed by the coordinator across hosts,
+  wait for offline hosts, and are bounded by hop, rate, spawn-depth and
+  token-budget guards. Verified with two real Codex app-servers on two
+  hosts. See [docs/messaging.md](docs/messaging.md).
 - **Antigravity (`agy`)**: experimental adapter on documented headless
-  behavior only. Not yet run against a real `agy`.
+  behavior only. Not yet run against a real `agy`. No fleet tools yet.
 
-Not built yet: agent-to-agent messaging and the MCP server (M2), web UI (M3),
-observed sessions (M4), ACP agents (M5). See [docs/status.md](docs/status.md).
+Not built yet: web UI (M3), observed sessions (M4), ACP agents (M5). See
+[docs/status.md](docs/status.md).
 
 ## Quick start
 
@@ -60,6 +66,17 @@ swyd stop cmr-arm
 
 Session paths are `host/name`. A bare name works when it is unique across the
 fleet.
+
+Agents can now message each other. A prompt like "ask boxy/helper whether
+the ARM build passes" makes Codex call `fleet_ask`. You see the traffic and
+answer agents' questions from the CLI:
+
+```sh
+swyd messages                 # who said what to whom
+swyd inbox                    # questions agents asked you
+swyd reply <ask-id> "ship it"
+swyd ask helper "status?"     # ask an agent yourself, wait for the answer
+```
 
 ## Harness requirements
 
@@ -104,8 +121,10 @@ make cross       # dist/swyd-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64
 | `cmd/swyd` | the single binary |
 | `internal/codex` | app-server JSON-RPC client and protocol subset, with a contract test against the committed schema |
 | `internal/adapter/{codexad,agyad}` | harness adapters behind `internal/adapter` |
-| `internal/node` | sessions, spool, delivery queue, coordinator link |
-| `internal/coord` | node listener, event store, projection, HTTPS API + SSE |
+| `internal/node` | sessions, spool, delivery queue, coordinator link, local API for `swyd mcp` |
+| `internal/coord` | node listener, event store, projection, message router, HTTPS API + SSE |
+| `internal/mcp` | `swyd mcp`: the fleet tools as a stdio MCP server |
+| `internal/fleet` | fleet operation arguments and results |
 | `internal/store` | storage interface + file-backed implementation |
 | `internal/pki` | private CA, enrollment tokens |
 | `internal/wire` | node <-> coordinator protocol |

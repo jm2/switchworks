@@ -13,6 +13,7 @@ import (
 	"github.com/jm2/switchyard/internal/cli"
 	"github.com/jm2/switchyard/internal/coord"
 	"github.com/jm2/switchyard/internal/devrun"
+	"github.com/jm2/switchyard/internal/mcp"
 	"github.com/jm2/switchyard/internal/node"
 	"github.com/jm2/switchyard/internal/version"
 )
@@ -25,11 +26,19 @@ Fleet:
   swyd spawn <host> [flags] <prompt>
                                   start a managed session on a host
   swyd attach <session>           stream a session live (host/name or id)
-  swyd send <session> <text>      queue a message into a session
+  swyd send <session> <text>      queue a message into a session (--steer, --interrupt)
   swyd interrupt <session>        cancel a session's active turn
   swyd approve <session> <approval-id> <decision>
   swyd stop <session>             stop managing a session
   swyd events <session>           print a session's event log as JSON
+
+Messages:
+  swyd msg <address> <text>       message a session, an @label selector or a person
+  swyd ask <address> <question>   ask and wait for the answer
+  swyd inbox                      messages and open questions for people
+  swyd reply <ask-id> <answer>    answer an agent's question
+  swyd messages [session]         the fleet's message traffic
+  swyd usage                      token use by host, model and day
 
 Services:
   swyd coordinator init [flags]   create the CA, server certificate and admin token
@@ -41,6 +50,7 @@ Services:
   swyd node run [flags]           run the node service
 
 Development:
+  swyd mcp                        MCP server with the fleet tools (started by the node inside sessions)
   swyd dev run [flags] <prompt>   run one turn directly against a harness
   swyd dev mock-provider          serve a fake model endpoint for token-free smoke tests
 
@@ -72,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stderr, "usage: swyd dev run [flags] <prompt> | swyd dev mock-provider [--codex-home DIR]")
 		return 2
+	case "mcp":
+		return mcp.Main(os.Stdin, stdout, stderr)
 	case "coordinator":
 		return coord.Main(args[1:], stdout, stderr)
 	case "node":

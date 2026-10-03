@@ -246,6 +246,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 		ApprovalPolicy: spec.ApprovalPolicy,
 		Sandbox:        spec.Sandbox,
 		ServiceName:    "switchyard",
+		Config:         mcpConfig(spec.MCP),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("thread/start: %w", err)
@@ -346,6 +347,7 @@ func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
 		ApprovalPolicy: h.spec.ApprovalPolicy,
 		Sandbox:        h.spec.Sandbox,
 		ExcludeTurns:   true,
+		Config:         mcpConfig(h.spec.MCP),
 	})
 	if err != nil {
 		return fmt.Errorf("thread/resume %s: %w", h.threadID, err)
@@ -531,6 +533,33 @@ func usage(b codex.TokenUsageBreakdown) model.Usage {
 		InputTokens: b.InputTokens, CachedInputTokens: b.CachedInputTokens, OutputTokens: b.OutputTokens,
 		ReasoningTokens: b.ReasoningOutputTokens, TotalTokens: b.TotalTokens,
 	}
+}
+
+// mcpConfig renders a per-thread config override that attaches an MCP
+// server to this thread only. Its tools are auto-approved
+// (default_tools_approval_mode = "approve"): Codex otherwise asks before
+// every MCP call, which fails outright under approval policy "never".
+// Switchyard applies its own guards to fleet operations.
+func mcpConfig(m *adapter.MCPServer) map[string]any {
+	if m == nil {
+		return nil
+	}
+	timeout := m.ToolTimeout
+	if timeout <= 0 {
+		timeout = 60
+	}
+	args := m.Args
+	if args == nil {
+		args = []string{}
+	}
+	return map[string]any{"mcp_servers": map[string]any{m.Name: map[string]any{
+		"command":                     m.Command,
+		"args":                        args,
+		"env":                         m.Env,
+		"startup_timeout_sec":         30,
+		"tool_timeout_sec":            timeout,
+		"default_tools_approval_mode": "approve",
+	}}}
 }
 
 func containsStr(list []string, s string) bool {

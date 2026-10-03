@@ -33,6 +33,9 @@ type Server struct {
 	mu    sync.Mutex
 	nodes map[string]*nodeConn
 	subs  map[string]map[chan model.Event]struct{}
+	fleet map[chan model.Event]struct{} // subscribers to every session's events
+
+	router *router
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup
@@ -45,9 +48,16 @@ type nodeConn struct {
 	hello wire.Hello
 
 	mu      sync.Mutex
-	pending map[string]chan wire.Result
+	pending map[string]chan cmdReply
 	closed  chan struct{}
 	once    sync.Once
+}
+
+// cmdReply is a node's answer to a command, or the transport error that
+// prevented one.
+type cmdReply struct {
+	r   wire.Result
+	err error
 }
 
 func (n *nodeConn) close() {
@@ -56,7 +66,7 @@ func (n *nodeConn) close() {
 		_ = n.raw.Close()
 		n.mu.Lock()
 		for id, ch := range n.pending {
-			ch <- wire.Result{OK: false, Error: "node disconnected"}
+			ch <- cmdReply{err: fmt.Errorf("node %s disconnected: %w", n.host, ErrOffline)}
 			delete(n.pending, id)
 		}
 		n.mu.Unlock()
@@ -72,8 +82,11 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Server{cfg: cfg, dir: dir, store: st, ca: ca, logf: logf,
-		nodes: map[string]*nodeConn{}, subs: map[string]map[chan model.Event]struct{}{}}, nil
+	s := &Server{cfg: cfg, dir: dir, store: st, ca: ca, logf: logf,
+		nodes: map[string]*nodeConn{}, subs: map[string]map[chan model.Event]struct{}{},
+		fleet: map[chan model.Event]struct{}{}}
+	s.router = newRouter(s, cfg.Guards)
+	return s, nil
 }
 
 // ServeNodes accepts node connections on ln until it is closed.
@@ -114,6 +127,7 @@ func (s *Server) Shutdown() {
 		n.close()
 	}
 	s.wg.Wait()
+	s.router.close()
 }
 
 func (s *Server) handleNode(c net.Conn) {
@@ -150,7 +164,7 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 	_ = tc.SetDeadline(time.Time{})
 
-	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan wire.Result{}, closed: make(chan struct{})}
+	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan cmdReply{}, closed: make(chan struct{})}
 	s.mu.Lock()
 	if old := s.nodes[host]; old != nil {
 		go old.close()
@@ -171,6 +185,7 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 
 	go s.pinger(n)
+	s.router.poke() // deliver messages that waited for this host
 	s.readNode(n)
 
 	s.mu.Lock()
@@ -255,8 +270,11 @@ func (s *Server) readNode(n *nodeConn) {
 			delete(n.pending, env.Re)
 			n.mu.Unlock()
 			if ch != nil {
-				ch <- r
+				ch <- cmdReply{r: r}
 			}
+		case wire.TCmd:
+			// A fleet operation from one of the node's sessions.
+			go s.handleNodeReq(n, env)
 		case wire.TPing:
 			_ = n.conn.Send(wire.TPong, "", "", nil)
 		case wire.TPong:
@@ -282,12 +300,38 @@ func (s *Server) ingest(host string, evs []model.Event) error {
 	for _, ev := range stored {
 		s.project(ev)
 		s.publish(ev)
+		s.route(ev)
 	}
 	return err
 }
 
-// project updates the session record from one event.
+// route feeds events the message router reacts to.
+func (s *Server) route(ev model.Event) {
+	switch ev.Kind {
+	case model.KindMessageDelivered:
+		var p model.MessageEvent
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.router.onDelivered(ev.SessionID, p.MessageID)
+		}
+	case model.KindSessionSettled:
+		var p model.Settled
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			if sess, ok := s.store.Session(ev.SessionID); ok {
+				s.router.onSettled(sess, p)
+			}
+		}
+	}
+}
+
+// project updates the session record from one event, and the fleet's
+// daily token total from usage events.
 func (s *Server) project(ev model.Event) {
+	var tokenDelta int64
+	defer func() {
+		if tokenDelta > 0 {
+			s.store.AddDailyTokens(ev.TS.UTC().Format("2006-01-02"), tokenDelta)
+		}
+	}()
 	_, _ = s.store.UpdateSession(ev.SessionID, func(sess *model.Session) {
 		sess.UpdatedAt = ev.TS
 		switch ev.Kind {
@@ -316,6 +360,10 @@ func (s *Server) project(ev model.Event) {
 			var p model.UsageEvent
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				u := p.Total
+				tokenDelta = u.TotalTokens
+				if sess.Usage != nil && sess.Usage.TotalTokens <= u.TotalTokens {
+					tokenDelta = u.TotalTokens - sess.Usage.TotalTokens
+				}
 				sess.Usage = &u
 				if p.Model != "" {
 					sess.Model = p.Model
@@ -355,6 +403,14 @@ func (s *Server) unsubscribe(sessionID string, ch chan model.Event) {
 func (s *Server) publish(ev model.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for ch := range s.fleet {
+		select {
+		case ch <- ev:
+		default:
+			delete(s.fleet, ch)
+			close(ch)
+		}
+	}
 	for ch := range s.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
@@ -384,7 +440,7 @@ func (s *Server) command(ctx context.Context, host string, cmd wire.Cmd, timeout
 		return wire.Result{}, ErrOffline
 	}
 	id := ulid.New()
-	ch := make(chan wire.Result, 1)
+	ch := make(chan cmdReply, 1)
 	n.mu.Lock()
 	n.pending[id] = ch
 	n.mu.Unlock()
@@ -392,16 +448,19 @@ func (s *Server) command(ctx context.Context, host string, cmd wire.Cmd, timeout
 		n.mu.Lock()
 		delete(n.pending, id)
 		n.mu.Unlock()
-		return wire.Result{}, err
+		return wire.Result{}, fmt.Errorf("send to %s: %v: %w", host, err, ErrOffline)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	select {
-	case r := <-ch:
-		if !r.OK {
-			return r, errors.New(r.Error)
+	case rep := <-ch:
+		if rep.err != nil {
+			return wire.Result{}, rep.err
 		}
-		return r, nil
+		if !rep.r.OK {
+			return rep.r, &errRejected{msg: rep.r.Error}
+		}
+		return rep.r, nil
 	case <-ctx.Done():
 		n.mu.Lock()
 		delete(n.pending, id)

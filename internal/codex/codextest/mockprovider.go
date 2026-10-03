@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,12 @@ import (
 // Behavior, keyed on the latest user message:
 //   - "RUN: <cmd>": the model calls exec_command with <cmd>; once Codex sends
 //     the function_call_output back, the model answers "Command finished."
+//   - a line "CALL <tool> <json args>": the model calls MCP tool <tool> of
+//     the swyd server (namespace mcp__swyd) and then answers
+//     "tool <tool>: <output>"
+//   - a Switchyard ask ("[switchyard msg=<id> ... kind=ask"): the model
+//     answers it with fleet_reply, text "answer: <last line>", then says
+//     "replied: <output>"
 //   - anything else: the model answers "mock: <message>" in three deltas
 //
 // Every response reports usage of 120 input (40 cached) + 7 output tokens.
@@ -86,6 +93,31 @@ type respInput struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Output json.RawMessage `json:"output"`
+}
+
+var wallTime = regexp.MustCompile(`^Wall time: [^\n]*\nOutput:\n?`)
+
+// outputText extracts the text of a function_call_output: a string, or a
+// list of input_text parts (Codex prefixes MCP results with "Wall time ...
+// Output:").
+func outputText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &parts)
+	var out []string
+	for _, p := range parts {
+		if p.Type == "input_text" {
+			out = append(out, p.Text)
+		}
+	}
+	return wallTime.ReplaceAllString(strings.Join(out, "\n"), "")
 }
 
 func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +135,7 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 	n := m.reqs
 	m.mu.Unlock()
 
-	lastUser, sawOutput := "", false
+	lastUser, sawOutput, output := "", false, ""
 	for _, raw := range body.Input {
 		var it respInput
 		if json.Unmarshal(raw, &it) != nil {
@@ -112,6 +144,7 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 		switch it.Type {
 		case "function_call_output":
 			sawOutput = true
+			output = outputText(it.Output)
 		case "message":
 			if it.Role == "user" {
 				sawOutput = false
@@ -137,7 +170,28 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 	respID := fmt.Sprintf("resp_%d", n)
 	ev(map[string]any{"type": "response.created", "response": map[string]any{"id": respID}})
 
+	call := func(namespace, name string, args string) {
+		item := map[string]any{"type": "function_call", "id": fmt.Sprintf("fc_%d", n), "call_id": fmt.Sprintf("call_%d", n),
+			"name": name, "arguments": args}
+		if namespace != "" {
+			item["namespace"] = namespace
+		}
+		ev(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item})
+		ev(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item})
+	}
+	askM := askRe.FindStringSubmatch(lastUser)
+	callM := callRe.FindStringSubmatch(lastUser)
 	switch {
+	case !sawOutput && askM != nil:
+		lines := strings.Split(strings.TrimSpace(lastUser), "\n")
+		args, _ := json.Marshal(map[string]string{"message_id": askM[1], "text": "answer: " + lines[len(lines)-1]})
+		call("mcp__swyd", "fleet_reply", string(args))
+	case !sawOutput && callM != nil:
+		args := strings.TrimSpace(callM[2])
+		if args == "" {
+			args = "{}"
+		}
+		call("mcp__swyd", callM[1], args)
 	case !sawOutput && strings.HasPrefix(lastUser, "RUN: "):
 		args, _ := json.Marshal(map[string]any{"cmd": strings.TrimPrefix(lastUser, "RUN: ")})
 		item := map[string]any{"type": "function_call", "id": fmt.Sprintf("fc_%d", n), "call_id": fmt.Sprintf("call_%d", n),
@@ -146,7 +200,12 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 		ev(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item})
 	default:
 		text := "mock: " + lastUser
-		if sawOutput {
+		switch {
+		case sawOutput && askM != nil:
+			text = "replied: " + output
+		case sawOutput && callM != nil:
+			text = "tool " + callM[1] + ": " + output
+		case sawOutput:
 			text = "Command finished."
 		}
 		msgID := fmt.Sprintf("msg_%d", n)

@@ -111,10 +111,39 @@ type SpawnCmd struct {
 }
 
 type MessageCmd struct {
-	ID   string `json:"id"`
-	From string `json:"from"`
-	Text string `json:"text"`
-	Mode string `json:"mode,omitempty"` // queue (default) | steer
+	ID      string `json:"id"`
+	From    string `json:"from"`
+	Text    string `json:"text"`
+	Mode    string `json:"mode,omitempty"` // queue (default) | steer | interrupt
+	Kind    string `json:"kind,omitempty"` // notify | ask | reply | done | system
+	ReplyTo string `json:"reply_to,omitempty"`
+}
+
+// DeliverResult is the data of a successful deliver command.
+type DeliverResult struct {
+	Mode      string `json:"mode"`                // how it was delivered: queue, steer or interrupt
+	Duplicate bool   `json:"duplicate,omitempty"` // already seen; nothing done
+}
+
+// Node -> coordinator requests, sent as TCmd with a NodeReq payload; the
+// coordinator answers with TResult. They carry fleet operations made by
+// agents through `swyd mcp`, on behalf of one of the node's sessions.
+const (
+	ReqList   = "fleet.list"
+	ReqSend   = "fleet.send"
+	ReqAsk    = "fleet.ask"
+	ReqReply  = "fleet.reply"
+	ReqInbox  = "fleet.inbox"
+	ReqSpawn  = "fleet.spawn"
+	ReqStatus = "fleet.status"
+	ReqStop   = "fleet.stop"
+)
+
+// NodeReq is a node-initiated request.
+type NodeReq struct {
+	Op      string          `json:"op"`
+	Session string          `json:"session"` // calling session id (must belong to the node)
+	Args    json.RawMessage `json:"args,omitempty"`
 }
 
 type ResolveCmd struct {

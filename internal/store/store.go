@@ -51,7 +51,27 @@ type Store interface {
 	// ConsumeToken returns the host a token enrolls and deletes the token.
 	ConsumeToken(hash string) (string, error)
 
+	// PutMessage creates or replaces a message record.
+	PutMessage(m model.Message) error
+	Message(id string) (model.Message, bool)
+	// Messages returns matching messages, newest first.
+	Messages(f MessageFilter) []model.Message
+	// PendingMessages returns undelivered messages, oldest first.
+	PendingMessages() []model.Message
+
+	// AddDailyTokens adds n to the token total of a UTC day ("2006-01-02").
+	AddDailyTokens(day string, n int64)
+	DailyTokens(day string) int64
+
 	Close() error
+}
+
+// MessageFilter selects messages. Zero fields match everything.
+type MessageFilter struct {
+	Session string // sent by or to this session id
+	ToUser  bool   // only messages to the human inbox
+	Since   time.Time
+	Limit   int
 }
 
 // Reusable reports whether a session's path can be taken by a new session.

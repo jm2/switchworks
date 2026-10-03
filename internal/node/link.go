@@ -102,6 +102,7 @@ func (n *Node) connectOnce(ctx context.Context, tlsCfg *tls.Config) error {
 			n.conn = nil
 		}
 		n.connMu.Unlock()
+		n.failRequests()
 	}()
 	n.logf("connected to coordinator %s", n.cfg.CoordinatorNode)
 	n.wakeSender()
@@ -127,6 +128,9 @@ func (n *Node) connectOnce(ctx context.Context, tlsCfg *tls.Config) error {
 				r := n.handleCmd(cmd)
 				_ = c.Send(wire.TResult, "", id, r)
 			}()
+		case wire.TResult:
+			r, _ := wire.Decode[wire.Result](env)
+			n.answerRequest(env.Re, r)
 		case wire.TPing:
 			_ = c.Send(wire.TPong, "", "", nil)
 		case wire.TPong:

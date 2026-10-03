@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/pki"
 )
@@ -194,12 +195,87 @@ func (c *Client) Events(ctx context.Context, id string, after int64, limit int) 
 // SendResult is the response to a message.
 type SendResult struct {
 	MessageID string `json:"message_id"`
+	State     string `json:"state,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 func (c *Client) Send(ctx context.Context, id, text, mode, from string) (SendResult, error) {
 	var out SendResult
 	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages",
 		map[string]string{"text": text, "mode": mode, "from": from}, &out)
+}
+
+// PostMessage is the body of POST /v1/messages: a message from a person
+// to any address.
+type PostMessage struct {
+	From        string `json:"from,omitempty"` // "user:<name>" (default user:cli)
+	To          string `json:"to"`
+	Kind        string `json:"kind,omitempty"` // notify (default) | ask | broadcast
+	Text        string `json:"text"`
+	Mode        string `json:"mode,omitempty"`
+	TTLSeconds  int    `json:"ttl_seconds,omitempty"`
+	WaitSeconds *int   `json:"wait_seconds,omitempty"` // ask only
+}
+
+// PostMessage sends a notify or broadcast; the result is a fleet.SendResult.
+func (c *Client) PostMessage(ctx context.Context, m PostMessage) (fleet.SendResult, error) {
+	var out fleet.SendResult
+	return out, c.do(ctx, "POST", "/v1/messages", m, &out)
+}
+
+// Ask sends an ask from a person, waiting up to m.WaitSeconds for the answer.
+func (c *Client) Ask(ctx context.Context, m PostMessage) (fleet.AskResult, error) {
+	m.Kind = model.MsgAsk
+	var out fleet.AskResult
+	return out, c.do(ctx, "POST", "/v1/messages", m, &out)
+}
+
+// MessageQuery filters Messages.
+type MessageQuery struct {
+	Session string // messages to or from this session id
+	Inbox   bool   // messages to people
+	Limit   int
+}
+
+func (c *Client) Messages(ctx context.Context, q MessageQuery) ([]model.Message, error) {
+	v := url.Values{}
+	if q.Session != "" {
+		v.Set("session", q.Session)
+	}
+	if q.Inbox {
+		v.Set("inbox", "1")
+	}
+	if q.Limit > 0 {
+		v.Set("limit", fmt.Sprint(q.Limit))
+	}
+	var out []model.Message
+	return out, c.do(ctx, "GET", "/v1/messages?"+v.Encode(), nil, &out)
+}
+
+func (c *Client) Message(ctx context.Context, id string) (model.Message, error) {
+	var out model.Message
+	return out, c.do(ctx, "GET", "/v1/messages/"+url.PathEscape(id), nil, &out)
+}
+
+// Reply answers an ask addressed to a person.
+func (c *Client) Reply(ctx context.Context, askID, text, from string) (fleet.ReplyResult, error) {
+	var out fleet.ReplyResult
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(askID)+"/reply", map[string]string{"text": text, "from": from}, &out)
+}
+
+// UsageReport aggregates token use.
+type UsageReport struct {
+	Today          string                 `json:"today"`
+	TodayTokens    int64                  `json:"today_tokens"`
+	MaxDailyTokens int64                  `json:"max_daily_tokens,omitempty"`
+	Daily          map[string]int64       `json:"daily"`
+	ByHost         map[string]model.Usage `json:"by_host"`
+	ByModel        map[string]model.Usage `json:"by_model"`
+}
+
+func (c *Client) Usage(ctx context.Context) (UsageReport, error) {
+	var out UsageReport
+	return out, c.do(ctx, "GET", "/v1/usage", nil, &out)
 }
 
 func (c *Client) Interrupt(ctx context.Context, id string) error {

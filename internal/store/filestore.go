@@ -35,7 +35,12 @@ type FileStore struct {
 	sessions map[string]*model.Session
 	tokens   map[string]tokenRec
 	logs     map[string]*eventLog
+	daily    map[string]int64
 	dirty    bool
+
+	msgs     map[string]*model.Message
+	msgLog   *os.File
+	msgLines int
 
 	stop chan struct{}
 	done chan struct{}
@@ -48,10 +53,14 @@ type tokenRec struct {
 }
 
 type snapshot struct {
-	Hosts    []model.Host     `json:"hosts"`
-	Sessions []*model.Session `json:"sessions"`
-	Tokens   []tokenRec       `json:"tokens"`
+	Hosts       []model.Host     `json:"hosts"`
+	Sessions    []*model.Session `json:"sessions"`
+	Tokens      []tokenRec       `json:"tokens"`
+	DailyTokens map[string]int64 `json:"daily_tokens,omitempty"`
 }
+
+// Messages older than this in a terminal state are dropped at open.
+const messageRetention = 14 * 24 * time.Hour
 
 type idx struct {
 	seq int64
@@ -78,7 +87,8 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	}
 	s := &FileStore{
 		dir: dir, hosts: map[string]model.Host{}, sessions: map[string]*model.Session{},
-		tokens: map[string]tokenRec{}, logs: map[string]*eventLog{},
+		tokens: map[string]tokenRec{}, logs: map[string]*eventLog{}, daily: map[string]int64{},
+		msgs: map[string]*model.Message{},
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
@@ -96,8 +106,14 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		for _, t := range snap.Tokens {
 			s.tokens[t.Hash] = t
 		}
+		for d, n := range snap.DailyTokens {
+			s.daily[d] = n
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
+	}
+	if err := s.openMessages(); err != nil {
+		return nil, fmt.Errorf("messages: %w", err)
 	}
 	// Rebuild event indexes and reconcile last seq.
 	entries, err := os.ReadDir(filepath.Join(dir, "events"))
@@ -190,6 +206,15 @@ func (s *FileStore) saveLocked() error {
 			snap.Tokens = append(snap.Tokens, t)
 		}
 	}
+	if len(s.daily) > 0 {
+		snap.DailyTokens = map[string]int64{}
+		cutoff := now.AddDate(0, 0, -90).Format("2006-01-02")
+		for d, n := range s.daily {
+			if d >= cutoff {
+				snap.DailyTokens[d] = n
+			}
+		}
+	}
 	b, err := json.MarshalIndent(snap, "", " ")
 	if err != nil {
 		return err
@@ -231,7 +256,150 @@ func (s *FileStore) Close() error {
 	for _, l := range s.logs {
 		_ = l.f.Close()
 	}
+	if s.msgLog != nil {
+		_ = s.msgLog.Close()
+	}
 	return err
+}
+
+// --- messages: messages.jsonl, one full record per line, last one wins ---
+
+func (s *FileStore) msgPath() string { return filepath.Join(s.dir, "messages.jsonl") }
+
+func (s *FileStore) openMessages() error {
+	if f, err := os.Open(s.msgPath()); err == nil {
+		br := bufio.NewReaderSize(f, 1<<20)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 && line[len(line)-1] == '\n' {
+				var m model.Message
+				if json.Unmarshal(line, &m) == nil && m.ID != "" {
+					cp := m
+					s.msgs[m.ID] = &cp
+					s.msgLines++
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		f.Close()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	cutoff := time.Now().Add(-messageRetention)
+	for id, m := range s.msgs {
+		if m.Terminal() && m.CreatedAt.Before(cutoff) {
+			delete(s.msgs, id)
+		}
+	}
+	// Compact: rewrite one line per live message.
+	if s.msgLines > len(s.msgs) {
+		var buf bytes.Buffer
+		ids := make([]string, 0, len(s.msgs))
+		for id := range s.msgs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			b, _ := json.Marshal(s.msgs[id])
+			buf.Write(append(b, '\n'))
+		}
+		if err := atomicWrite(s.msgPath(), buf.Bytes()); err != nil {
+			return err
+		}
+		s.msgLines = len(s.msgs)
+	}
+	f, err := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	s.msgLog = f
+	return nil
+}
+
+func (s *FileStore) PutMessage(m model.Message) error {
+	if m.ID == "" {
+		return fmt.Errorf("message without id")
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.msgLog.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	if err := s.msgLog.Sync(); err != nil {
+		return err
+	}
+	s.msgLines++
+	cp := m
+	s.msgs[m.ID] = &cp
+	return nil
+}
+
+func (s *FileStore) Message(id string) (model.Message, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.msgs[id]
+	if !ok {
+		return model.Message{}, false
+	}
+	return *m, true
+}
+
+func (s *FileStore) Messages(f MessageFilter) []model.Message {
+	s.mu.Lock()
+	var out []model.Message
+	for _, m := range s.msgs {
+		if f.Session != "" && m.FromSession != f.Session && m.ToSession != f.Session {
+			continue
+		}
+		if f.ToUser && m.ToUser == "" {
+			continue
+		}
+		if !f.Since.IsZero() && m.CreatedAt.Before(f.Since) {
+			continue
+		}
+		out = append(out, *m)
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out
+}
+
+func (s *FileStore) PendingMessages() []model.Message {
+	s.mu.Lock()
+	var out []model.Message
+	for _, m := range s.msgs {
+		if m.State == model.MsgPending {
+			out = append(out, *m)
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (s *FileStore) AddDailyTokens(day string, n int64) {
+	if n == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.daily[day] += n
+	s.dirty = true
+}
+
+func (s *FileStore) DailyTokens(day string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.daily[day]
 }
 
 func (s *FileStore) UpsertHost(h model.Host) error {

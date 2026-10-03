@@ -32,6 +32,7 @@ type Config struct {
 	PublicAPI      string `json:"public_api"`  // host:port nodes and the CLI dial
 	PublicNode     string `json:"public_node"` // host:port nodes dial for the event stream
 	AdminTokenHash string `json:"admin_token_hash"`
+	Guards         Guards `json:"guards,omitempty"`
 }
 
 const configFile = "coordinator.json"

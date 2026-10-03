@@ -48,6 +48,20 @@ type StartSpec struct {
 	ApprovalPolicy string // codex: never | on-request | untrusted
 	Sandbox        string // codex: read-only | workspace-write | danger-full-access
 	Env            map[string]string
+
+	// MCP is an MCP server to attach to this session only (the fleet
+	// tools). It carries a per-session credential, so it is never persisted.
+	MCP *MCPServer `json:"-"`
+}
+
+// MCPServer is a stdio MCP server launched by the harness for one session.
+type MCPServer struct {
+	Name    string
+	Command string
+	Args    []string
+	Env     map[string]string
+	// ToolTimeout bounds one tool call (fleet_ask can wait for a long time).
+	ToolTimeout int // seconds
 }
 
 // Event is what a handle reports; the node stamps id, seq and time.

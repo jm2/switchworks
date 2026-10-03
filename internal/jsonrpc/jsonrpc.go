@@ -37,11 +37,12 @@ const (
 
 // Message is one JSON-RPC message in any of its three shapes.
 type Message struct {
-	ID     json.RawMessage `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *Error          `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *Error          `json:"error,omitempty"`
 }
 
 // Error is a JSON-RPC error object.
@@ -79,6 +80,7 @@ type Conn struct {
 	pending map[int64]chan *Message
 
 	handler Handler
+	version string // "2.0" when the peer requires the jsonrpc field
 
 	done     chan struct{}
 	closeErr error
@@ -86,13 +88,29 @@ type Conn struct {
 }
 
 // NewConn starts reading from r in a goroutine and returns the connection.
+// Outgoing messages omit the "jsonrpc" field, as Codex's app-server does.
 func NewConn(r io.Reader, w io.Writer, h Handler, tap Tap) *Conn {
+	return NewConnWith(r, w, h, tap, Options{})
+}
+
+// Options adjust a connection.
+type Options struct {
+	// VersionField sends "jsonrpc":"2.0" on every message (strict JSON-RPC
+	// peers such as MCP clients require it).
+	VersionField bool
+}
+
+// NewConnWith is NewConn with options.
+func NewConnWith(r io.Reader, w io.Writer, h Handler, tap Tap, o Options) *Conn {
 	c := &Conn{
 		w:       w,
 		tap:     tap,
 		pending: make(map[int64]chan *Message),
 		handler: h,
 		done:    make(chan struct{}),
+	}
+	if o.VersionField {
+		c.version = "2.0"
 	}
 	go c.readLoop(r)
 	return c
@@ -174,8 +192,9 @@ func (c *Conn) dispatch(line []byte) {
 	}
 }
 
-func (c *Conn) write(v any) error {
-	b, err := json.Marshal(v)
+func (c *Conn) write(m Message) error {
+	m.JSONRPC = c.version
+	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}

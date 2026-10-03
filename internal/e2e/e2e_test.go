@@ -21,6 +21,7 @@ import (
 	"github.com/jm2/switchyard/internal/apiclient"
 	"github.com/jm2/switchyard/internal/codex/codextest"
 	"github.com/jm2/switchyard/internal/coord"
+	"github.com/jm2/switchyard/internal/mcp"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/node"
 	"github.com/jm2/switchyard/internal/store"
@@ -29,6 +30,11 @@ import (
 func TestMain(m *testing.M) {
 	if codextest.MaybeRun() {
 		return
+	}
+	// The node starts `<its binary> mcp` inside sessions; here its binary
+	// is this test binary.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Exit(mcp.Main(os.Stdin, os.Stdout, os.Stderr))
 	}
 	os.Exit(m.Run())
 }
@@ -380,10 +386,16 @@ func TestFleetEndToEnd(t *testing.T) {
 	}
 
 	// Node restart: the session is resumed and keeps working.
+	// A message sent while the host is down waits, and is delivered exactly
+	// once when it returns.
 	nd.stop(t)
 	waitStatus(t, c, sess.ID, model.StatusOffline)
-	if _, err := c.Send(ctx, sess.ID, "while down", "queue", ""); err == nil {
-		t.Fatal("send to an offline host must fail")
+	res, err := c.Send(ctx, sess.ID, "while down", "queue", "")
+	if err != nil || res.State != model.MsgPending {
+		t.Fatalf("send to an offline host: %+v %v", res, err)
+	}
+	if _, err := c.Send(ctx, sess.ID, "steer while down", "steer", ""); err == nil {
+		t.Fatal("steering an offline session must fail")
 	}
 	nd = startNode(t, nodeDir, fakeState)
 	waitOnline(t, c, "antec")
@@ -392,6 +404,10 @@ func TestFleetEndToEnd(t *testing.T) {
 		_ = json.Unmarshal(e.Payload, &p)
 		return e.Kind == model.KindSessionRegistered && p.Resumed
 	})
+	i = w.waitFor(t, "pending message delivered", i, agentSaid("echo: while down"))
+	if m, _ := c.Message(ctx, res.MessageID); m.State != model.MsgDelivered {
+		t.Fatalf("pending message: %+v", m)
+	}
 	waitStatus(t, c, sess.ID, model.StatusIdle)
 	if _, err := c.Send(ctx, sess.ID, "after node restart", "queue", ""); err != nil {
 		t.Fatal(err)
@@ -415,6 +431,17 @@ func TestFleetEndToEnd(t *testing.T) {
 	}
 	w2.waitFor(t, "reply after coordinator restart", n0, agentSaid("echo: after coordinator restart"))
 	w2.waitFor(t, "turn done", n0, turnEnded("completed"))
+	w2.mu.Lock()
+	downs := 0
+	for _, e := range w2.evs {
+		if agentSaid("echo: while down")(e) {
+			downs++
+		}
+	}
+	w2.mu.Unlock()
+	if downs != 1 {
+		t.Fatalf("the message sent while down was delivered %d times", downs)
+	}
 
 	// The stored log is gap-free and duplicate-free.
 	evs, err := c.Events(ctx, sess.ID, 0, 0)
