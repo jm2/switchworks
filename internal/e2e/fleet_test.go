@@ -157,10 +157,13 @@ func TestFleetMessaging(t *testing.T) {
 	i = wl.waitFor(t, "person's answer", i, agentSaidAll("kind=reply", "from=user:cli", "yes, ship it"))
 
 	// A person asks an agent and waits for the answer.
-	wait := 20
+	// The helper answers through a fresh `swyd mcp` process, which can be
+	// slow under the race detector on a busy CI runner.
+	wait := 60
 	ar, err := c.Ask(ctx, apiclient.PostMessage{To: "helper", Text: "your name?", WaitSeconds: &wait})
 	if err != nil || ar.Status != "replied" || ar.Reply != "answer: your name?" || ar.ReplyFrom != "buildbox/helper" {
-		t.Fatalf("person's ask: %+v %v", ar, err)
+		m, _ := c.Message(ctx, ar.MessageID)
+		t.Fatalf("person's ask: %+v %v\nask record: %+v\nhelper's last reply: %q", ar, err, m, lastAgentText(wh, j))
 	}
 
 	// Guards and errors come back to the agent as tool errors.
