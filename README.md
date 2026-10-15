@@ -101,7 +101,8 @@ on macOS and `C:\tools\swyd.exe` on Windows.
 git clone https://github.com/jm2/switchyard
 cd switchyard
 make build                         # ./swyd for this machine
-install -Dm755 swyd ~/.local/bin/swyd
+install -Dm755 swyd ~/.local/bin/swyd           # Linux
+sudo install -m755 swyd /usr/local/bin/swyd     # macOS
 ```
 
 To build for your other machines from one place:
