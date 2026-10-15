@@ -70,6 +70,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The D-Bus and Linux tray tests run against a private dbus-daemon.
+      - name: Install dbus-daemon
+        if: runner.os == 'Linux'
+        run: command -v dbus-daemon || { sudo apt-get update && sudo apt-get install -y dbus-daemon; }
+
       # Tests that need a real goose or codex binary skip themselves here.
       - name: Test
         run: go test -race -count=1 ./...
@@ -125,3 +130,167 @@ jobs:
         run: |
           go version
           "$(go env GOPATH)/bin/govulncheck" ./...
+
+  # The .deb, checked with lintian, plus the packaging scripts and data files.
+  package-deb:
+    name: Package (.deb, scripts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y lintian desktop-file-utils shellcheck
+
+      - name: Check scripts and data files
+        run: |
+          shellcheck build-aux/linux/*.sh build-aux/macos/*.sh build-aux/winget/*.sh
+          desktop-file-validate data/io.github.jm2.Switchyard.desktop
+          build-aux/winget/render.sh 0.0.0 "$(printf '0%.0s' {1..64})" "$RUNNER_TEMP/winget"
+
+      - name: Build and lint the .deb
+        run: |
+          make cross VERSION="v0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          make deb ARCH=amd64 VERSION="v0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          lintian --fail-on error,warning dist/switchyard-amd64.deb
+          sudo apt-get install -y ./dist/switchyard-amd64.deb
+          swyd version
+          systemd-analyze verify /usr/lib/systemd/user/swyd-node.service /usr/lib/systemd/user/swyd-coordinator.service
+          test -z "$(dpkg-deb --ctrl-tarfile dist/switchyard-amd64.deb | tar -t | grep -E 'postinst|preinst|prerm|postrm' || true)"
+
+  # The same spec COPR builds.
+  package-rpm:
+    name: Package (.rpm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: fedora:44
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y --setopt=install_weak_deps=False git-core golang make rpm-build systemd-rpm-macros desktop-file-utils
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the .rpm
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          top="$PWD/rpmbuild"
+          mkdir -p "$top/SOURCES"
+          version=$(sed -n 's/^Version: *//p' build-aux/rpm/switchyard.spec)
+          git archive --format=tar.gz --prefix="switchyard-$version/" -o "$top/SOURCES/v$version.tar.gz" HEAD
+          rpmbuild --define "_topdir $top" -bb build-aux/rpm/switchyard.spec
+          rpm -qlp "$top"/RPMS/*/*.rpm
+          test -z "$(rpm -qp --scripts "$top"/RPMS/*/*.rpm)"
+
+  package-arch:
+    name: Package (Arch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm git go
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the package
+        run: |
+          useradd -m builder
+          cp -r . /home/builder/switchyard
+          cp build-aux/arch/PKGBUILD /home/builder/switchyard/PKGBUILD
+          chown -R builder:builder /home/builder/switchyard
+          su builder -c "cd /home/builder/switchyard && SWYD_VERSION=v0.0.0-ci makepkg -f --noconfirm"
+          bsdtar -tf /home/builder/switchyard/switchyard-*.pkg.tar.zst
+
+  # Builds the installer, installs it for the current user without elevation,
+  # registers and removes the node's logon task, and uninstalls.
+  package-windows:
+    name: Package (Windows installer)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build swyd.exe, swydw.exe and swyd-tray.exe
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '0'
+          $ld = '-s -w -X github.com/jm2/switchyard/internal/version.Version=v0.0.0-ci'
+          go build -trimpath -ldflags "$ld" -o dist\windows-amd64\swyd.exe .\cmd\swyd
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swydw.exe .\cmd\swyd
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swyd-tray.exe .\cmd\swyd-tray
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --version 6.7.1 --allow-downgrade -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          iscc /Qp /DAppVersion=0.0.0-ci /DAppNumericVersion=0.0.0.0 "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchyard.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install, register the logon task, uninstall
+        shell: pwsh
+        run: |
+          $setup = Start-Process out\switchyard-windows-x86_64-setup.exe -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath'
+          if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchyard'
+          $swyd = Join-Path $app 'swyd.exe'
+          & $swyd version
+          & $swyd service install --no-start node
+          if ($LASTEXITCODE -ne 0) { throw 'service install failed' }
+          $task = "Switchyard node ($env:USERNAME)"
+          $t = Get-ScheduledTask -TaskName $task
+          $t.Principal | Format-List
+          if ($t.Principal.RunLevel -ne 'Limited') { throw "task runs elevated: $($t.Principal.RunLevel)" }
+          if ($t.Actions[0].Execute -notlike '*\swydw.exe') { throw "task runs $($t.Actions[0].Execute)" }
+          & $swyd service status node
+          & $swyd service uninstall node
+          if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          $un = Start-Process (Join-Path $app 'unins000.exe') -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if ($un.ExitCode -ne 0) { throw "uninstall exited $($un.ExitCode)" }
+
+  # Compiles the Swift menu-bar app and packs the .dmg (ad-hoc signed).
+  package-macos:
+    name: Package (macOS app)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build Switchyard.app and the .dmg
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/jm2/switchyard/internal/version.Version=v0.0.0-ci" -o dist/swyd ./cmd/swyd
+          bash build-aux/macos/build-dmg.sh v0.0.0-ci dist/swyd out
+          hdiutil attach -nobrowse -mountpoint /tmp/swyd-dmg out/switchyard-macos-aarch64.dmg
+          /tmp/swyd-dmg/Switchyard.app/Contents/MacOS/swyd service status --json
+          plutil -p /tmp/swyd-dmg/Switchyard.app/Contents/Info.plist | grep -F '"LSUIElement" => true'
+          hdiutil detach /tmp/swyd-dmg
