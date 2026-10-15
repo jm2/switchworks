@@ -333,10 +333,15 @@ function phoneActions() {
 const themes = ['dark', 'light', 'system'];
 const themeName = {dark: 'Dark', light: 'Light', system: 'Match system'};
 const themeIcon = {dark: 'moon', light: 'sun', system: 'auto'};
+// The active theme lives in memory; storage only restores and persists it,
+// so the menu still works when the browser blocks storage.
+let activeTheme = null;
 function storedTheme() {
+  if (activeTheme) return activeTheme;
   try { const t = localStorage.getItem('swyd-theme'); return themes.includes(t) ? t : 'dark'; } catch (e) { return 'dark'; }
 }
 function applyTheme(t) {
+  activeTheme = t;
   document.documentElement.dataset.theme = t;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim() || '#141517';
@@ -460,12 +465,19 @@ function newSessionComposer() {
     send.disabled = online.length === 0;
   }
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !narrow.matches) { e.preventDefault(); form.requestSubmit(); } });
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return; // Enter confirms an IME candidate
+    if (e.key === 'Enter' && !e.shiftKey && !narrow.matches) { e.preventDefault(); form.requestSubmit(); }
+  });
   const form = h('form', {class: 'composer', onsubmit: async (e) => {
     e.preventDefault();
     const dir = cwd.value.trim();
     if (!dir) { toast('Enter the folder on the host to work in'); cwd.focus(); return; }
-    const name = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '') || 'session';
+    const base = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 56) || 'session';
+    // Several sessions on one folder are common: number them.
+    const taken = new Set([...S.sessions.values()].filter((x) => x.host === hostSel.value).map((x) => x.name));
+    let name = base;
+    for (let i = 2; taken.has(name); i++) name = `${base}-${i}`;
     send.disabled = true;
     try {
       const s = await api('POST', '/v1/sessions', {host: hostSel.value, harness: harnessSel.value, name, cwd: dir, prompt: input.value.trim()});
@@ -562,6 +574,7 @@ function sessionView(id, full) {
   const info = h('details', {class: 'details'});
   const approvals = h('div', {});
   const log = h('div', {class: 'log'});
+  const placeholder = h('p', {class: 'empty'});
   const items = new Map(); // item id -> {el, ...}
   let es = null;
   let lastSeq = 0;
@@ -585,7 +598,7 @@ function sessionView(id, full) {
   const dock = h('div', {class: 'dock'}, approvals, form);
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
   input.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
     if (e.metaKey || e.ctrlKey || (!e.shiftKey && !narrow.matches)) { e.preventDefault(); form.requestSubmit(); }
   });
 
@@ -619,9 +632,11 @@ function sessionView(id, full) {
     if (!s) {
       setTop(lead('#/'), crumb('Session'));
       fill(info);
-      if (!log.childElementCount) log.append(h('p', {class: 'empty', text: S.ready ? 'This session does not exist.' : 'Loading…'}));
+      if (!placeholder.isConnected) log.append(placeholder);
+      placeholder.textContent = S.ready ? 'This session does not exist.' : 'Loading…';
       return;
     }
+    placeholder.remove();
     const busy = s.status === 'active' || s.status === 'waiting_approval';
     setTop(lead('#/'),
       h('span', {class: 'mark only-narrow ' + s.status, title: statusLabel[s.status] || s.status}),

@@ -37,11 +37,11 @@ stored seq. The node resends everything above the acked seq after any
 reconnect. That gives at-least-once delivery and exactly-once storage. Token
 deltas are coalesced on the node before they are numbered.
 
-**Antigravity runs one process per turn.** This uses only documented flags
-(`--output-format stream-json`, `--conversation`, `--model`,
-`--dangerously-skip-permissions`) with the prompt on stdin. The long-lived
-`--input-format stream-json` mode is faster, but its stdin schema is
-undocumented, so it waits until a real capture shows the shape.
+**Antigravity: one long-lived process per session** (see "ACP agents, and
+agy" below). Each prompt is a `{"event":"user",...}` line on the stdin of an
+`agy --output-format stream-json --input-format stream-json` process, now
+that agy documents that schema. The original one-process-per-turn mode
+(prompt on stdin, then stdin closed) remains as `agy.per_turn`.
 
 **Enrollment.** `swyd coordinator enroll-token <host>` mints a one-time,
 expiring token. The token carries the coordinator's API address and the CA's

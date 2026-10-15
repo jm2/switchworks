@@ -40,6 +40,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,10 @@ const (
 	EnvNoLoad = "SWYD_FAKE_ACP_NOLOAD"
 	// EnvResumeOnly makes the fake offer session/resume instead of load.
 	EnvResumeOnly = "SWYD_FAKE_ACP_RESUMEONLY"
+	// EnvSlowNew delays session/new by this many milliseconds.
+	EnvSlowNew = "SWYD_FAKE_ACP_SLOWNEW"
+	// EnvPidFile makes the fake append its pid to this file at start.
+	EnvPidFile = "SWYD_FAKE_ACP_PIDFILE"
 )
 
 // Env returns environment overrides that make a re-executed test binary act
@@ -148,6 +153,12 @@ func Run(in io.Reader, out io.Writer, stateDir string) {
 		stateDir = os.TempDir()
 	}
 	_ = os.MkdirAll(stateDir, 0o700)
+	if pf := os.Getenv(EnvPidFile); pf != "" {
+		if f, err := os.OpenFile(pf, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+			f.Close()
+		}
+	}
 	a := &agent{out: out, stateDir: stateDir, sessions: map[string]*Session{},
 		cancel: map[string]chan struct{}{}, waiting: map[string]chan json.RawMessage{}}
 	br := bufio.NewReaderSize(in, 1<<20)
@@ -237,6 +248,11 @@ func (a *agent) handle(line []byte) {
 		a.reply(m.ID, map[string]any{"protocolVersion": 1, "agentCapabilities": caps,
 			"authMethods": []any{}, "agentInfo": map[string]any{"name": "fake-acp", "version": "0.1"}})
 	case "session/new":
+		if ms, _ := strconv.Atoi(os.Getenv(EnvSlowNew)); ms > 0 {
+			a.mu.Unlock()
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			a.mu.Lock()
+		}
 		id := fmt.Sprintf("fake_%d", time.Now().UnixNano())
 		s := &Session{ID: id, Cwd: p.Cwd, McpServers: p.McpServers,
 			Config: map[string]string{"mode": "smart_approve", "model": "mock-small", "provider": "goose"}}

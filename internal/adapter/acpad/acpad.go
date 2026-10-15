@@ -325,6 +325,13 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 	}
 	h.configure(ctx, c, setup)
 	h.mu.Lock()
+	if h.closed {
+		// Stopped (or the node shut down) while the agent was starting:
+		// shutdown found no client to stop, so stop this one here.
+		h.mu.Unlock()
+		_ = c.Kill()
+		return adapter.ErrClosed
+	}
 	h.c = c
 	h.sessionID = setup.SessionID
 	h.mu.Unlock()

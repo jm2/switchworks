@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -630,4 +632,33 @@ func TestFleetToolsAutoApproved(t *testing.T) {
 	}
 	r2.waitFor(t, "approval", kind(model.KindApprovalRequested))
 	_ = h2.Interrupt(context.Background())
+}
+
+// A Stop or node shutdown that lands while the agent is starting must not
+// leave the agent process running.
+func TestCloseWhileStarting(t *testing.T) {
+	pids := filepath.Join(t.TempDir(), "pids")
+	a, _ := testAdapter(t, map[string]string{acptest.EnvSlowNew: "600", acptest.EnvPidFile: pids})
+	errc := make(chan error, 1)
+	go func() {
+		_, err := a.Start(context.Background(), adapter.StartSpec{Cwd: t.TempDir()}, newRec().sink)
+		errc <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // the agent is up; session/new is pending
+	_ = a.Close()
+	if err := <-errc; err == nil {
+		t.Fatal("Start succeeded on a closed adapter")
+	}
+	b, _ := os.ReadFile(pids)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid == 0 {
+		t.Fatal("fake agent never started")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for processAlive(t, pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("agent process %d still running after Close", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

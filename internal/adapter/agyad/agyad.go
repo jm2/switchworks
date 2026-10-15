@@ -240,8 +240,10 @@ func (h *handle) env() map[string]string {
 	return env
 }
 
-// startProc launches agy. Callers hold no locks.
-func (h *handle) startProc() (*proc.Process, error) {
+// startProc launches agy for turn t. Callers hold no locks. t.proc is set
+// before the reader starts, so a reader only ever treats its own turn as
+// ended when its process exits.
+func (h *handle) startProc(t *turnState) (*proc.Process, error) {
 	args := h.args()
 	stderr := h.a.cfg.Stderr
 	if stderr == nil {
@@ -258,6 +260,7 @@ func (h *handle) startProc() (*proc.Process, error) {
 	}
 	h.mu.Lock()
 	h.lastRep = nil // agy's cumulative usage restarts with each process
+	t.proc = p
 	h.mu.Unlock()
 	go h.read(p)
 	return p, nil
@@ -291,7 +294,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	perTurn := h.a.cfg.Options.PerTurn
 	if p == nil || perTurn {
 		var err error
-		if p, err = h.startProc(); err != nil {
+		if p, err = h.startProc(t); err != nil {
 			return fail(err)
 		}
 		h.mu.Lock()
@@ -299,7 +302,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		h.mu.Unlock()
 	}
 	h.mu.Lock()
-	t.proc = p
+	t.proc = p // the reused long-lived process (startProc set it otherwise)
 	h.mu.Unlock()
 	var line []byte
 	if perTurn {
@@ -349,8 +352,8 @@ func (h *handle) read(p *proc.Process) {
 		h.p = nil
 	}
 	t := h.turn
-	if t != nil && t.proc != nil && t.proc != p {
-		t = nil // the turn belongs to a newer process
+	if t != nil && t.proc != p {
+		t = nil // the turn belongs to another (newer) process
 	}
 	if t != nil {
 		h.turn = nil

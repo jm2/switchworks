@@ -15,6 +15,7 @@ import (
 	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/adapter/codexad"
 	"github.com/jm2/switchyard/internal/jsonrpc"
+	"github.com/jm2/switchyard/internal/model"
 )
 
 // ACPAgent configures one ACP agent harness (node.json "acp" entries).
@@ -48,7 +49,8 @@ type Options struct {
 	Logf   func(format string, args ...any)
 }
 
-var reserved = map[string]bool{codexad.Harness: true, agyad.Harness: true}
+// Names an ACP entry may not take: the other harnesses, and "" (codex).
+var reserved = map[string]bool{codexad.Harness: true, agyad.Harness: true, "": true}
 
 // acpConfigs returns the ACP agents, the built-in goose included unless
 // disabled.
@@ -71,7 +73,7 @@ func acpConfigs(o Options) map[string]acpad.Config {
 		out[acpad.Goose] = g
 	}
 	for name, a := range o.ACP {
-		if name == acpad.Goose || reserved[name] || a.Disabled || a.Bin == "" {
+		if name == acpad.Goose || reserved[name] || a.Disabled || a.Bin == "" || model.ValidateName("harness", name) != nil {
 			continue
 		}
 		out[name] = acpad.Config{Harness: name, Bin: a.Bin, Args: a.Args, Env: a.Env, Modes: a.Modes}
