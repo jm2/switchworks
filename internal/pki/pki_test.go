@@ -30,12 +30,12 @@ func TestCAIssueAndMutualTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, err := ca.SignNodeCSR(csrPEM, "antec")
+	certPEM, err := ca.SignNodeCSR(csrPEM, "devbox")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cert, _ := ParseCert(certPEM)
-	if cert.Subject.CommonName != "antec" {
+	if cert.Subject.CommonName != "devbox" {
 		t.Fatalf("CN %q", cert.Subject.CommonName)
 	}
 
@@ -74,7 +74,7 @@ func TestCAIssueAndMutualTLS(t *testing.T) {
 	}
 	_, _ = io.ReadAll(c)
 	c.Close()
-	if got := <-peer; got != "antec" {
+	if got := <-peer; got != "devbox" {
 		t.Fatalf("server saw peer %q", got)
 	}
 
@@ -140,7 +140,7 @@ func TestPinnedEnrollmentTLS(t *testing.T) {
 }
 
 func TestToken(t *testing.T) {
-	tok := Token{API: "coord.lan:7480", Secret: RandomSecret(16), Fingerprint: "ab", Host: "antec"}
+	tok := Token{API: "coord.lan:7480", Secret: RandomSecret(16), Fingerprint: "ab", Host: "devbox"}
 	s := tok.Encode()
 	got, err := DecodeToken(s)
 	if err != nil || got != tok {

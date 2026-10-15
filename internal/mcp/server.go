@@ -163,7 +163,7 @@ var Tools = []Tool{
 			"cwd":     str("Working directory on that host."),
 			"prompt":  str("The task."),
 			"name":    str("Session name (default: derived from yours)."),
-			"harness": map[string]any{"type": "string", "enum": []string{"codex", "agy"}, "description": "Agent harness (default codex)."},
+			"harness": map[string]any{"type": "string", "description": "Agent harness: codex (default), agy, goose, or another ACP agent the host offers (fleet_list shows each host's harnesses)."},
 			"model":   str("Model override."),
 			"labels":  map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Labels for @selectors."},
 		}, "host", "cwd", "prompt")},

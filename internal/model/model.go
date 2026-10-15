@@ -95,7 +95,7 @@ type Session struct {
 type SpawnSpec struct {
 	Host           string            `json:"host"`
 	Name           string            `json:"name"`
-	Harness        string            `json:"harness"` // "codex" (default) or "agy"
+	Harness        string            `json:"harness"` // "codex" (default), "agy", "goose" or a configured ACP agent
 	Cwd            string            `json:"cwd"`
 	Prompt         string            `json:"prompt,omitempty"`
 	Model          string            `json:"model,omitempty"`
@@ -237,7 +237,7 @@ func ValidateName(kind, s string) error {
 	return nil
 }
 
-// ValidateSessionName allows extra path segments ("kisak/polecat-3").
+// ValidateSessionName allows extra path segments ("team/worker-3").
 func ValidateSessionName(s string) error {
 	parts := strings.Split(s, "/")
 	if len(parts) > 4 {

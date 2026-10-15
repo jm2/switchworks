@@ -88,17 +88,17 @@ func TestFleetMessaging(t *testing.T) {
 	defer co.stop()
 	c := apiClient(t, coordDir)
 
-	_, _, ndA := enrollHost(t, c, "antec")
-	dirB, stateB, ndB := enrollHost(t, c, "boxy")
+	_, _, ndA := enrollHost(t, c, "devbox")
+	dirB, stateB, ndB := enrollHost(t, c, "buildbox")
 	defer func() { ndA.stop(t) }()
-	waitOnline(t, c, "antec")
-	waitOnline(t, c, "boxy")
+	waitOnline(t, c, "devbox")
+	waitOnline(t, c, "buildbox")
 
-	lead, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "lead", Cwd: work, Labels: map[string]string{"role": "lead"}})
+	lead, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "lead", Cwd: work, Labels: map[string]string{"role": "lead"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper, err := c.Spawn(ctx, model.SpawnSpec{Host: "boxy", Name: "helper", Cwd: work, Labels: map[string]string{"role": "helper"}})
+	helper, err := c.Spawn(ctx, model.SpawnSpec{Host: "buildbox", Name: "helper", Cwd: work, Labels: map[string]string{"role": "helper"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,13 +117,13 @@ func TestFleetMessaging(t *testing.T) {
 
 	// fleet_list sees both hosts.
 	say(lead, call("fleet_list", map[string]any{}))
-	i := wl.waitFor(t, "fleet_list", 0, agentSaidAll("tool fleet_list:", "boxy/helper", `"self": "antec/lead"`))
+	i := wl.waitFor(t, "fleet_list", 0, agentSaidAll("tool fleet_list:", "buildbox/helper", `"self": "devbox/lead"`))
 
 	// A cross-host ask, answered while the asker waits: the answer comes
 	// back inline, and is not also delivered as a turn.
-	say(lead, call("fleet_ask", map[string]any{"to": "boxy/helper", "text": "what is 6x7?", "wait_seconds": 30}))
-	j := wh.waitFor(t, "helper replied", 0, agentSaidAll("replied to antec/lead"))
-	i = wl.waitFor(t, "inline answer", i, agentSaidAll("tool fleet_ask: Answer from boxy/helper:", "answer: what is 6x7?"))
+	say(lead, call("fleet_ask", map[string]any{"to": "buildbox/helper", "text": "what is 6x7?", "wait_seconds": 30}))
+	j := wh.waitFor(t, "helper replied", 0, agentSaidAll("replied to devbox/lead"))
+	i = wl.waitFor(t, "inline answer", i, agentSaidAll("tool fleet_ask: Answer from buildbox/helper:", "answer: what is 6x7?"))
 	wl.waitFor(t, "ask turn done", i, turnEnded("completed"))
 	if txt := lastAgentText(wh, j); !strings.Contains(txt, `"inline": true`) && !strings.Contains(txt, `"state": "held"`) {
 		t.Fatalf("reply was neither inline nor held for the asker: %s", txt)
@@ -143,7 +143,7 @@ func TestFleetMessaging(t *testing.T) {
 	say(lead, call("fleet_ask", map[string]any{"to": "user:jm", "text": "ship it?", "wait_seconds": 0}))
 	i = wl.waitFor(t, "ask to a person", i, agentSaidAll(`"status": "pending"`, `"target": "user:jm"`))
 	inbox, err := c.Messages(ctx, apiclient.MessageQuery{Inbox: true})
-	if err != nil || len(inbox) != 1 || inbox[0].Kind != model.MsgAsk || inbox[0].From != "antec/lead" {
+	if err != nil || len(inbox) != 1 || inbox[0].Kind != model.MsgAsk || inbox[0].From != "devbox/lead" {
 		t.Fatalf("inbox: %+v %v", inbox, err)
 	}
 	if _, err := c.Reply(ctx, inbox[0].ID, "yes, ship it", ""); err != nil {
@@ -157,41 +157,41 @@ func TestFleetMessaging(t *testing.T) {
 	// A person asks an agent and waits for the answer.
 	wait := 20
 	ar, err := c.Ask(ctx, apiclient.PostMessage{To: "helper", Text: "your name?", WaitSeconds: &wait})
-	if err != nil || ar.Status != "replied" || ar.Reply != "answer: your name?" || ar.ReplyFrom != "boxy/helper" {
+	if err != nil || ar.Status != "replied" || ar.Reply != "answer: your name?" || ar.ReplyFrom != "buildbox/helper" {
 		t.Fatalf("person's ask: %+v %v", ar, err)
 	}
 
 	// Guards and errors come back to the agent as tool errors.
-	say(lead, call("fleet_send", map[string]any{"to": "antec/lead", "text": "me"}))
+	say(lead, call("fleet_send", map[string]any{"to": "devbox/lead", "text": "me"}))
 	i = wl.waitFor(t, "self-send refused", i, agentSaidAll("tool fleet_send: Error:", "cannot message itself"))
 	say(lead, call("fleet_send", map[string]any{"to": "nobody", "text": "hi"}))
 	i = wl.waitFor(t, "unknown target", i, agentSaidAll("tool fleet_send: Error:", `no live session named "nobody"`))
-	say(lead, call("fleet_stop", map[string]any{"session": "boxy/helper"}))
+	say(lead, call("fleet_stop", map[string]any{"session": "buildbox/helper"}))
 	i = wl.waitFor(t, "stop refused", i, agentSaidAll("tool fleet_stop: Error:", "only stop sessions they spawned"))
 
 	// Spawn: the child runs, finishes, and its parent hears about it.
-	say(lead, call("fleet_spawn", map[string]any{"host": "boxy", "cwd": work, "prompt": "build it", "name": "worker"}))
-	i = wl.waitFor(t, "spawned", i, agentSaidAll("tool fleet_spawn:", `"path": "boxy/worker"`))
-	i = wl.waitFor(t, "completion notice", i, agentSaidAll("kind=done", "boxy/worker", "echo: build it"))
-	worker, err := c.Resolve(ctx, "boxy/worker")
+	say(lead, call("fleet_spawn", map[string]any{"host": "buildbox", "cwd": work, "prompt": "build it", "name": "worker"}))
+	i = wl.waitFor(t, "spawned", i, agentSaidAll("tool fleet_spawn:", `"path": "buildbox/worker"`))
+	i = wl.waitFor(t, "completion notice", i, agentSaidAll("kind=done", "buildbox/worker", "echo: build it"))
+	worker, err := c.Resolve(ctx, "buildbox/worker")
 	if err != nil || worker.Parent != lead.ID {
 		t.Fatalf("worker: %+v %v", worker.Session, err)
 	}
 	say(lead, call("fleet_status", map[string]any{"session": "worker"}))
 	i = wl.waitFor(t, "status", i, agentSaidAll("tool fleet_status:", `"last_message": "echo: build it"`))
-	say(lead, call("fleet_stop", map[string]any{"session": "boxy/worker"}))
+	say(lead, call("fleet_stop", map[string]any{"session": "buildbox/worker"}))
 	i = wl.waitFor(t, "stopped child", i, agentSaidAll("tool fleet_stop:", `"status": "stopped"`))
 	waitStatus(t, c, worker.ID, model.StatusStopped)
 
 	// An agent message to an offline host waits and arrives exactly once.
 	ndB.stop(t)
 	waitStatus(t, c, helper.ID, model.StatusOffline)
-	say(lead, call("fleet_send", map[string]any{"to": "boxy/helper", "text": "while you were away"}))
+	say(lead, call("fleet_send", map[string]any{"to": "buildbox/helper", "text": "while you were away"}))
 	i = wl.waitFor(t, "pending send", i, agentSaidAll("tool fleet_send:", `"state": "pending"`))
 	ndB = startNode(t, dirB, stateB)
 	defer func() { ndB.stop(t) }()
-	waitOnline(t, c, "boxy")
-	wh.waitFor(t, "delivered after reconnect", j, agentSaidAll("from=antec/lead kind=notify", "while you were away"))
+	waitOnline(t, c, "buildbox")
+	wh.waitFor(t, "delivered after reconnect", j, agentSaidAll("from=devbox/lead kind=notify", "while you were away"))
 	waitStatus(t, c, helper.ID, model.StatusIdle)
 	time.Sleep(2500 * time.Millisecond) // a router retry pass
 	if n := countAgent(wh, agentSaidAll("while you were away")); n != 1 {
@@ -221,15 +221,15 @@ func TestFleetHopLimit(t *testing.T) {
 	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
 	defer co.stop()
 	c := apiClient(t, coordDir)
-	_, _, nd := enrollHost(t, c, "antec")
+	_, _, nd := enrollHost(t, c, "devbox")
 	defer func() { nd.stop(t) }()
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 
 	// "ping" forwards whatever it gets to "pong" and vice versa (each turn
 	// is a CALL fleet_send with the next hop's text), so the chain only
 	// ends when the router refuses.
-	a, _ := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "ping", Cwd: work})
-	b, _ := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "pong", Cwd: work})
+	a, _ := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "ping", Cwd: work})
+	b, _ := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "pong", Cwd: work})
 	wa := watch(c, a.ID)
 	defer wa.cancel()
 	waitStatus(t, c, a.ID, model.StatusIdle)

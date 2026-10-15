@@ -41,7 +41,15 @@ type SessionInfo struct {
 
 type ListResult struct {
 	Self     string        `json:"self"` // the calling session's path
+	Hosts    []HostInfo    `json:"hosts"`
 	Sessions []SessionInfo `json:"sessions"`
+}
+
+// HostInfo says which harnesses a host can start (for fleet_spawn).
+type HostInfo struct {
+	Host      string   `json:"host"`
+	Online    bool     `json:"online"`
+	Harnesses []string `json:"harnesses"`
 }
 
 type SendArgs struct {

@@ -280,7 +280,7 @@ func TestFleetEndToEnd(t *testing.T) {
 	c := apiClient(t, coordDir)
 
 	// Enrollment: a one-time token, used once.
-	tok, err := c.EnrollToken(ctx, "antec", time.Hour)
+	tok, err := c.EnrollToken(ctx, "devbox", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		t.Fatal("enrollment token was accepted twice")
 	}
 	nd := startNode(t, nodeDir, fakeState)
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 
 	hosts, _ := c.Hosts(ctx)
 	if len(hosts) != 1 || len(hosts[0].Adapters) == 0 || hosts[0].Adapters[0] != "codex" {
@@ -299,11 +299,11 @@ func TestFleetEndToEnd(t *testing.T) {
 	}
 
 	// Spawn with an initial prompt.
-	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "proj", Cwd: work, Prompt: "hello"})
+	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "proj", Cwd: work, Prompt: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sess.Path != "antec/proj" {
+	if sess.Path != "devbox/proj" {
 		t.Fatalf("path %s", sess.Path)
 	}
 	w := watch(c, sess.ID)
@@ -314,11 +314,11 @@ func TestFleetEndToEnd(t *testing.T) {
 	waitStatus(t, c, sess.ID, model.StatusIdle)
 
 	// Duplicate path is refused while the session is live.
-	if _, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "proj", Cwd: work}); err == nil {
+	if _, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "proj", Cwd: work}); err == nil {
 		t.Fatal("duplicate path accepted")
 	}
 	// Resolve by path and by unique name.
-	if s, err := c.Resolve(ctx, "antec/proj"); err != nil || s.ID != sess.ID {
+	if s, err := c.Resolve(ctx, "devbox/proj"); err != nil || s.ID != sess.ID {
 		t.Fatalf("resolve path: %v", err)
 	}
 	if s, err := c.Resolve(ctx, "proj"); err != nil || s.ID != sess.ID {
@@ -398,7 +398,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		t.Fatal("steering an offline session must fail")
 	}
 	nd = startNode(t, nodeDir, fakeState)
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 	i = w.waitFor(t, "resumed registration", i, func(e model.Event) bool {
 		var p model.SessionRegistered
 		_ = json.Unmarshal(e.Payload, &p)
@@ -420,7 +420,7 @@ func TestFleetEndToEnd(t *testing.T) {
 	co.stop()
 	co = startCoordinator(t, coordDir, apiAddr, nodeAddr)
 	defer co.stop()
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 	waitStatus(t, c, sess.ID, model.StatusIdle)
 	w2 := watch(c, sess.ID)
 	defer w2.cancel()
@@ -482,7 +482,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		t.Fatalf("send after stop: %v", err)
 	}
 	// The name can be reused once stopped.
-	if _, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "proj", Cwd: work}); err != nil {
+	if _, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "proj", Cwd: work}); err != nil {
 		t.Fatalf("respawn after stop: %v", err)
 	}
 	nd.stop(t)

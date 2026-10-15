@@ -4,10 +4,15 @@ package coord
 
 import (
 	"io/fs"
+	"mime"
 	"net/http"
 
 	"github.com/jm2/switchyard/internal/web"
 )
+
+// The UI embeds its fonts; Go's built-in MIME table does not know WOFF2,
+// and the pages are served with nosniff.
+func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
 const uiCSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"

@@ -1,5 +1,5 @@
-# System or user unit for the coordinator host (e.g. t240).
-#   swyd coordinator init --host t240.lan,<ip>,<tailnet name>
+# System or user unit for the coordinator host (e.g. coord).
+#   swyd coordinator init --host coord.lan,<ip>,<tailnet name>
 #   install -Dm644 swyd-coordinator.service ~/.config/systemd/user/
 #   systemctl --user enable --now swyd-coordinator && loginctl enable-linger "$USER"
 [Unit]

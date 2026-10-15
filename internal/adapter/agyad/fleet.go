@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package agyad
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+
+	"github.com/jm2/switchyard/internal/adapter"
+	"github.com/jm2/switchyard/internal/proc"
+)
+
+// workspaceMCP is agy's per-workspace MCP config, relative to the cwd.
+const workspaceMCP = ".agents/mcp_config.json"
+
+// setupFleetTools makes the fleet tools available to agy sessions in
+// spec.Cwd and returns warnings for anything it could not do. It never
+// removes or rewrites other entries, and never writes credentials to disk.
+func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
+	m := spec.MCP
+	var warns []string
+	cwd := spec.Cwd
+	if cwd == "" {
+		cwd = "."
+	}
+	cmd := m.Command
+	if abs, err := proc.LookPath(cmd); err == nil {
+		cmd = abs
+	}
+	args := m.Args
+	if args == nil {
+		args = []string{}
+	}
+	created, err := mergeMCPConfig(filepath.Join(cwd, workspaceMCP), m.Name, map[string]any{"command": cmd, "args": args})
+	if err != nil {
+		return append(warns, "fleet tools unavailable: "+err.Error())
+	}
+	if created {
+		if err := gitExclude(cwd, workspaceMCP); err != nil {
+			warns = append(warns, "could not add "+workspaceMCP+" to .git/info/exclude: "+err.Error())
+		}
+	}
+	if spec.Sandbox != "danger-full-access" {
+		path := cfg.Options.SettingsPath
+		if path == "" {
+			home := cfg.Env["HOME"]
+			if home == "" {
+				home, _ = os.UserHomeDir()
+			}
+			path = filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
+		}
+		rule := fmt.Sprintf("mcp(%s/*)", m.Name)
+		if err := addAllowRule(path, rule); err != nil {
+			warns = append(warns, fmt.Sprintf("could not add %s to %s (agy will soft-deny the fleet tools): %v", rule, path, err))
+		}
+	}
+	return warns
+}
+
+// mergeMCPConfig sets mcpServers[name] in an agy MCP config file, keeping
+// everything else. It reports whether it created the file.
+func mergeMCPConfig(path, name string, server map[string]any) (bool, error) {
+	doc := map[string]any{}
+	b, err := os.ReadFile(path)
+	created := os.IsNotExist(err)
+	switch {
+	case created:
+	case err != nil:
+		return false, err
+	case len(bytes.TrimSpace(b)) > 0:
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return false, fmt.Errorf("%s is not valid JSON; not touching it: %v", path, err)
+		}
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if servers == nil {
+		if _, exists := doc["mcpServers"]; exists {
+			return false, fmt.Errorf("%s: mcpServers is not an object; not touching it", path)
+		}
+		servers = map[string]any{}
+	}
+	if old, ok := servers[name].(map[string]any); ok {
+		same := old["command"] == server["command"] && reflect.DeepEqual(asStrings(old["args"]), server["args"])
+		if same {
+			return false, nil
+		}
+		// Keep fields the user added (disabledTools, cwd, ...).
+		for k, v := range old {
+			if _, set := server[k]; !set && k != "env" {
+				server[k] = v
+			}
+		}
+	}
+	servers[name] = server
+	doc["mcpServers"] = servers
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	return created, writeAtomic(path, append(out, '\n'))
+}
+
+func asStrings(v any) []string {
+	a, _ := v.([]any)
+	out := make([]string, 0, len(a))
+	for _, x := range a {
+		s, _ := x.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// addAllowRule adds rule to permissions.allow in agy's settings.json.
+func addAllowRule(path, rule string) error {
+	doc := map[string]any{}
+	b, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return err
+	case len(bytes.TrimSpace(b)) > 0:
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return fmt.Errorf("not valid JSON; not touching it: %v", err)
+		}
+	}
+	perms, _ := doc["permissions"].(map[string]any)
+	if perms == nil {
+		if _, exists := doc["permissions"]; exists {
+			return fmt.Errorf("permissions is not an object; not touching it")
+		}
+		perms = map[string]any{}
+	}
+	allow, _ := perms["allow"].([]any)
+	for _, r := range allow {
+		if r == rule || r == "mcp(*)" {
+			return nil
+		}
+	}
+	perms["allow"] = append(allow, rule)
+	doc["permissions"] = perms
+	out, err := json.MarshalIndent(doc, "", "    ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeAtomic(path, append(out, '\n'))
+}
+
+// gitExclude lists rel in the enclosing repository's .git/info/exclude so a
+// file Switchyard created does not show up in git status.
+func gitExclude(cwd, rel string) error {
+	dir, err := filepath.Abs(cwd)
+	if err != nil {
+		return err
+	}
+	for {
+		gitDir := filepath.Join(dir, ".git")
+		fi, err := os.Stat(gitDir)
+		if err == nil {
+			if !fi.IsDir() {
+				// A worktree or submodule: .git is a "gitdir: <path>" file.
+				b, err := os.ReadFile(gitDir)
+				if err != nil {
+					return err
+				}
+				p := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
+				if !filepath.IsAbs(p) {
+					p = filepath.Join(dir, p)
+				}
+				gitDir = p
+			}
+			r, err := filepath.Rel(dir, filepath.Join(cwd, rel))
+			if err != nil {
+				return err
+			}
+			r = "/" + filepath.ToSlash(r)
+			ex := filepath.Join(gitDir, "info", "exclude")
+			cur, _ := os.ReadFile(ex)
+			for _, l := range strings.Split(string(cur), "\n") {
+				if strings.TrimSpace(l) == r {
+					return nil
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(ex), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			prefix := ""
+			if len(cur) > 0 && !bytes.HasSuffix(cur, []byte("\n")) {
+				prefix = "\n"
+			}
+			_, err = fmt.Fprintf(f, "%s%s\n", prefix, r)
+			return err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil // not in a repository
+		}
+		dir = parent
+	}
+}
+
+func writeAtomic(path string, b []byte) error {
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".swyd-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), mode); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}

@@ -1,158 +1,352 @@
-# Switchyard (`swyd`)
+<img src="internal/web/assets/icon.svg" width="96" alt="Switchyard icon">
 
-A lean, self-hosted control plane for coding agents spread across several
-workstations: one view of every session on every host, and commands
-(spawn, message, steer, interrupt, approve, stop) that work across machines.
-It manages harnesses; it is not one. Codex does the agent work, driven through
-`codex app-server`. Antigravity's `agy` CLI is supported experimentally.
+# Switchyard
 
-*"Switchyard" is a working name (it collides with NVIDIA-NeMo/Switchyard). The
-name lives in `internal/version` plus the module path, so a rename is cheap.*
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-Pure Go, standard library only, one static binary per platform. No Node, npm
-or Electron anywhere.
+A self-hosted **control plane for coding agents** spread across several of your machines,
+written in dependency-free **Go**.
 
-## Status
+Switchyard shows every agent session on every host in one place, from a browser, your phone or
+the `swyd` command line. Start new sessions on any machine, answer their approval prompts, and
+message them while they work. Agents get fleet tools too, so one agent can ask another on a
+different machine for help. Switchyard manages harnesses; it is not one. The agent work is done
+by the tools you already use, under your own sign-ins.
 
-Milestones M0–M3 of the [design and implementation plan](https://claude.ai/code/artifact/05bb9e2b-e9c4-4a2a-b46a-bbb91235d342):
+![A session waiting for approval](docs/img/web-ui.png)
 
-- **M0**: Codex app-server client, `swyd dev run`. Verified against real Codex
-  0.160.0 on linux/amd64: streaming, approvals, interrupt, resume.
-- **M1**: coordinator + node + CLI: mTLS enrollment, append-only event log,
-  managed sessions across hosts, queue/steer delivery, approvals, survives
-  node and coordinator restarts. Verified with real processes on
-  linux/amd64. The other targets cross-compile but are untested.
-- **M2**: agent-to-agent messaging. Every managed Codex session gets fleet
-  tools over MCP (`fleet_list`, `fleet_send`, `fleet_ask`, `fleet_reply`,
-  `fleet_spawn`, ...). Messages are routed by the coordinator across hosts,
-  wait for offline hosts, and are bounded by hop, rate, spawn-depth and
-  token-budget guards. Verified with two real Codex app-servers on two
-  hosts. See [docs/messaging.md](docs/messaging.md).
-- **M3**: a phone-first web UI served by the coordinator: the live fleet,
-  session transcripts with approvals and a composer, an inbox for agents'
-  questions, message traffic and token usage. See
-  [docs/web-ui.md](docs/web-ui.md).
-- **Antigravity (`agy`)**: experimental adapter on documented headless
-  behavior only. Not yet run against a real `agy`. No fleet tools yet.
+> **Pre-release.** Switchyard is tested on Linux; the macOS and Windows builds have had little
+> real use. Build it from source for now. Per-area status and how each part was verified
+> are in [`docs/status.md`](docs/status.md).
 
-Not built yet: observed sessions (M4), ACP agents (M5). See
-[docs/status.md](docs/status.md).
+## Features
 
-![Web UI on a phone](docs/img/web-ui.png)
+| Feature | Status |
+| --------- | -------- |
+| Codex sessions through `codex app-server` | ✅ |
+| Goose sessions through the Agent Client Protocol (`goose acp`) | ✅ |
+| Other ACP agents, configured by name | ⚠️ Experimental |
+| Antigravity `agy` sessions through its headless mode | ⚠️ Experimental; not yet run against a real `agy` |
+| One fleet view of every session on every host | ✅ |
+| Start, stop, interrupt and resume sessions on any host | ✅ Sessions resume after a node or coordinator restart |
+| Approval prompts relayed to the web UI and CLI | ✅ Codex, Goose and other ACP agents |
+| Steer a running turn | ✅ Codex; other harnesses queue the message for the next turn |
+| Agent-to-agent messaging across machines (`fleet_ask`, `fleet_send`, `fleet_spawn`, ...) | ✅ Hop limits, rate limits, spawn depth and a daily token budget |
+| Questions from agents to you, with an inbox | ✅ |
+| Web UI for desktop and phone | ✅ Dark by default, with Light and Match-system themes |
+| Sign in on a phone with a one-time link | ✅ |
+| Live streaming of turns, diffs and token usage | ✅ |
+| Private CA, mTLS between nodes and coordinator, one-time enrollment tokens | ✅ |
+| No runtime dependencies; web UI loads nothing from the internet | ✅ |
+| Fake model provider for trying everything without spending tokens | ✅ OpenAI Responses and Anthropic Messages |
+| Linux | ✅ |
+| macOS, Windows | 🚧 Built and packaged with service files; little real use yet |
+| Push notifications | 🚧 Not yet; the tab title and inbox count show what needs you |
+| Event log retention | 🚧 Session logs are kept indefinitely |
+| Observing sessions started outside Switchyard | 🚧 Future release |
 
-## Quick start
+---
 
-On the coordinator host (e.g. t240):
+## Architecture
 
-```sh
-swyd coordinator init --host t240.lan,10.0.0.5   # first name = what nodes dial
-swyd coordinator run                              # API :7480, nodes :7481
+```text
+   browser · phone · swyd CLI
+               │  HTTPS + server-sent events (port 7480)
+     ┌─────────┴─────────┐
+     │    coordinator    │  one always-on machine:
+     │                   │  event log · message router · web UI
+     └─────────┬─────────┘
+               │  JSON lines over mTLS, opened by each node (port 7481)
+   ┌───────────┼────────────┐
+ node        node         node      one per workstation, running as you
+   │           │            │
+ codex       goose         agy      harnesses, over stdio
 ```
 
-On each workstation:
+- The **coordinator** stores every session's event log, routes messages between sessions and
+  people, and serves the web UI and API. It needs no harness installed.
+- A **node** runs on each workstation as your user, so sessions use your sign-ins,
+  repositories and toolchains. Nodes dial the coordinator and open no inbound ports; a node that
+  loses its connection keeps its sessions running and replays their events when it reconnects.
+- Each **harness** is driven over its own protocol: JSON-RPC on stdio for `codex app-server` and
+  ACP agents, and agy's `stream-json` output. `swyd mcp` gives each session its fleet tools.
+- Sessions are addressed as `host/name`, for example `devbox/api-server`.
 
-```sh
-swyd node enroll "$(ssh t240 swyd coordinator enroll-token antec)"
+Design decisions are recorded in [`docs/decisions.md`](docs/decisions.md).
+
+---
+
+## Installation
+
+Switchyard has no pre-built packages yet. Build it from source (below) and put the `swyd` binary
+on each machine's `PATH`. The examples use `~/.local/bin/swyd` on Linux, `/usr/local/bin/swyd`
+on macOS and `C:\tools\swyd.exe` on Windows.
+
+### Supported platforms
+
+| Platform | Architectures | Coordinator | Node |
+| ---------- | --------------- | ------------- | ------ |
+| Linux | x86_64, ARM64 | ✅ | ✅ |
+| macOS | Apple silicon | 🚧 Little real use yet | 🚧 Little real use yet |
+| Windows | x86_64 | 🚧 | 🚧 Not yet tested on real hardware |
+
+## Building from Source
+
+### Prerequisites
+
+- Go 1.24 or newer
+- `make` (optional; the targets are short `go build` commands)
+
+```bash
+git clone https://github.com/jm2/switchyard
+cd switchyard
+make build                         # ./swyd for this machine
+install -Dm755 swyd ~/.local/bin/swyd           # Linux
+sudo install -m755 swyd /usr/local/bin/swyd     # macOS
+```
+
+To build for your other machines from one place:
+
+```bash
+make cross   # dist/swyd-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64.exe}
+```
+
+---
+
+## Setup
+
+### 1. The coordinator
+
+Pick a machine that is always on and that every workstation can reach. A
+small home server is ideal.
+
+```bash
+swyd coordinator init --host coord.lan,10.0.0.5
+```
+
+`--host` lists the names and addresses the server certificate covers. The
+first one is what nodes and the CLI will dial. Add a Tailscale name too if
+you use one. `init` creates a private CA, the server certificate and an
+admin token, and installs a CLI config for your user on this machine.
+
+Start it, ideally as a service (the unit is in
+[contrib/systemd](contrib/systemd/swyd-coordinator.service)):
+
+```bash
+swyd coordinator run
+```
+
+It listens on port **7480** (web UI, API and CLI) and **7481** (nodes).
+Allow both through the firewall from your workstations.
+
+### 2. Each workstation
+
+Install and sign in to the harnesses you want to use there (see
+[Harnesses](#harnesses)). Then enroll the machine with a one-time token
+from the coordinator. The token carries the coordinator's address and CA
+fingerprint, so there is nothing else to copy:
+
+```bash
+# on the coordinator
+swyd coordinator enroll-token devbox
+# on the workstation, with the token it printed
+swyd node enroll <token>
+```
+
+or in one step over SSH:
+
+```bash
+swyd node enroll "$(ssh coord.lan swyd coordinator enroll-token devbox)"
+```
+
+The host name you give the token (`devbox`) is how the fleet names that
+machine. Then run the node as your user, ideally as a service so it
+survives logouts and reboots:
+
+| OS | Service file |
+| --- | --- |
+| Linux | [systemd user unit](contrib/systemd/swyd-node.service) (enable lingering, as the file explains) |
+| macOS | [LaunchAgent](contrib/launchd/dev.switchyard.node.plist) (set `PATH` so your harnesses resolve) |
+| Windows | [logon task](contrib/windows/install-node-task.ps1) (runs in your session, so it can use your sign-ins) |
+
+or in a terminal:
+
+```bash
 swyd node run
 ```
 
-From anywhere with the CLI config (`swyd coordinator cli-config` on the
-coordinator prints it; save it as `~/.config/swyd/cli.json`):
+`swyd hosts` on the coordinator should now show the machine as online,
+with the harnesses it found.
 
-```sh
-swyd hosts
-swyd spawn macmini-m1 --cwd ~/src/CroMagRally --name cmr-arm "build and run the tests"
-swyd attach macmini-m1/cmr-arm            # live stream; Ctrl-C detaches
-swyd send cmr-arm "also check the Windows linker flags"   # queued for the next turn
-swyd send --steer cmr-arm "skip the docs for now"         # into the running turn
-swyd approve cmr-arm <approval-id> accept
-swyd ls
-swyd stop cmr-arm
+### 3. The CLI on other machines
+
+The CLI works anywhere that can reach port 7480. Copy its config from the
+coordinator:
+
+```bash
+ssh coord.lan swyd coordinator cli-config > ~/.config/swyd/cli.json
 ```
 
-Session paths are `host/name`. A bare name works when it is unique across the
-fleet.
+The file holds the admin token; keep it private (`chmod 600`).
 
-Agents can now message each other. A prompt like "ask boxy/helper whether
-the ARM build passes" makes Codex call `fleet_ask`. You see the traffic and
-answer agents' questions from the CLI:
+### 4. The web UI
 
-```sh
+Open `https://coord.lan:7480/`. Because the certificate comes from the
+fleet's own CA, the browser warns at first. Either:
+
+- install the CA: open `https://coord.lan:7480/ca.crt` and trust it (on
+  iOS: Settings, General, About, Certificate Trust Settings), or
+- put the UI behind `tailscale serve` for a publicly trusted certificate
+  (see [docs/web-ui.md](docs/web-ui.md)).
+
+Sign in with the token from `cli.json`, or run `swyd ui-link` anywhere the
+CLI works and open the one-time link it prints. That is the easy way to
+sign in on a phone.
+
+---
+
+## Usage
+
+### Your first session
+
+In the web UI, describe a task in the box at the bottom of the home screen, pick the host,
+harness and folder, and send. Or from the CLI:
+
+```bash
+swyd spawn devbox --cwd ~/src/myapp --name myapp "run the tests and fix what fails"
+swyd attach devbox/myapp         # follow it live; Ctrl-C detaches
+```
+
+### Everyday commands
+
+```bash
+swyd ls                                   # every session on every host
+swyd send myapp "also update the changelog"          # next turn
+swyd send --steer myapp "skip the docs for now"      # into the running turn (Codex)
+swyd approve myapp <approval-id> accept   # or answer in the web UI
+swyd interrupt myapp
+swyd stop myapp                           # history is kept
+```
+
+A bare session name works when it is unique across the fleet.
+
+Agents get fleet tools (`fleet_list`, `fleet_ask`, `fleet_send`,
+`fleet_spawn`, ...), so a prompt like "ask buildbox/helper whether the ARM
+build passes" makes one agent ask another on a different machine. You can follow and join in:
+
+```bash
 swyd messages                 # who said what to whom
 swyd inbox                    # questions agents asked you
 swyd reply <ask-id> "ship it"
-swyd ask helper "status?"     # ask an agent yourself, wait for the answer
+swyd ask helper "status?"     # ask an agent yourself and wait for the answer
 ```
 
-The same things are in the browser at `https://t240.lan:7480/`. Run
-`swyd ui-link` to get a one-time sign-in link for your phone.
-[docs/web-ui.md](docs/web-ui.md) covers the certificate and
-`tailscale serve`.
+Guards in `coordinator.json` bound agent-to-agent traffic: hop limits,
+per-pair rate limits, spawn depth, which hosts agents may spawn on, and a
+fleet-wide daily token budget (`guards.max_daily_tokens`). Set a budget
+before letting agents spawn freely. See [docs/messaging.md](docs/messaging.md).
 
-## Harness requirements
+### Harnesses
 
-- **Codex**: `codex` on PATH, signed in (or providers configured) on that
-  host. Codex 0.160.0 only accepts providers that speak the **OpenAI
-  Responses API** (`wire_api = "chat"` is rejected). Check that GLM,
-  DeepSeek, MiMo or others expose a Responses-compatible endpoint, or put a
-  translating proxy in front of them.
-- **Antigravity**: `agy` on PATH and signed in once interactively. Headless
-  mode needs an unlocked OS keyring. Approvals cannot be relayed: either set
-  allow rules in agy's `settings.json`, or spawn with `--sandbox
-  danger-full-access`, which passes `--dangerously-skip-permissions`.
+Each node offers the harnesses it finds on that machine. Configure them in
+the node's `node.json` (in `~/.config/swyd/node/` on Linux,
+`~/Library/Application Support/swyd/node/` on macOS,
+`%AppData%\swyd\node\` on Windows); restart the node after editing.
 
-Per-host harness settings and spawn defaults live in the node's
-`node.json` (`codex.bin`, `codex.home`, `agy.bin`,
-`default_approval_policy`, `default_sandbox`).
+- **Codex**: `codex` on `PATH` and signed in, or with providers configured
+  in its `config.toml`. Codex only accepts providers that speak the OpenAI
+  Responses API.
+- **Goose**: `goose` on `PATH` with a provider configured (`goose
+  configure`, or environment variables in `node.json`). DeepSeek, GLM and
+  MiMo work directly through their Anthropic-compatible endpoints.
+- **Other ACP agents**: add them by name, for example
+  `"acp": {"opencode": {"bin": "opencode", "args": ["acp"]}}`.
+- **agy** (experimental): `agy` on `PATH`, signed in once interactively.
+  Headless agy cannot ask for approval, so allow tools in its settings or
+  spawn with sandbox `danger-full-access`.
 
-## Smoke test without spending tokens
+[docs/harnesses.md](docs/harnesses.md) covers each one: approvals, models
+and providers, fleet tools, and what each supports.
 
-```sh
-swyd dev mock-provider --codex-home /tmp/mock-home &    # fake Responses endpoint
-swyd dev run --codex-home /tmp/mock-home --approval never "hello"
-echo accept | swyd dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
+`node.json` also sets spawn defaults (`default_approval_policy`,
+`default_sandbox`) and the harness binaries (`codex.bin`, `agy.bin`, ...).
+
+### Trying it without spending tokens
+
+`swyd dev mock-provider` serves a fake model that speaks both the OpenAI
+Responses API and the Anthropic Messages API, scripted by the prompt:
+
+```bash
+swyd dev mock-provider --codex-home /tmp/mock-home &
+swyd dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 ```
 
-To smoke-test a whole node this way, point its `codex.home` at the mock home.
-`swyd dev run --record FILE` captures the raw protocol stream of any harness
-(use it to pin down agy's event schema).
+`swyd dev run` drives one turn of any harness directly, without a node or
+coordinator: a quick check that a harness works on a machine. With
+`--record FILE` it captures the raw protocol stream.
 
-## Building and testing
+---
 
-```sh
-make test        # unit + in-process fleet tests, race detector
-make test-codex  # plus the real-Codex integration test (needs codex on PATH)
-make cross       # dist/swyd-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64.exe}
+## Development
+
+```bash
+make test        # vet, then unit and in-process fleet tests with the race detector
+make test-codex  # also the real-Codex integration test (needs codex on PATH; no tokens spent)
+make cross       # check that every release target still builds
 ```
 
-## Layout
+The real-Goose tests run whenever `goose` is on `PATH` (or `SWYD_GOOSE_BIN` is set), against the
+built-in mock provider. The protocols are described in
+[`docs/codex-app-server-notes.md`](docs/codex-app-server-notes.md),
+[`docs/messaging.md`](docs/messaging.md), [`docs/harnesses.md`](docs/harnesses.md) and
+[`docs/web-ui.md`](docs/web-ui.md).
 
-| Path | What |
-| --- | --- |
-| `cmd/swyd` | the single binary |
-| `internal/codex` | app-server JSON-RPC client and protocol subset, with a contract test against the committed schema |
-| `internal/adapter/{codexad,agyad}` | harness adapters behind `internal/adapter` |
-| `internal/node` | sessions, spool, delivery queue, coordinator link, local API for `swyd mcp` |
-| `internal/coord` | node listener, event store, projection, message router, HTTPS API + SSE |
-| `internal/mcp` | `swyd mcp`: the fleet tools as a stdio MCP server |
-| `internal/fleet` | fleet operation arguments and results |
-| `internal/web` | the web UI (embedded HTML, CSS, JS) |
-| `internal/store` | storage interface + file-backed implementation |
-| `internal/pki` | private CA, enrollment tokens |
-| `internal/wire` | node <-> coordinator protocol |
-| `internal/cli`, `internal/apiclient`, `internal/render` | CLI |
-| `schema/codex/0.160.0` | `codex app-server generate-json-schema --experimental` output |
-| `docs/` | findings, decisions, protocol notes, status |
-| `contrib/` | service units |
+Switchyard uses only the Go standard library.
+
+## Project Structure
+
+```text
+cmd/swyd/                 # The single binary
+internal/
+├── coord/                # Node listener, event store, message router, HTTPS API and SSE
+├── node/                 # Sessions, spool, delivery queue, coordinator link, local API
+├── adapter/
+│   ├── codexad/          # Codex (codex app-server)
+│   ├── acpad/            # Goose and other ACP agents
+│   └── agyad/            # Antigravity agy (headless stream-json)
+├── harness/              # Harness registry and node.json harness config
+├── codex/                # app-server JSON-RPC client, contract-tested against schema/codex
+├── acp/                  # ACP client; acptest is a scripted fake agent
+├── jsonrpc/              # Shared JSON-RPC 2.0 over stdio
+├── mcp/                  # swyd mcp: the fleet tools as a stdio MCP server
+├── fleet/                # Fleet operations: arguments and results
+├── web/                  # Web UI (embedded HTML, CSS, JS and fonts)
+├── store/                # Storage interface and file-backed implementation
+├── pki/                  # Private CA and enrollment tokens
+├── wire/                 # Node ↔ coordinator protocol
+├── cli/, apiclient/, render/  # The swyd command line
+├── devrun/               # swyd dev run and swyd dev mock-provider
+└── e2e/                  # In-process multi-host fleet tests
+schema/codex/             # codex app-server generate-json-schema --experimental output
+contrib/                  # systemd, launchd and Windows service files
+docs/                     # Design notes, protocols and status
+```
+
+## Scope
+
+Switchyard is a control plane, not an agent or a model gateway. It does not edit code itself,
+proxy model traffic, or store provider keys beyond what you put in a node's `node.json`. It is
+built for one person's (or one small team's) machines behind a private network, not as a
+multi-tenant service.
+
+---
 
 ## License
 
-Copyright (C) 2026 the Switchyard authors.
+Switchyard is licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
-Switchyard is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation, either version 3 of the License, or (at your option) any later
-version. See [LICENSE](LICENSE).
+The web UI embeds the Onest and JetBrains Mono fonts, licensed under the SIL
+Open Font License 1.1; see `internal/web/assets/fonts`.
 
 `schema/codex/` and `internal/codex/testdata/` contain output generated by
 [openai/codex](https://github.com/openai/codex) (Apache-2.0); see

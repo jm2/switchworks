@@ -81,22 +81,22 @@ func TestRealCodexFleetAsk(t *testing.T) {
 	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
 	defer co.stop()
 	c := apiClient(t, coordDir)
-	na := startRealNode(t, c, "antec", bin, mock)
+	na := startRealNode(t, c, "devbox", bin, mock)
 	defer na.stop(t)
-	nb := startRealNode(t, c, "boxy", bin, mock)
+	nb := startRealNode(t, c, "buildbox", bin, mock)
 	defer nb.stop(t)
-	waitOnline(t, c, "antec")
-	waitOnline(t, c, "boxy")
+	waitOnline(t, c, "devbox")
+	waitOnline(t, c, "buildbox")
 
 	work := t.TempDir()
 	spec := func(host, name string) model.SpawnSpec {
 		return model.SpawnSpec{Host: host, Name: name, Cwd: work, ApprovalPolicy: "never", Sandbox: "read-only"}
 	}
-	lead, err := c.Spawn(ctx, spec("antec", "lead"))
+	lead, err := c.Spawn(ctx, spec("devbox", "lead"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper, err := c.Spawn(ctx, spec("boxy", "helper"))
+	helper, err := c.Spawn(ctx, spec("buildbox", "helper"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +107,11 @@ func TestRealCodexFleetAsk(t *testing.T) {
 	waitStatus(t, c, lead.ID, model.StatusIdle)
 	waitStatus(t, c, helper.ID, model.StatusIdle)
 
-	if _, err := c.Send(ctx, lead.ID, call("fleet_ask", map[string]any{"to": "boxy/helper", "text": "what is 6x7?", "wait_seconds": 60}), "queue", ""); err != nil {
+	if _, err := c.Send(ctx, lead.ID, call("fleet_ask", map[string]any{"to": "buildbox/helper", "text": "what is 6x7?", "wait_seconds": 60}), "queue", ""); err != nil {
 		t.Fatal(err)
 	}
 	wh.waitFor(t, "helper replied via fleet_reply", 0, agentSaidAll("replied:", "reply_id"))
-	i := wl.waitFor(t, "lead got the answer", 0, agentSaidAll("tool fleet_ask:", "Answer from boxy/helper", "answer: what is 6x7?"))
+	i := wl.waitFor(t, "lead got the answer", 0, agentSaidAll("tool fleet_ask:", "Answer from buildbox/helper", "answer: what is 6x7?"))
 	wl.waitFor(t, "lead turn done", i, turnEnded("completed"))
 
 	// The tool call shows up as Codex's own mcpToolCall item.

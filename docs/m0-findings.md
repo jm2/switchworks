@@ -18,7 +18,7 @@ approvals and token usage (`thread/tokenUsage/updated`, including
 = "chat"` is no longer supported" (openai/codex discussion #7782). Any GLM,
 DeepSeek or MiMo endpoint used through Codex must be Responses-compatible, or
 sit behind a translating proxy. This needs checking per provider before
-choosing Codex as the polecat harness.
+making Codex the default harness.
 
 **Does the interactive TUI expose a control socket (observed mode, M4)?**
 Yes, indirectly, and better than expected. In 0.160.0 the TUI does not embed
@@ -73,7 +73,7 @@ decisions that were not offered. The schema had to be generated with
 
 - **Windows 11**: whether `codex app-server` over stdio, the job-object
   teardown, and the daemon's Unix socket (AF_UNIX exists on Windows 10 1803+)
-  all behave. Run `swyd dev run` on antec-win first.
+  all behave. Run `swyd dev run` on winbox first.
 - **macOS and Fedora aarch64**: binaries cross-compile but were not run.
 - **Antigravity**: no `agy` binary or Google sign-in was available. The
   adapter follows the documented headless flags only. Record a real stream

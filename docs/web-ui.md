@@ -1,29 +1,46 @@
-# Web UI (M3)
+# Web UI
 
 The coordinator serves a web UI on its API port: `https://<coordinator>:7480/`.
 It is built for a phone first and works on a desktop browser too. It is plain
 HTML, CSS and JavaScript embedded in the `swyd` binary: no build step, no
 framework, and nothing loaded from anywhere else.
 
-![Fleet, approval, inbox and traffic views](img/web-ui.png)
+![A session waiting for approval, on a desktop](img/web-ui.png)
+
+## Layout
+
+On a wide screen a sidebar holds New session, Inbox, Traffic and Usage,
+every host with its sessions, a host filter and Settings. On a phone the
+same sidebar opens from the menu button, the home screen is the host list,
+and the composer is docked at the bottom of the screen.
+
+The UI is dark by default. Settings switches between Dark, Light and Match
+system; the choice is kept per browser.
 
 ## Views
 
-- **Fleet**: every host and its sessions, live. Shows status, the last thing
-  each agent said, tokens, sessions waiting for approval, and questions
-  agents have asked you.
-- **Session**: the live transcript (messages, routed messages with their
-  sender, commands, tool calls, file changes, turn results). Pending
-  approvals sit above the composer, with the decisions the harness offers.
-  The composer sends with **Queue**, **Steer** or **Interrupt**, or as an
-  **Ask** whose answer lands in your inbox. Interrupt and Stop are in the
-  header.
+- **Home**: every host and its sessions, live, newest first, with each
+  session's last reply. Sessions waiting for approval and questions agents
+  asked you are listed at the top. The composer at the bottom starts a
+  session: describe the task, pick the host, harness and folder, and send.
+  "More options" opens the full form.
+- **Session**: the live transcript. Agent replies, your messages, messages
+  routed from other sessions, and tool calls as cards (commands with their
+  output, file changes with a diff, MCP tools, plans, thinking). Pending
+  approvals sit above the composer with the decisions the harness offers.
+  The composer delivers on the **next turn**, **steers** the running one,
+  **interrupts and sends**, or **asks** with the answer going to your
+  inbox. Interrupt and Stop are in the top bar; session details are at the
+  top of the transcript.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
   reply box each, and other messages addressed to people.
 - **Traffic**: every routed message, filterable, with its delivery state.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.
-- **New session**: spawn on any online host.
+- **New session**: every spawn option.
+
+The UI embeds its fonts (Onest and JetBrains Mono, both SIL OFL 1.1; see
+`internal/web/assets/fonts`) and loads nothing from the internet.
 
 Everything updates over two SSE streams: `GET /v1/stream` for the fleet
 (a snapshot, then session, host and message updates) and the existing
@@ -43,7 +60,7 @@ warn about it at first. There are two ways to fix that:
    ```json
    // coordinator.json
    "http_listen": "127.0.0.1:7482",
-   "public_ui": "https://t240.your-tailnet.ts.net"
+   "public_ui": "https://coord.your-tailnet.ts.net"
    ```
 
    ```sh

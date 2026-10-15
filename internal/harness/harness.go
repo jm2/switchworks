@@ -11,10 +11,24 @@ import (
 	"sort"
 
 	"github.com/jm2/switchyard/internal/adapter"
+	"github.com/jm2/switchyard/internal/adapter/acpad"
 	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/adapter/codexad"
 	"github.com/jm2/switchyard/internal/jsonrpc"
+	"github.com/jm2/switchyard/internal/model"
 )
+
+// ACPAgent configures one ACP agent harness (node.json "acp" entries).
+type ACPAgent struct {
+	Bin  string            `json:"bin,omitempty"`
+	Args []string          `json:"args,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
+	// Modes maps approval policies (never, on-request, untrusted) to the
+	// agent's session mode ids.
+	Modes map[string]string `json:"modes,omitempty"`
+	// Disabled hides a built-in agent (goose) even when it is installed.
+	Disabled bool `json:"disabled,omitempty"`
+}
 
 // Options configure every adapter a host may run.
 type Options struct {
@@ -24,13 +38,59 @@ type Options struct {
 	AgyBin    string            // default "agy"
 	AgyArgs   []string          // extra agy flags
 	AgyEnv    map[string]string
-	Stderr    io.Writer
-	Tap       jsonrpc.Tap // raw protocol capture (dev run --record)
-	Logf      func(format string, args ...any)
+	Agy       agyad.Options // agy behavior (stream mode, fleet tools)
+
+	// ACP lists ACP agents by harness name. "goose" is built in (goose acp)
+	// and its entry here, if any, overrides the defaults.
+	ACP map[string]ACPAgent
+
+	Stderr io.Writer
+	Tap    jsonrpc.Tap // raw protocol capture (dev run --record)
+	Logf   func(format string, args ...any)
 }
 
-// Names lists every harness this build supports.
-func Names() []string { return []string{codexad.Harness, agyad.Harness} }
+// Names an ACP entry may not take: the other harnesses, and "" (codex).
+var reserved = map[string]bool{codexad.Harness: true, agyad.Harness: true, "": true}
+
+// acpConfigs returns the ACP agents, the built-in goose included unless
+// disabled.
+func acpConfigs(o Options) map[string]acpad.Config {
+	out := map[string]acpad.Config{}
+	g := acpad.GooseConfig()
+	if a, ok := o.ACP[acpad.Goose]; ok {
+		if a.Disabled {
+			g.Bin = ""
+		}
+		if a.Bin != "" {
+			g.Bin = a.Bin
+		}
+		if len(a.Args) > 0 {
+			g.Args = a.Args
+		}
+		g.Env, g.Modes = a.Env, a.Modes
+	}
+	if g.Bin != "" {
+		out[acpad.Goose] = g
+	}
+	for name, a := range o.ACP {
+		if name == acpad.Goose || reserved[name] || a.Disabled || a.Bin == "" || model.ValidateName("harness", name) != nil {
+			continue
+		}
+		out[name] = acpad.Config{Harness: name, Bin: a.Bin, Args: a.Args, Env: a.Env, Modes: a.Modes}
+	}
+	return out
+}
+
+// Names lists every harness this configuration supports.
+func Names(o Options) []string {
+	names := []string{codexad.Harness, agyad.Harness}
+	var acpNames []string
+	for n := range acpConfigs(o) {
+		acpNames = append(acpNames, n)
+	}
+	sort.Strings(acpNames)
+	return append(names, acpNames...)
+}
 
 // New builds the adapter for harness.
 func New(name string, o Options) (adapter.Adapter, error) {
@@ -41,10 +101,14 @@ func New(name string, o Options) (adapter.Adapter, error) {
 		}), nil
 	case agyad.Harness:
 		return agyad.New(agyad.Config{
-			Bin: o.AgyBin, ExtraArgs: o.AgyArgs, Env: o.AgyEnv, Stderr: o.Stderr, Tap: o.Tap, Logf: o.Logf,
+			Bin: o.AgyBin, ExtraArgs: o.AgyArgs, Env: o.AgyEnv, Options: o.Agy, Stderr: o.Stderr, Tap: o.Tap, Logf: o.Logf,
 		}), nil
 	}
-	return nil, fmt.Errorf("unknown harness %q (supported: %v)", name, Names())
+	if c, ok := acpConfigs(o)[name]; ok {
+		c.Stderr, c.Tap, c.Logf = o.Stderr, o.Tap, o.Logf
+		return acpad.New(c), nil
+	}
+	return nil, fmt.Errorf("unknown harness %q (supported: %v)", name, Names(o))
 }
 
 // Available returns the harnesses whose binaries resolve on this host.
@@ -55,6 +119,11 @@ func Available(o Options) []string {
 	}
 	if bin := orDefault(o.AgyBin, "agy"); found(bin) {
 		out = append(out, agyad.Harness)
+	}
+	for name, c := range acpConfigs(o) {
+		if found(c.Bin) {
+			out = append(out, name)
+		}
 	}
 	sort.Strings(out)
 	return out

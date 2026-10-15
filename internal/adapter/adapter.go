@@ -41,7 +41,7 @@ type Input struct {
 
 // StartSpec describes a new or resumed session.
 type StartSpec struct {
-	Name           string // session path, e.g. "antec/cmr-port"; used as the thread name
+	Name           string // session path, e.g. "devbox/app-port"; used as the thread name
 	Cwd            string
 	Model          string
 	Provider       string
@@ -99,7 +99,7 @@ type Handle interface {
 }
 
 // Discoverer is implemented by adapters that can list sessions they did not
-// start (observed mode, milestone M4). Not implemented yet.
+// start (observed mode). Not implemented yet.
 type Discoverer interface {
 	Discover(ctx context.Context) ([]model.NativeRef, error)
 }
