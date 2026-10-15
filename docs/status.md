@@ -33,10 +33,11 @@ real-Codex test.
 ## Known gaps and risks
 
 - **Agents with a shell are inside the node's trust boundary.** The guards
-  limit what agents do through the fleet tools; a sandbox (Codex
-  `workspace-write`/`read-only`) is what keeps an agent away from the node's
-  key and other sessions' tokens. Goose and other ACP agents have no OS
-  sandbox.
+  limit what agents do through the fleet tools. Nothing stops an agent that
+  runs commands as your user from reading the node's key and other
+  sessions' tokens: Codex's `workspace-write` and `read-only` sandboxes
+  limit writes and network, not reads. Keeping those secrets from agents
+  would need an OS boundary, such as running the node as a separate user.
 
 - **Windows untested.** Job-object teardown, `codex.cmd` shim resolution and
   the Task Scheduler setup in `contrib/` are unverified. winbox should be

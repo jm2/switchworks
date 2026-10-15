@@ -158,16 +158,21 @@ strictest ones (`untrusted`, `read-only`).
 - **Agents** act through the fleet tools, within the guards above.
 
 The guards are not a sandbox. An agent that can run commands as your user
-on its workstation can read that node's key and other sessions' tokens
-there, and act as that node. What contains it is the harness's own sandbox
-(Codex's `workspace-write` or `read-only`, with no network) and which hosts
-you enroll. In particular:
+on its workstation can read that node's key, other sessions' tokens and
+any `cli.json` there. Harness sandboxes do not prevent this: Codex's
+`workspace-write` and `read-only` modes restrict writes and network access,
+not reads. A sandboxed agent cannot use what it reads directly (no network),
+but it could pass it on through the fleet tools to an unsandboxed session.
+Keeping these secrets from agents needs an OS boundary, such as running the
+node and its agents as a separate user. In particular:
 
-- Do not put `cli.json` (the admin token) on a machine where agents run
-  without a sandbox: an agent that reads it controls the fleet.
-- Prefer sandboxed sessions for agents that read untrusted input (web
-  pages, issues, other people's code), since messages and spawns are how
-  a manipulated agent would reach the rest of the fleet.
+- Do not put `cli.json` (the admin token) on a machine where agents run:
+  an agent that reads it, sandboxed or not, can get it to one that can use
+  it, and the admin token controls the fleet.
+- Prefer sandboxed sessions, and no unsandboxed peers on the same fleet,
+  for agents that read untrusted input (web pages, issues, other people's
+  code), since messages and spawns are how a manipulated agent would reach
+  the rest of the fleet.
 - If a workstation may be compromised, `swyd hosts rm` it.
 
 ## CLI

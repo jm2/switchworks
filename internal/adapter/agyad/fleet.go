@@ -244,10 +244,13 @@ func gitExclude(cwd, rel string) error {
 			if err := os.Mkdir(filepath.Dir(ex), 0o755); err != nil && !os.IsExist(err) {
 				return err
 			}
+			if fi, err := os.Lstat(filepath.Dir(ex)); err != nil || !fi.IsDir() {
+				return fmt.Errorf("%s is not a directory", filepath.Dir(ex))
+			}
 			if fi, err := os.Lstat(ex); err == nil && !fi.Mode().IsRegular() {
 				return fmt.Errorf("%s is not a regular file", ex)
 			}
-			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY|oNoFollow, 0o644)
 			if err != nil {
 				return err
 			}

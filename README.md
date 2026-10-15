@@ -190,9 +190,10 @@ ssh coord.lan swyd coordinator cli-config > ~/.config/swyd/cli.json
 ```
 
 The file holds the admin token, which controls the whole fleet: keep it
-private (`chmod 600`), and do not copy it to a machine where agents run
-without a sandbox, since an agent that can read it can use it. On those
-machines, use the web UI from your phone or another computer instead.
+private (`chmod 600`), and do not copy it to a machine where agents run:
+harness sandboxes limit writes, not reads, so an agent there could read it.
+On those machines, use the web UI from your phone or another computer
+instead.
 
 ### 4. The web UI
 
@@ -253,8 +254,8 @@ default an agent spawns only on its own host, with its own harness, inside
 its own working directory, and its children inherit its approval policy and
 sandbox; agents steer, interrupt and stop only sessions they spawned. See
 [docs/messaging.md](docs/messaging.md), including its trust model: the
-guards are not a sandbox, so keep agents that read untrusted input in
-sandboxed sessions.
+guards are not a sandbox, and an agent with a shell can read its node's
+credentials.
 
 If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
 certificate. Enrolling a host again also replaces its old certificate.

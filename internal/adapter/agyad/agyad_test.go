@@ -652,6 +652,20 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 		t.Fatal("created directories under the bogus gitdir")
 	}
 
+	// A symlinked info directory inside a real git directory is refused.
+	trap := t.TempDir()
+	gd := filepath.Join(t.TempDir(), "r")
+	fakeGitDir(t, filepath.Join(gd, ".git"))
+	if err := os.Symlink(trap, filepath.Join(gd, ".git", "info")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitExclude(gd, workspaceMCP); err == nil {
+		t.Fatal("wrote through a symlinked info directory")
+	}
+	if _, err := os.Stat(filepath.Join(trap, "exclude")); err == nil {
+		t.Fatal("exclude written into the symlink target")
+	}
+
 	// A worktree's excludes go to its common directory.
 	main := filepath.Join(t.TempDir(), ".git")
 	fakeGitDir(t, main)
