@@ -107,7 +107,9 @@ fi
 "$swyd" version
 "$swyd" coordinator init --host 127.0.0.1 || fail "coordinator init"
 "$swyd" service install coordinator || fail "service install coordinator"
-wait_for 60 "the coordinator to run" status_has coordinator '"running":true'
+# "running" can come from the service manager before the process has
+# written its status file; wait for the file (it carries the pid).
+wait_for 60 "the coordinator to run" status_has coordinator '"pid":[1-9]'
 check_owner coordinator
 
 token=$("$swyd" coordinator enroll-token "$host") || fail "enroll-token"
