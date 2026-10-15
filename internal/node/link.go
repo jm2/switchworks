@@ -12,6 +12,7 @@ import (
 
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchyard/internal/runstatus"
 	"github.com/jm2/switchyard/internal/wire"
 )
 
@@ -33,6 +34,12 @@ func (n *Node) Run(ctx context.Context) error {
 			backoff = time.Second
 		}
 		n.logf("coordinator link down: %v (retrying in %s)", err, backoff)
+		n.status.Update(func(s *runstatus.Status) {
+			s.Connected, s.ConnectedSince = false, time.Time{}
+			if err != nil {
+				s.LastError = err.Error()
+			}
+		})
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -105,6 +112,9 @@ func (n *Node) connectOnce(ctx context.Context, tlsCfg *tls.Config) error {
 		n.failRequests()
 	}()
 	n.logf("connected to coordinator %s", n.cfg.CoordinatorNode)
+	n.status.Update(func(s *runstatus.Status) {
+		s.Connected, s.ConnectedSince, s.LastError = true, time.Now().UTC(), ""
+	})
 	n.wakeSender()
 
 	for {

@@ -33,6 +33,7 @@ import (
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/proc"
+	"github.com/jm2/switchyard/internal/runstatus"
 	"github.com/jm2/switchyard/internal/ulid"
 	"github.com/jm2/switchyard/internal/version"
 	"github.com/jm2/switchyard/internal/wire"
@@ -155,6 +156,8 @@ type Node struct {
 	stateMu sync.Mutex
 	closing chan struct{}
 	wg      sync.WaitGroup
+
+	status *runstatus.Reporter // status.json for `swyd service status` and the tray
 }
 
 // New loads node state from dir and resumes live sessions.
@@ -184,6 +187,8 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 		}
 		n.sessions[rec.ID] = s
 	}
+	n.status = runstatus.Start(dir, runstatus.Status{Role: "node", Host: cfg.Host,
+		Coordinator: cfg.CoordinatorNode, WebUI: webUIFor(cfg.CoordinatorAPI)})
 	n.wg.Add(2)
 	go n.ticker()
 	go n.sender()
@@ -193,6 +198,16 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 		}
 	}
 	return n, nil
+}
+
+// webUIFor turns the coordinator API address from node.json into the web
+// UI's URL. A coordinator behind `tailscale serve` has a different public
+// URL; its own status file reports that one.
+func webUIFor(api string) string {
+	if api == "" {
+		return ""
+	}
+	return "https://" + api + "/"
 }
 
 func (n *Node) sessionList() []*session {
@@ -847,6 +862,7 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 // flushes state.
 func (n *Node) Close() error {
 	close(n.closing)
+	defer n.status.Stop()
 	if n.local != nil {
 		n.local.close()
 	}

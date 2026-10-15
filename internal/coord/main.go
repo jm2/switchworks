@@ -12,15 +12,14 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
 	"github.com/jm2/switchyard/internal/paths"
 	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchyard/internal/runstatus"
 	"github.com/jm2/switchyard/internal/store"
 	"github.com/jm2/switchyard/internal/version"
 )
@@ -167,8 +166,18 @@ func mainRun(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("coordinator run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", paths.CoordinatorDir(), "coordinator directory")
+	logFile := fs.String("log-file", "", "append the coordinator's log to this file instead of stderr")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *logFile != "" {
+		f, err := runstatus.OpenLog(*logFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer f.Close()
+		stderr = f
 	}
 	logger := log.New(stderr, "coordinator: ", log.LstdFlags)
 	cfg, err := LoadConfig(*dir)
@@ -197,7 +206,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Print(err)
 		return 1
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := runstatus.StopContext(context.Background(), *dir)
 	defer cancel()
 	go func() {
 		if err := srv.ServeNodes(nodeLn); err != nil && ctx.Err() == nil {
@@ -229,6 +238,8 @@ func mainRun(args []string, stderr io.Writer) int {
 		ui = "https://" + cfg.PublicAPI
 	}
 	logger.Printf("%s %s: API on %s, nodes on %s, web UI at %s", version.Name, version.Version, cfg.APIListen, cfg.NodeListen, ui)
+	status := runstatus.Start(*dir, runstatus.Status{Role: "coordinator", WebUI: strings.TrimSuffix(ui, "/") + "/"})
+	defer status.Stop()
 	if err := srv.ServeAPI(ctx, apiLn); err != nil {
 		logger.Printf("API: %v", err)
 	}

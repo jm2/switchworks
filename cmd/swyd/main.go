@@ -15,6 +15,7 @@ import (
 	"github.com/jm2/switchyard/internal/devrun"
 	"github.com/jm2/switchyard/internal/mcp"
 	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchyard/internal/service"
 	"github.com/jm2/switchyard/internal/version"
 )
 
@@ -50,6 +51,10 @@ Services:
   swyd coordinator cli-config     print a CLI config for this coordinator
   swyd node enroll <token>        enroll this host with a coordinator
   swyd node run [flags]           run the node service
+  swyd service install [node|coordinator]
+                                  run it at login as you (systemd user unit,
+                                  LaunchAgent or logon task) and start it now
+  swyd service start|stop|restart|status|uninstall [node|coordinator]
 
 Development:
   swyd mcp                        MCP server with the fleet tools (started by the node inside sessions)
@@ -90,6 +95,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return coord.Main(args[1:], stdout, stderr)
 	case "node":
 		return node.Main(args[1:], stdout, stderr)
+	case "service":
+		return service.Main(args[1:], stdout, stderr)
 	default:
 		return cli.Main(args, stdout, stderr)
 	}
