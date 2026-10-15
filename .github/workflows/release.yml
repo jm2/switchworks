@@ -142,6 +142,7 @@ jobs:
       - name: Build the .rpm
         env:
           VERSION: ${{ needs.build.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -153,11 +154,11 @@ jobs:
           # swyd_tag stamps the binaries with the real tag (v0.2.0-rc.1, not v0.2.0~rc.1).
           rpmbuild --define "_topdir $top" --define "swyd_tag $GITHUB_REF_NAME" -bb "$top/SPECS/switchyard.spec"
           mkdir -p out
-          cp "$top"/RPMS/*/switchyard-*.rpm "out/switchyard-${{ matrix.arch }}.rpm"
-          rpm -qip "out/switchyard-${{ matrix.arch }}.rpm"
-          rpm -qlp "out/switchyard-${{ matrix.arch }}.rpm"
+          cp "$top"/RPMS/*/switchyard-*.rpm "out/switchyard-$ARCH.rpm"
+          rpm -qip "out/switchyard-$ARCH.rpm"
+          rpm -qlp "out/switchyard-$ARCH.rpm"
           # No scriptlets: nothing is enabled or started at install.
-          test -z "$(rpm -qp --scripts "out/switchyard-${{ matrix.arch }}.rpm")"
+          test -z "$(rpm -qp --scripts "out/switchyard-$ARCH.rpm")"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm-${{ matrix.arch }}
@@ -237,7 +238,7 @@ jobs:
         shell: pwsh
         run: |
           $setup = Start-Process out\switchyard-windows-x86_64-setup.exe -Wait -PassThru `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath'
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchyard'
           foreach ($f in 'swyd.exe', 'swydw.exe', 'swyd-tray.exe') {

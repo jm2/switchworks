@@ -77,7 +77,60 @@ jobs:
 
       # Tests that need a real goose or codex binary skip themselves here.
       - name: Test
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -fullpath ./...
+
+  # The services for real, on each OS: coordinator and node registered
+  # with the user's own service manager (systemd user units, LaunchAgents,
+  # logon tasks), checked to run as this user and to connect, restarted,
+  # stopped and removed. Then the tray starts and stays up.
+  service-smoke:
+    name: Services (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        shell: bash
+        run: |
+          mkdir -p bin
+          if [ "$RUNNER_OS" = Windows ]; then
+            go build -o bin/swyd.exe ./cmd/swyd
+            go build -ldflags -H=windowsgui -o bin/swydw.exe ./cmd/swyd
+            go build -ldflags -H=windowsgui -o bin/swyd-tray.exe ./cmd/swyd-tray
+          else
+            go build -o bin/swyd ./cmd/swyd
+          fi
+
+      - name: Coordinator and node as user services
+        shell: bash
+        run: |
+          exe=swyd
+          [ "$RUNNER_OS" = Windows ] && exe=swyd.exe
+          bash build-aux/ci/service-smoke.sh "$PWD/bin/$exe"
+
+      - name: Windows tray starts and stays up
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process bin\swyd-tray.exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { throw "swyd-tray exited with $($p.ExitCode)" }
+          # A second copy in the same session exits at once.
+          $q = Start-Process bin\swyd-tray.exe -PassThru
+          if (-not $q.WaitForExit(10000)) { Stop-Process -Id $q.Id; throw 'a second tray kept running' }
+          if ($p.HasExited) { throw 'the first tray exited' }
+          Stop-Process -Id $p.Id
 
   cross:
     name: Cross-compile
@@ -254,14 +307,16 @@ jobs:
         shell: pwsh
         run: |
           $setup = Start-Process out\switchyard-windows-x86_64-setup.exe -Wait -PassThru `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath'
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchyard'
           $swyd = Join-Path $app 'swyd.exe'
           & $swyd version
           & $swyd service install --no-start node
           if ($LASTEXITCODE -ne 0) { throw 'service install failed' }
-          $task = "Switchyard node ($env:USERNAME)"
+          # "Switchyard node (<user>, <SID>)"
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $task = "Switchyard node ($env:USERNAME, $sid)"
           $t = Get-ScheduledTask -TaskName $task
           $t.Principal | Format-List
           if ($t.Principal.RunLevel -ne 'Limited') { throw "task runs elevated: $($t.Principal.RunLevel)" }
@@ -292,5 +347,11 @@ jobs:
           bash build-aux/macos/build-dmg.sh v0.0.0-ci dist/swyd out
           hdiutil attach -nobrowse -mountpoint /tmp/swyd-dmg out/switchyard-macos-aarch64.dmg
           /tmp/swyd-dmg/Switchyard.app/Contents/MacOS/swyd service status --json
-          plutil -p /tmp/swyd-dmg/Switchyard.app/Contents/Info.plist | grep -F '"LSUIElement" => true'
+          test "$(plutil -extract LSUIElement raw -o - /tmp/swyd-dmg/Switchyard.app/Contents/Info.plist)" = true
+          # The menu-bar app starts (no Dock icon) and stays up.
+          cp -R /tmp/swyd-dmg/Switchyard.app /Applications/
+          open -g /Applications/Switchyard.app
+          sleep 5
+          pgrep -x Switchyard
+          osascript -e 'quit app "Switchyard"' || pkill -x Switchyard
           hdiutil detach /tmp/swyd-dmg
