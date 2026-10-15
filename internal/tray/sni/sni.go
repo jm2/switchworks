@@ -62,7 +62,7 @@ type Backend struct {
 	mu       sync.Mutex
 	view     tray.View
 	revision uint32
-	actions  map[int32]func()
+	shown    map[int32]string // id -> label, as the host last read the menu
 }
 
 // New returns a Backend for the user's session bus.
@@ -130,20 +130,44 @@ func (b *Backend) Quit() { b.once.Do(func() { close(b.quit) }) }
 func (b *Backend) Update(v tray.View) {
 	b.mu.Lock()
 	old := b.view
+	// Always keep the new view: its actions are new closures. Tell the host
+	// only about what it can see changing, so an open menu is not rebuilt
+	// under the pointer on every poll.
 	b.view = v
-	b.revision++
+	first := b.revision == 0
+	menuChanged := first || !sameItems(old.Items, v.Items)
+	if menuChanged {
+		b.revision++
+	}
 	rev := b.revision
 	b.mu.Unlock()
 	if b.conn == nil {
 		return
 	}
-	if old.Icon != v.Icon || rev == 1 {
+	if first || old.Icon != v.Icon {
 		_ = b.conn.Emit(itemPath, itemIface, "NewIcon", "")
 	}
 	if old.Tooltip != v.Tooltip {
 		_ = b.conn.Emit(itemPath, itemIface, "NewToolTip", "")
 	}
-	_ = b.conn.Emit(menuPath, menuIface, "LayoutUpdated", "ui", rev, int32(0))
+	if menuChanged {
+		_ = b.conn.Emit(menuPath, menuIface, "LayoutUpdated", "ui", rev, int32(0))
+	}
+}
+
+// sameItems compares what a menu shows, ignoring the actions.
+func sameItems(a, b []tray.Item) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.Label != y.Label || x.Enabled != y.Enabled || x.Separator != y.Separator ||
+			x.Checkable != y.Checkable || x.Checked != y.Checked {
+			return false
+		}
+	}
+	return true
 }
 
 // Notify implements tray.Backend with a desktop notification.
@@ -371,10 +395,12 @@ func (b *Backend) snapshot() ([]tray.Item, uint32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	items := b.view.Items
-	b.actions = make(map[int32]func(), len(items))
+	// Remember what each id showed when the host last read the menu, so a
+	// click is matched to the item the user saw even if the menu changed.
+	b.shown = make(map[int32]string, len(items))
 	for i, it := range items {
-		if it.Action != nil && it.Enabled {
-			b.actions[int32(i+1)] = it.Action
+		if !it.Separator {
+			b.shown[int32(i+1)] = it.Label
 		}
 	}
 	return items, b.revision
@@ -485,13 +511,29 @@ func (b *Backend) handleMenu(m *dbus.Message) {
 // event runs a clicked item's action; it reports whether id exists.
 func (b *Backend) event(id int32, ev string) bool {
 	b.mu.Lock()
-	act, ok := b.actions[id]
-	n := int32(len(b.view.Items))
+	label, known := b.shown[id]
+	var act func()
+	if known {
+		// The current item with that label (the actions are rebuilt on
+		// every poll), preferring the same position.
+		items := b.view.Items
+		match := func(it tray.Item) bool { return it.Label == label && it.Enabled && it.Action != nil }
+		if i := int(id) - 1; i < len(items) && match(items[i]) {
+			act = items[i].Action
+		} else {
+			for _, it := range items {
+				if match(it) {
+					act = it.Action
+					break
+				}
+			}
+		}
+	}
 	b.mu.Unlock()
-	if ev == "clicked" && ok {
+	if ev == "clicked" && act != nil {
 		act()
 	}
-	return id >= 0 && id <= n
+	return known || id == 0
 }
 
 func (b *Backend) introspect(m *dbus.Message) {

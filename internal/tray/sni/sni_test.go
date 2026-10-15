@@ -129,6 +129,33 @@ func TestItemAndMenu(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("click did not run the action")
 	}
+	// A poll with the same visible menu keeps the revision (no rebuild in
+	// the host) but its new actions are the ones that run.
+	rev := rep.Body[0].(uint32)
+	clicked2 := make(chan struct{}, 1)
+	b.Update(tray.View{Icon: tray.IconOK, Tooltip: "Node devbox: connected", Items: []tray.Item{
+		{Label: "Node devbox: connected to coord.lan"},
+		{Separator: true},
+		{Label: "Open web_ui", Enabled: true, Action: func() { clicked2 <- struct{}{} }},
+		{Label: "Start this tray at login", Enabled: true, Checkable: true, Checked: true, Action: func() {}},
+	}})
+	rep2, err := host.Call(ctx, svc, menuPath, menuIface, "GetLayout", "iias", int32(0), int32(-1), []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep2.Body[0].(uint32); got != rev {
+		t.Fatalf("revision changed from %d to %d for an identical menu", rev, got)
+	}
+	if _, err := host.Call(ctx, svc, menuPath, menuIface, "Event", "isvu", int32(3), "clicked", dbus.Variant{Sig: "i", Value: int32(0)}, uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-clicked2:
+	case <-clicked:
+		t.Fatal("click ran the previous poll's action")
+	case <-ctx.Done():
+		t.Fatal("second click did not run")
+	}
 	if _, err := host.Call(ctx, svc, itemPath, "org.freedesktop.DBus.Introspectable", "Introspect", ""); err != nil {
 		t.Fatal(err)
 	}

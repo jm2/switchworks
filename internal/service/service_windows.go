@@ -211,11 +211,39 @@ func start(role string) error {
 	return err
 }
 
+var (
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	procOpenProcess         = kernel32.NewProc("OpenProcess")
+	procWaitForSingleObject = kernel32.NewProc("WaitForSingleObject")
+)
+
+// waitExit waits for the process in role's status file to exit. The status
+// file goes away when shutdown starts; the process saves its state and ends
+// its harnesses after that, and Task Scheduler will not start the task again
+// until it has exited.
+func waitExit(role string, pid int, d time.Duration) bool {
+	if pid <= 0 {
+		return waitStopped(role, d)
+	}
+	const synchronize = 0x00100000
+	h, _, _ := procOpenProcess.Call(synchronize, 0, uintptr(pid))
+	if h == 0 {
+		return true // already gone
+	}
+	defer syscall.CloseHandle(syscall.Handle(h))
+	r, _, _ := procWaitForSingleObject.Call(h, uintptr(d.Milliseconds()))
+	return r == 0 // WAIT_OBJECT_0
+}
+
 // stop asks the process to stop through its stop event, so it can save its
 // state and end its harnesses, and ends the task only if that fails.
 func stop(role string) error {
+	pid := 0
+	if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+		pid = s.PID
+	}
 	err := runstatus.RequestStop(Dir(role))
-	if err == nil && waitStopped(role, 25*time.Second) {
+	if err == nil && waitExit(role, pid, 30*time.Second) {
 		return nil
 	}
 	if _, endErr := schtasks("/End", "/TN", unitName(role)); endErr != nil && err == nil {

@@ -150,25 +150,44 @@ begin
     Exec(ExpandConstant('{app}\swyd.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
+var
+  ServicesStopped: Boolean;
+
+procedure StartServices;
+begin
+  RunSwyd('service start --if-installed node');
+  RunSwyd('service start --if-installed coordinator');
+  ServicesStopped := False;
+end;
+
 { On an upgrade, stop what runs from the old files so they can be replaced,
-  and start the services again afterwards. }
+  and start the installed services again afterwards, whether the upgrade
+  finishes or not. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  RunSwyd('service stop --if-installed node');
-  RunSwyd('service stop --if-installed coordinator');
+  if FileExists(ExpandConstant('{app}\swyd.exe')) then
+  begin
+    RunSwyd('service stop --if-installed node');
+    RunSwyd('service stop --if-installed coordinator');
+    ServicesStopped := True;
+  end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM swyd-tray.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
-  begin
-    RunSwyd('service start --if-installed node');
-    RunSwyd('service start --if-installed coordinator');
-  end;
+  if (CurStep = ssPostInstall) and ServicesStopped then
+    StartServices;
+end;
+
+{ Runs when setup exits, also after a failed or cancelled upgrade. }
+procedure DeinitializeSetup;
+begin
+  if ServicesStopped then
+    StartServices;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

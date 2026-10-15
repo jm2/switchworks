@@ -127,8 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             return CommandResult(status: -1, output: "", error: error.localizedDescription)
         }
+        // Drain stderr while stdout is read, so a chatty child cannot block
+        // on a full pipe.
+        var errData = Data()
+        let errDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            errDone.signal()
+        }
         let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        errDone.wait()
         process.waitUntilExit()
         return CommandResult(status: process.terminationStatus,
                              output: String(decoding: outData, as: UTF8.self),

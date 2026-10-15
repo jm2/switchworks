@@ -190,9 +190,10 @@ on each machine's `PATH`, for example `~/.local/bin/swyd` on Linux and macOS or
 ```bash
 git clone https://github.com/jm2/switchyard
 cd switchyard
-make build tray                    # ./swyd and ./swyd-tray for this machine
-install -Dm755 swyd ~/.local/bin/swyd           # Linux and macOS
-install -Dm755 swyd-tray ~/.local/bin/swyd-tray # Linux and Windows
+make build tray                  # ./swyd, and ./swyd-tray (Linux and Windows)
+mkdir -p ~/.local/bin
+install -m 755 swyd ~/.local/bin/swyd
+install -m 755 swyd-tray ~/.local/bin/swyd-tray   # Linux only; macOS uses the Switchyard app
 ```
 
 To build for your other machines from one place:

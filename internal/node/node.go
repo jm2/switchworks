@@ -862,7 +862,9 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 // flushes state.
 func (n *Node) Close() error {
 	close(n.closing)
-	defer n.status.Stop()
+	// Report "stopped" now, not after the teardown below: the process is
+	// going away either way, and `swyd service stop` waits on the process.
+	n.status.Stop()
 	if n.local != nil {
 		n.local.close()
 	}
