@@ -27,7 +27,7 @@ is not used.
 | `thread/resume` | node restart, app-server crash | `threadId, excludeTurns: true` |
 | `thread/name/set` | label the thread with the session path | |
 | `thread/unsubscribe` | stop | thread unloads after 30 min idle with no subscribers |
-| `thread/list`, `thread/read` | M4 discovery | typed, not yet used |
+| `thread/list`, `thread/read` | observing sessions | typed, not yet used |
 | `turn/start` | queue delivery | `threadId, input: [{type: "text", text}], clientUserMessageId` |
 | `turn/steer` | steer delivery | needs `expectedTurnId` = the active turn |
 | `turn/interrupt` | interrupt | `threadId, turnId`; the turn ends with status `interrupted` |
@@ -62,3 +62,46 @@ rejected with `-32601`, so the turn never hangs waiting on Switchyard.
 
 `experimentalApi: true` is required for `availableDecisions`. Nothing else
 experimental is relied on.
+
+## Behavior worth knowing
+
+Observed with Codex 0.160.0 on Linux; the raw traffic is in
+`internal/codex/testdata/codex-0.160.0-session.jsonl`.
+
+- **Providers must speak the Responses API.** `wire_api = "chat"` is
+  rejected at load time. A `model_providers` entry with
+  `wire_api = "responses"` and `requires_openai_auth = false` works end to
+  end: streaming, tool calls, approvals and token usage.
+- **Approval prompts declare their decisions.** With the experimental API,
+  `item/commandExecution/requestApproval` carries `availableDecisions`. A
+  plain command may offer `accept`, `acceptWithExecpolicyAmendment` and
+  `cancel` with no `decline`. Switchyard shows that list and rejects other
+  decisions. The schema must be generated with `--experimental` to include
+  this field.
+- Requests with no parameters must still send `"params": {}`.
+- Server-initiated request ids start at 0.
+- A fast turn can complete before the `turn/start` response arrives, so a
+  client must not treat the response's `inProgress` turn as active without
+  checking.
+- Every notification carries a top-level `emittedAtMs`.
+- `thread/queue/*` methods exist (a server-side message queue); Switchyard
+  keeps its own queue on the node.
+
+## Codex's shared app-server daemon
+
+The interactive TUI does not embed app-server. It starts a shared,
+long-lived daemon per `CODEX_HOME`:
+
+- `codex app-server --listen unix:// --managed…`, run from a Codex-managed
+  copy under `$CODEX_HOME/packages/app-server-daemon/releases/<version>/`,
+  with an updater process alongside;
+- `$CODEX_HOME/app-server-control/app-server-control.sock` links to a socket
+  under `/tmp/codex-daemon-<uid>/`, carrying WebSocket framing over the Unix
+  socket;
+- the daemon keeps running after the TUI exits, and per-thread writer locks
+  live in `$CODEX_HOME/thread-writer-locks/`.
+
+Switchyard runs its own private `codex app-server` per node instead. Pointing
+nodes at the shared daemon would let them observe sessions started in the
+TUI (and make Switchyard's sessions visible to `codex resume`), at the cost
+of a self-updating daemon whose protocol can change under a running node.

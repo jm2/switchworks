@@ -15,7 +15,7 @@ import (
 // wire format DeepSeek, Z.ai GLM and Xiaomi MiMo all offer natively. It
 // drives harnesses other than Codex (Goose over ACP) with the same script:
 //
-//   - "RUN: <cmd>": call the harness's shell tool (the first advertised tool
+//   - "RUN: <cmd>", or a line "$ <cmd>": call the harness's shell tool (the first advertised tool
 //     whose name is or ends in "shell", "exec_command" or "bash") with the
 //     command in whichever of "command"/"cmd" its schema declares
 //   - a line "CALL <tool> <json args>": call the advertised tool named <tool>
@@ -152,7 +152,7 @@ func (m *MockProvider) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 		} else {
 			text = "mock: no tool " + callM[1] + " among " + toolNames(body.Tools)
 		}
-	case !sawOutput && strings.HasPrefix(lastUser, "RUN: "):
+	case !sawOutput && shellCommand(lastUser) != "":
 		t := findTool(body.Tools, func(n string) bool {
 			return n == "shell" || n == "bash" || n == "exec_command" ||
 				strings.HasSuffix(n, "__shell") || strings.HasSuffix(n, "__bash")
@@ -167,7 +167,7 @@ func (m *MockProvider) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 				key = "cmd"
 			}
 		}
-		call = &toolCall{t.Name, map[string]any{key: strings.TrimPrefix(lastUser, "RUN: ")}}
+		call = &toolCall{t.Name, map[string]any{key: shellCommand(lastUser)}}
 	case sawOutput && askM != nil:
 		text = "replied: " + output
 	case sawOutput && callM != nil:
@@ -245,4 +245,18 @@ func toolNames(ts []anthTool) string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ",")
+}
+
+// shellCommand is the command a prompt asks the mock to run: everything
+// after "RUN: ", or the first line that starts with "$ ".
+func shellCommand(prompt string) string {
+	if strings.HasPrefix(prompt, "RUN: ") {
+		return strings.TrimPrefix(prompt, "RUN: ")
+	}
+	for _, l := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(l, "$ ") {
+			return strings.TrimSpace(strings.TrimPrefix(l, "$ "))
+		}
+	}
+	return ""
 }

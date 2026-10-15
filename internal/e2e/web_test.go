@@ -59,7 +59,7 @@ func TestFleetStreamActivity(t *testing.T) {
 	}
 	waitFleet("hello", func() bool { return len(got) > 0 && got[0] == "hello" })
 
-	_, _, nd := enrollHost(t, c, "antec")
+	_, _, nd := enrollHost(t, c, "devbox")
 	defer func() { nd.stop(t) }()
 	waitFleet("host online", func() bool {
 		for _, g := range got {
@@ -70,7 +70,7 @@ func TestFleetStreamActivity(t *testing.T) {
 		return false
 	})
 
-	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "web", Cwd: t.TempDir()})
+	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "web", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestFleetStreamActivity(t *testing.T) {
 	cancel()
 	co.stop()
 	co = startCoordinator(t, coordDir, apiAddr, nodeAddr)
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 	v, err = c.Session(ctx, sess.ID)
 	if err != nil || v.Preview != "approval decision: accept" || len(v.Approvals) != 0 {
 		t.Fatalf("after restart: %+v %v", v, err)

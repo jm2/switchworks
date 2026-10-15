@@ -53,13 +53,13 @@ func from(sess model.Session) sender { return sender{sess: &sess} }
 func TestResolve(t *testing.T) {
 	s := testServer(t, Guards{})
 	r := s.router
-	a := addSession(t, s, "antec", "lead", func(x *model.Session) { x.Labels = map[string]string{"role": "lead"} })
-	b := addSession(t, s, "boxy", "helper", func(x *model.Session) {
+	a := addSession(t, s, "devbox", "lead", func(x *model.Session) { x.Labels = map[string]string{"role": "lead"} })
+	b := addSession(t, s, "workbox", "helper", func(x *model.Session) {
 		x.Labels = map[string]string{"role": "helper"}
 		x.Parent = a.ID
 	})
-	addSession(t, s, "antec", "helper", func(x *model.Session) { x.Labels = map[string]string{"role": "helper"} })
-	addSession(t, s, "boxy", "old", func(x *model.Session) { x.Status = model.StatusStopped })
+	addSession(t, s, "devbox", "helper", func(x *model.Session) { x.Labels = map[string]string{"role": "helper"} })
+	addSession(t, s, "workbox", "old", func(x *model.Session) { x.Status = model.StatusStopped })
 
 	cases := []struct {
 		from  sender
@@ -68,18 +68,18 @@ func TestResolve(t *testing.T) {
 		want  []string
 		err   string
 	}{
-		{from(a), "boxy/helper", false, []string{"boxy/helper"}, ""},
-		{from(a), b.ID, false, []string{"boxy/helper"}, ""},
-		{from(a), "lead", false, []string{"antec/lead"}, ""},
+		{from(a), "workbox/helper", false, []string{"workbox/helper"}, ""},
+		{from(a), b.ID, false, []string{"workbox/helper"}, ""},
+		{from(a), "lead", false, []string{"devbox/lead"}, ""},
 		{from(a), "helper", false, nil, "ambiguous"},
 		{from(a), "old", false, nil, "no live session"},
 		{from(a), "nobody/x", false, nil, "no session"},
-		{from(b), "parent", false, []string{"antec/lead"}, ""},
+		{from(b), "parent", false, []string{"devbox/lead"}, ""},
 		{from(a), "parent", false, nil, "no parent"},
-		{from(a), "@role=helper", false, []string{"antec/helper"}, ""},
-		{from(a), "@role=helper", true, []string{"antec/helper", "boxy/helper"}, ""},
-		{from(a), "@role=helper,host=boxy", false, []string{"boxy/helper"}, ""},
-		{from(a), "@harness=codex", true, []string{"antec/helper", "boxy/helper"}, ""}, // not itself, not stopped
+		{from(a), "@role=helper", false, []string{"devbox/helper"}, ""},
+		{from(a), "@role=helper", true, []string{"devbox/helper", "workbox/helper"}, ""},
+		{from(a), "@role=helper,host=workbox", false, []string{"workbox/helper"}, ""},
+		{from(a), "@harness=codex", true, []string{"devbox/helper", "workbox/helper"}, ""}, // not itself, not stopped
 		{from(a), "@role=nobody", false, nil, "no live session matches"},
 		{from(a), "@role", false, nil, "bad selector"},
 		{from(a), "user:jm", false, []string{"user:jm"}, ""},
@@ -116,10 +116,10 @@ func TestSendGuards(t *testing.T) {
 	ctx := context.Background()
 	s := testServer(t, Guards{SendPerMinute: 2, AskPerMinute: 1, MaxHops: 3})
 	r := s.router
-	a := addSession(t, s, "antec", "a")
-	b := addSession(t, s, "antec", "b")
+	a := addSession(t, s, "devbox", "a")
+	b := addSession(t, s, "devbox", "b")
 
-	if _, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "antec/a", Text: "x"}); err == nil {
+	if _, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "devbox/a", Text: "x"}); err == nil {
 		t.Fatal("self-send accepted")
 	}
 	if _, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "b", Text: "  "}); err == nil {
@@ -174,9 +174,9 @@ func TestAskReply(t *testing.T) {
 	ctx := context.Background()
 	s := testServer(t, Guards{})
 	r := s.router
-	a := addSession(t, s, "antec", "a")
-	b := addSession(t, s, "boxy", "b")
-	c := addSession(t, s, "boxy", "c")
+	a := addSession(t, s, "devbox", "a")
+	b := addSession(t, s, "workbox", "b")
+	c := addSession(t, s, "workbox", "c")
 
 	// A waiting asker gets the answer inline.
 	var wg sync.WaitGroup
@@ -212,7 +212,7 @@ func TestAskReply(t *testing.T) {
 		t.Fatalf("reply: %+v %v", rr, err)
 	}
 	wg.Wait()
-	if res.Status != fleet.AskReplied || res.Reply != "42" || res.ReplyFrom != "boxy/b" {
+	if res.Status != fleet.AskReplied || res.Reply != "42" || res.ReplyFrom != "workbox/b" {
 		t.Fatalf("ask result: %+v", res)
 	}
 	if _, err := r.reply(ctx, from(b), fleet.ReplyArgs{MessageID: ask.ID, Text: "43"}); err == nil {
@@ -295,8 +295,8 @@ func TestExpiryAndFailure(t *testing.T) {
 	ctx := context.Background()
 	s := testServer(t, Guards{})
 	r := s.router
-	a := addSession(t, s, "antec", "a")
-	b := addSession(t, s, "boxy", "b")
+	a := addSession(t, s, "devbox", "a")
+	b := addSession(t, s, "workbox", "b")
 
 	msgs, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "b", Text: "x", TTLSeconds: 1})
 	if err != nil || msgs[0].State != model.MsgPending {
@@ -338,9 +338,9 @@ func TestCompletionNotice(t *testing.T) {
 	ctx := context.Background()
 	s := testServer(t, Guards{MaxHops: 4})
 	r := s.router
-	p := addSession(t, s, "antec", "p")
-	c := addSession(t, s, "boxy", "c", func(x *model.Session) { x.Parent = p.ID })
-	orphan := addSession(t, s, "boxy", "o")
+	p := addSession(t, s, "devbox", "p")
+	c := addSession(t, s, "workbox", "c", func(x *model.Session) { x.Parent = p.ID })
+	orphan := addSession(t, s, "workbox", "o")
 
 	notices := func() []model.Message {
 		var out []model.Message
@@ -360,7 +360,7 @@ func TestCompletionNotice(t *testing.T) {
 	}
 
 	// The parent asked and got its answer: no notice on top.
-	res := r.ask(ctx, from(p), fleet.AskArgs{To: "boxy/c", Text: "q", WaitSeconds: new(int)})
+	res := r.ask(ctx, from(p), fleet.AskArgs{To: "workbox/c", Text: "q", WaitSeconds: new(int)})
 	r.onDelivered(c.ID, res.MessageID)
 	if _, err := r.reply(ctx, from(c), fleet.ReplyArgs{MessageID: res.MessageID, Text: "a"}); err != nil {
 		t.Fatal(err)

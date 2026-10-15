@@ -1,4 +1,4 @@
-# Messaging (M2)
+# Messaging
 
 Agents talk to each other, and to people, through tools that Switchyard
 gives every managed Codex session over MCP. The coordinator routes every
@@ -13,7 +13,7 @@ When a node starts or resumes a Codex thread it passes, in `thread/start` /
 {"config": {"mcp_servers": {"swyd": {
   "command": "/usr/local/bin/swyd", "args": ["mcp"],
   "env": {"SWYD_NODE_URL": "http://127.0.0.1:41234", "SWYD_SESSION": "<id>",
-          "SWYD_SESSION_PATH": "antec/lead", "SWYD_TOKEN": "<hmac>"},
+          "SWYD_SESSION_PATH": "devbox/lead", "SWYD_TOKEN": "<hmac>"},
   "startup_timeout_sec": 30, "tool_timeout_sec": 1860,
   "default_tools_approval_mode": "approve"}}}}
 ```
@@ -51,8 +51,8 @@ The model sees the tools in the `mcp__swyd` namespace.
 - `@key=value[,key=value]`: sessions with those labels. `host` and `harness`
   work as keys too. Without `broadcast`, the best match wins (idle and online
   first, then by path).
-- `user:<name>`: a person. They read it with `swyd inbox` (the web UI comes
-  in M3) and answer asks with `swyd reply`.
+- `user:<name>`: a person. They read it in the web UI's Inbox or with `swyd inbox`, and answer asks
+  there or with `swyd reply`.
 
 ## What the receiving agent sees
 
@@ -60,8 +60,8 @@ A routed message becomes a turn (or, with `steer`, part of the running turn)
 that starts with a header:
 
 ```
-[switchyard msg=01M40… from=antec/lead kind=ask]
-(antec/lead is waiting for an answer: reply with the fleet_reply tool, message_id=01M40….)
+[switchyard msg=01M40… from=devbox/lead kind=ask]
+(devbox/lead is waiting for an answer: reply with the fleet_reply tool, message_id=01M40….)
 what is 6x7?
 ```
 
@@ -126,7 +126,7 @@ another agent is hop 1, and so on.
 ## CLI
 
 ```sh
-swyd msg boxy/helper "the build is green"        # by address
+swyd msg buildbox/helper "the build is green"        # by address
 swyd msg --broadcast @role=reviewer "please look at PR 42"
 swyd ask lead "are you done with the parser?"    # waits for fleet_reply
 swyd inbox                                       # messages and open questions for people

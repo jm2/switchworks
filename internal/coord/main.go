@@ -131,7 +131,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("coordinator init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", paths.CoordinatorDir(), "coordinator directory")
-	hosts := fs.String("host", "", "comma-separated names/IPs for the server certificate; the first is what nodes and the CLI dial (e.g. t240.lan,10.0.0.5,t240.tailnet.ts.net)")
+	hosts := fs.String("host", "", "comma-separated names/IPs for the server certificate; the first is what nodes and the CLI dial (e.g. coord.lan,10.0.0.5,coord.tailnet.ts.net)")
 	apiPort := fs.Int("api-port", 7480, "HTTPS API port")
 	nodePort := fs.Int("node-port", 7481, "node stream port")
 	if err := fs.Parse(args); err != nil {

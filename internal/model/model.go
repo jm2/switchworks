@@ -237,7 +237,7 @@ func ValidateName(kind, s string) error {
 	return nil
 }
 
-// ValidateSessionName allows extra path segments ("kisak/polecat-3").
+// ValidateSessionName allows extra path segments ("team/worker-3").
 func ValidateSessionName(s string) error {
 	parts := strings.Split(s, "/")
 	if len(parts) > 4 {

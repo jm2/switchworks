@@ -105,29 +105,29 @@ func TestRealGooseFleet(t *testing.T) {
 	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
 	defer co.stop()
 	c := apiClient(t, coordDir)
-	ng := startGooseNode(t, c, "antec", bin, mock)
+	ng := startGooseNode(t, c, "devbox", bin, mock)
 	defer func() { ng.stop(t) }() // ng is restarted below
-	_, _, nb := enrollHost(t, c, "boxy")
+	_, _, nb := enrollHost(t, c, "buildbox")
 	defer nb.stop(t)
-	waitOnline(t, c, "antec")
-	waitOnline(t, c, "boxy")
+	waitOnline(t, c, "devbox")
+	waitOnline(t, c, "buildbox")
 
 	hosts, err := c.Hosts(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, h := range hosts {
-		if h.ID == "antec" && (len(h.Adapters) != 1 || h.Adapters[0] != "goose") {
-			t.Fatalf("antec adapters %v", h.Adapters)
+		if h.ID == "devbox" && (len(h.Adapters) != 1 || h.Adapters[0] != "goose") {
+			t.Fatalf("devbox adapters %v", h.Adapters)
 		}
 	}
 
 	work := t.TempDir()
-	lead, err := c.Spawn(ctx, model.SpawnSpec{Host: "antec", Name: "lead", Harness: "goose", Cwd: work, ApprovalPolicy: "never"})
+	lead, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "lead", Harness: "goose", Cwd: work, ApprovalPolicy: "never"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper, err := c.Spawn(ctx, model.SpawnSpec{Host: "boxy", Name: "helper", Cwd: work})
+	helper, err := c.Spawn(ctx, model.SpawnSpec{Host: "buildbox", Name: "helper", Cwd: work})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,24 +142,24 @@ func TestRealGooseFleet(t *testing.T) {
 	if _, err := c.Send(ctx, lead.ID, call("fleet_list", map[string]any{}), "queue", ""); err != nil {
 		t.Fatal(err)
 	}
-	i := wl.waitFor(t, "goose fleet_list", 0, agentSaidAll("tool fleet_list:", "boxy/helper", "antec/lead"))
+	i := wl.waitFor(t, "goose fleet_list", 0, agentSaidAll("tool fleet_list:", "buildbox/helper", "devbox/lead"))
 	i = wl.waitFor(t, "goose turn done", i, turnEnded("completed"))
 
 	// goose asks the Codex helper; the helper answers with fleet_reply.
-	if _, err := c.Send(ctx, lead.ID, call("fleet_ask", map[string]any{"to": "boxy/helper", "text": "what is 6x7?", "wait_seconds": 60}), "queue", ""); err != nil {
+	if _, err := c.Send(ctx, lead.ID, call("fleet_ask", map[string]any{"to": "buildbox/helper", "text": "what is 6x7?", "wait_seconds": 60}), "queue", ""); err != nil {
 		t.Fatal(err)
 	}
-	wh.waitFor(t, "helper replied", 0, agentSaidAll("replied to antec/lead"))
-	i = wl.waitFor(t, "goose got the answer", i, agentSaidAll("tool fleet_ask:", "Answer from boxy/helper"))
+	wh.waitFor(t, "helper replied", 0, agentSaidAll("replied to devbox/lead"))
+	i = wl.waitFor(t, "goose got the answer", i, agentSaidAll("tool fleet_ask:", "Answer from buildbox/helper"))
 	i = wl.waitFor(t, "goose ask turn done", i, turnEnded("completed"))
 
 	// The Codex helper asks goose; goose answers with fleet_reply.
 	j := wh.len()
-	if _, err := c.Send(ctx, helper.ID, call("fleet_ask", map[string]any{"to": "antec/lead", "text": "status?", "wait_seconds": 60}), "queue", ""); err != nil {
+	if _, err := c.Send(ctx, helper.ID, call("fleet_ask", map[string]any{"to": "devbox/lead", "text": "status?", "wait_seconds": 60}), "queue", ""); err != nil {
 		t.Fatal(err)
 	}
 	wl.waitFor(t, "goose replied", i, agentSaidAll("replied:"))
-	wh.waitFor(t, "helper got goose's answer", j, agentSaidAll("Answer from antec/lead"))
+	wh.waitFor(t, "helper got goose's answer", j, agentSaidAll("Answer from devbox/lead"))
 
 	// The fleet tool calls are mcpToolCall items in goose's transcript.
 	sawTool := false
@@ -178,7 +178,7 @@ func TestRealGooseFleet(t *testing.T) {
 	// goose process).
 	ng.stop(t)
 	ng.run(t)
-	waitOnline(t, c, "antec")
+	waitOnline(t, c, "devbox")
 	waitStatus(t, c, lead.ID, model.StatusIdle)
 	k := wl.len()
 	if _, err := c.Send(ctx, lead.ID, "still there?", "queue", ""); err != nil {

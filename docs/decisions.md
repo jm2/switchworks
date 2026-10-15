@@ -23,11 +23,11 @@ fix what the test reports.
 
 **One app-server process per node**, shared by all of that node's Codex
 threads. If it dies, the adapter restarts it and resumes every live thread.
-See m0-findings for the option of using Codex's own shared daemon instead.
+See codex-app-server-notes.md for the option of using Codex's own shared daemon instead.
 
 **Delivery semantics.** A message queued with `queue` waits for the session
 to be idle, then becomes a new turn. `steer` goes into the running turn and
-falls back to `queue` when there is none (M2; M1 refused). Messages from
+falls back to `queue` when there is none. Messages from
 people are passed through verbatim; messages from anything else get a
 one-line `[switchyard msg=… from=… kind=…]` header.
 
@@ -53,7 +53,7 @@ ignores whatever subject the CSR requested.
 `coordinator.json` and in plain text in the 0600 `cli.json`. It is a single
 owner on a LAN plus Tailscale. Per-user tokens are not needed yet.
 
-## M2: messaging
+## Messaging
 
 **The coordinator routes everything.** Agents never talk to each other's
 nodes. The router resolves the address, applies the guards, stores the
@@ -74,13 +74,12 @@ holds no state.
 
 **Tool results are text only.** Codex 0.160 shows the model a tool's
 `structuredContent` instead of its text content when both are present. The
-text is written for the model ("Answer from boxy/helper: …"), so that is
+text is written for the model ("Answer from buildbox/helper: …"), so that is
 what is sent.
 
-**Offline targets wait instead of failing.** M1 refused a message to an
-offline host. Agents work asynchronously, so M2 stores it as pending,
-delivers it when the host returns, and expires it after a TTL with a notice
-to the sender. Steering still requires a live session.
+**Offline targets wait instead of failing.** Agents work asynchronously,
+so a message to an offline host is stored as pending, delivered when the
+host returns, and expired after a TTL with a notice to the sender. Steering still requires a live session.
 
 **Asks are two-phase in the shim.** One long HTTP call would lose the
 answer if the node's coordinator link dropped mid-wait. The shim sends the
@@ -99,7 +98,7 @@ depth, spawn host allowlist and a fleet-wide daily token budget. They stop
 runaway loops and spend; they are not an authorization system. People are
 not rate limited.
 
-## M3: web UI
+## Web UI
 
 **Served by the coordinator, embedded in the binary.** No separate web
 server, no npm. Vanilla JavaScript over the same JSON API and SSE streams
@@ -126,7 +125,7 @@ trusted certificate without Switchyard handling ACME.
 the bottom, within reach, and the transcript only notes that an approval
 was requested and how it was answered.
 
-## M5: ACP agents, and agy on the documented schema
+## ACP agents, and agy
 
 **ACP before observed sessions.** Goose over ACP reaches DeepSeek, GLM and
 MiMo through their Anthropic-compatible endpoints, which removes the need

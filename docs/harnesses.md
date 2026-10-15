@@ -49,7 +49,7 @@ offer several goose configurations side by side:
 }
 ```
 
-`swyd spawn antec --harness goose-deepseek …` then runs that one. These
+`swyd spawn devbox --harness goose-deepseek …` then runs that one. These
 three endpoints have been exercised only through the mock provider's
 Anthropic Messages emulation (`swyd dev mock-provider`), not with real keys;
 check the model ids against each provider's current list. Keys can also

@@ -188,7 +188,7 @@ func defaultName(cwd string) string {
 	return base
 }
 
-// interleave lets flags follow positional arguments ("spawn antec --cwd x").
+// interleave lets flags follow positional arguments ("spawn devbox --cwd x").
 func interleave(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for len(args) > 0 {

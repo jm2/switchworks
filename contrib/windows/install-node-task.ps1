@@ -1,7 +1,7 @@
 # Registers `swyd node run` as a logon task for the current user on Windows.
 # It must run in your user session (not as a service account) so it inherits
 # your Codex sign-in, the OS keyring agy needs, your repos and toolchains.
-# UNTESTED: written from the design, not yet run on antec-win.
+# Not yet tested on real Windows hardware; report problems.
 #
 #   powershell -ExecutionPolicy Bypass -File install-node-task.ps1 -Swyd C:\tools\swyd.exe
 

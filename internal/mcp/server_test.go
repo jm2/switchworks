@@ -59,7 +59,7 @@ func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var data any
 	switch op {
 	case "list":
-		data = fleet.ListResult{Self: "antec/a", Sessions: []fleet.SessionInfo{{Path: "boxy/b", Status: "idle"}}}
+		data = fleet.ListResult{Self: "devbox/a", Sessions: []fleet.SessionInfo{{Path: "buildbox/b", Status: "idle"}}}
 	case "ask":
 		var a fleet.AskArgs
 		_ = json.Unmarshal(body, &a)
@@ -158,7 +158,7 @@ func TestProtocol(t *testing.T) {
 
 	// A transient failure is retried.
 	res := callTool(t, c, "fleet_list", map[string]any{})
-	if res.IsError || !strings.Contains(res.Content[0].Text, "boxy/b") {
+	if res.IsError || !strings.Contains(res.Content[0].Text, "buildbox/b") {
 		t.Fatalf("fleet_list: %+v", res)
 	}
 	// Errors from the coordinator are tool errors, not protocol errors.
@@ -200,7 +200,7 @@ func TestAskTwoPhase(t *testing.T) {
 			if a.WaitSeconds == nil || *a.WaitSeconds != 0 || a.HoldSeconds < 60 {
 				return fleet.AskResult{Status: fleet.AskFailed, Error: "shim did not use the two-phase ask"}
 			}
-			return fleet.AskResult{Status: fleet.AskPending, MessageID: "ask1", Target: "boxy/b"}
+			return fleet.AskResult{Status: fleet.AskPending, MessageID: "ask1", Target: "buildbox/b"}
 		},
 		inbox: func(a fleet.InboxArgs) fleet.InboxResult {
 			mu.Lock()
@@ -213,17 +213,17 @@ func TestAskTwoPhase(t *testing.T) {
 			if n == 1 {
 				return fleet.InboxResult{Ticket: &fleet.AskResult{Status: fleet.AskPending, MessageID: "ask1"}}
 			}
-			return fleet.InboxResult{Ticket: &fleet.AskResult{Status: fleet.AskReplied, MessageID: "ask1", Reply: "42", ReplyFrom: "boxy/b"}}
+			return fleet.InboxResult{Ticket: &fleet.AskResult{Status: fleet.AskReplied, MessageID: "ask1", Reply: "42", ReplyFrom: "buildbox/b"}}
 		},
 	}
 	c := startServer(t, node)
 	res := callTool(t, c, "fleet_ask", map[string]any{"to": "b", "text": "6x7?", "wait_seconds": 30})
-	if res.IsError || res.Content[0].Text != "Answer from boxy/b:\n42" {
+	if res.IsError || res.Content[0].Text != "Answer from buildbox/b:\n42" {
 		t.Fatalf("fleet_ask: %+v", res)
 	}
 	// wait_seconds 0 returns the ticket at once, without waiting.
 	node.ask = func(a fleet.AskArgs) fleet.AskResult {
-		return fleet.AskResult{Status: fleet.AskPending, MessageID: "ask2", Target: "boxy/b"}
+		return fleet.AskResult{Status: fleet.AskPending, MessageID: "ask2", Target: "buildbox/b"}
 	}
 	res = callTool(t, c, "fleet_ask", map[string]any{"to": "b", "text": "later", "wait_seconds": 0})
 	if res.IsError || !strings.Contains(res.Content[0].Text, `"message_id": "ask2"`) || !strings.Contains(res.Content[0].Text, "fleet_inbox") {

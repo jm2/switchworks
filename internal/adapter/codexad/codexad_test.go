@@ -96,7 +96,7 @@ func TestTurnLifecycle(t *testing.T) {
 	a := newFake(t, t.TempDir())
 	ctx := context.Background()
 	col := &collector{}
-	h, err := a.Start(ctx, adapter.StartSpec{Name: "antec/test", Cwd: "/work"}, col.sink)
+	h, err := a.Start(ctx, adapter.StartSpec{Name: "devbox/test", Cwd: "/work"}, col.sink)
 	if err != nil {
 		t.Fatal(err)
 	}

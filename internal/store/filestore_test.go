@@ -22,10 +22,10 @@ func TestEventsIdempotentAndPersistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateSession(model.Session{ID: "S1", Path: "antec/a", Status: model.StatusStarting}); err != nil {
+	if err := s.CreateSession(model.Session{ID: "S1", Path: "devbox/a", Status: model.StatusStarting}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateSession(model.Session{ID: "S2", Path: "antec/a"}); !errors.Is(err, ErrPathInUse) {
+	if err := s.CreateSession(model.Session{ID: "S2", Path: "devbox/a"}); !errors.Is(err, ErrPathInUse) {
 		t.Fatalf("want ErrPathInUse, got %v", err)
 	}
 	stored, err := s.AppendEvents([]model.Event{ev("S1", 1, "a"), ev("S1", 2, "b"), ev("S1", 3, "c")})
@@ -48,10 +48,10 @@ func TestEventsIdempotentAndPersistent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A stopped session's path can be reused; SessionByPath returns the newest.
-	if err := s.CreateSession(model.Session{ID: "S3", Path: "antec/a"}); err != nil {
+	if err := s.CreateSession(model.Session{ID: "S3", Path: "devbox/a"}); err != nil {
 		t.Fatal(err)
 	}
-	if sess, _ := s.SessionByPath("antec/a"); sess.ID != "S3" {
+	if sess, _ := s.SessionByPath("devbox/a"); sess.ID != "S3" {
 		t.Fatalf("by path: %s", sess.ID)
 	}
 	if err := s.Close(); err != nil {
@@ -91,9 +91,9 @@ func TestTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	_ = s.AddToken("h1", "antec", time.Now().Add(time.Hour))
+	_ = s.AddToken("h1", "devbox", time.Now().Add(time.Hour))
 	_ = s.AddToken("h2", "mini", time.Now().Add(-time.Second))
-	if host, err := s.ConsumeToken("h1"); err != nil || host != "antec" {
+	if host, err := s.ConsumeToken("h1"); err != nil || host != "devbox" {
 		t.Fatalf("consume: %v %s", err, host)
 	}
 	if _, err := s.ConsumeToken("h1"); !errors.Is(err, ErrBadToken) {

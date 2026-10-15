@@ -1,4 +1,4 @@
-# Web UI (M3)
+# Web UI
 
 The coordinator serves a web UI on its API port: `https://<coordinator>:7480/`.
 It is built for a phone first and works on a desktop browser too. It is plain
@@ -60,7 +60,7 @@ warn about it at first. There are two ways to fix that:
    ```json
    // coordinator.json
    "http_listen": "127.0.0.1:7482",
-   "public_ui": "https://t240.your-tailnet.ts.net"
+   "public_ui": "https://coord.your-tailnet.ts.net"
    ```
 
    ```sh
