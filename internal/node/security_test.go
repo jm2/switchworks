@@ -3,6 +3,7 @@
 package node
 
 import (
+	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/proc"
 	"os"
 	"path/filepath"
@@ -39,5 +40,21 @@ func TestQuoteHeaders(t *testing.T) {
 	out := formatMessage(m)
 	if strings.Count(out, "\n[switchyard") != 0 || strings.Count(out, "(quoted) ") != 5 || !strings.HasPrefix(out, "[switchyard msg=m1 from=devbox/a") {
 		t.Fatalf("formatted:\n%s", out)
+	}
+}
+
+func TestBoundedPayload(t *testing.T) {
+	big := strings.Repeat("+line\n", maxEventPayload/5)
+	b := boundedPayload(model.KindTurnDiff, model.TurnDiff{TurnID: "t", Diff: big})
+	if len(b) > maxEventPayload || !strings.Contains(string(b), "diff truncated by Switchyard") {
+		t.Fatalf("diff payload %d bytes", len(b))
+	}
+	b = boundedPayload(model.KindItemCompleted, model.Item{ItemID: "i", Text: big})
+	if len(b) > 1024 || !strings.Contains(string(b), `"truncated":true`) {
+		t.Fatalf("item payload %s", b)
+	}
+	small := model.Item{ItemID: "i", Text: "ok"}
+	if string(boundedPayload(model.KindItemCompleted, small)) != string(model.Marshal(small)) {
+		t.Fatal("a small payload changed")
 	}
 }

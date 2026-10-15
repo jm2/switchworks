@@ -28,6 +28,8 @@ var (
 
 // Store is the coordinator's persistence boundary.
 type Store interface {
+	// PruneMessages forgets finished messages past their retention.
+	PruneMessages(now time.Time)
 	UpsertHost(h model.Host) error
 	// DeleteHost forgets a host and its unused enrollment tokens.
 	DeleteHost(id string) error

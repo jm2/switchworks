@@ -111,6 +111,14 @@ func New(name string, o Options) (adapter.Adapter, error) {
 	return nil, fmt.Errorf("unknown harness %q (supported: %v)", name, Names(o))
 }
 
+// EnforcesSandbox reports whether a harness applies the sandbox setting a
+// session is spawned with (Codex's sandbox modes, agy's --sandbox). ACP
+// agents do not: they act with the user's full access, subject only to
+// their approval mode.
+func EnforcesSandbox(name string) bool {
+	return name == codexad.Harness || name == agyad.Harness || name == ""
+}
+
 // Available returns the harnesses whose binaries resolve on this host.
 func Available(o Options) []string {
 	var out []string

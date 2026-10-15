@@ -158,8 +158,25 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	if copied {
 		fmt.Fprintf(stdout, "  also installed for this user at %s\n", userCLI)
 	}
+	if ca, err := pki.LoadCA(*dir); err == nil {
+		// To check the CA a phone or browser downloads from /ca.crt.
+		fmt.Fprintf(stdout, "  CA SHA-256 fingerprint (check it when installing ca.crt):\n    %s\n", colonHex(pki.Fingerprint(ca.Cert)))
+	}
 	fmt.Fprintf(stdout, "\nNext: swyd coordinator run, then on each workstation:\n  swyd node enroll $(swyd coordinator enroll-token <host>)\n")
 	return 0
+}
+
+// colonHex formats a hex fingerprint the way certificate viewers show it.
+func colonHex(h string) string {
+	h = strings.ToUpper(h)
+	var b strings.Builder
+	for i := 0; i+1 < len(h); i += 2 {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(h[i : i+2])
+	}
+	return b.String()
 }
 
 func mainRun(args []string, stderr io.Writer) int {
@@ -185,6 +202,12 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Printf("load config (run `swyd coordinator init` first): %v", err)
 		return 1
 	}
+	lock, err := runstatus.Lock(*dir)
+	if err != nil {
+		logger.Print(err)
+		return 1
+	}
+	defer lock.Close()
 	st, err := store.OpenFileStore(filepath.Join(*dir, "data"))
 	if err != nil {
 		logger.Printf("open store: %v", err)

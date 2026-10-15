@@ -19,3 +19,19 @@ func TestSafe(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestSafeBidi(t *testing.T) {
+	var b bytes.Buffer
+	w := Safe(&b)
+	in := "safe \u202Eevil\u202C \u2066x\u2069 \u2014 ok"
+	raw := []byte(in)
+	// Byte at a time: sequences split across writes are still caught.
+	for i := range raw {
+		if _, err := w.Write(raw[i : i+1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := b.String(), "safe evil x \u2014 ok"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

@@ -98,3 +98,20 @@ func TestLogRotates(t *testing.T) {
 		}
 	}
 }
+
+func TestLock(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Lock(dir); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second lock: %v", err)
+	}
+	l.Close()
+	l2, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	l2.Close()
+}

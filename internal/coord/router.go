@@ -24,6 +24,7 @@ type Guards struct {
 	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 8)
 	AskPerMinute      int   `json:"ask_per_minute,omitempty"`      // per sender -> target pair (default 10)
 	SendPerMinute     int   `json:"send_per_minute,omitempty"`     // per sender -> target pair (default 30)
+	OutPerMinute      int   `json:"out_per_minute,omitempty"`      // per sender, all messages (default 60)
 	MaxSpawnDepth     int   `json:"max_spawn_depth,omitempty"`     // sessions spawned by spawned sessions... (default 2)
 	MaxDailyTokens    int64 `json:"max_daily_tokens,omitempty"`    // fleet-wide; refuses fleet_spawn once reached (0 = off)
 	DefaultTTLSeconds int   `json:"default_ttl_seconds,omitempty"` // undelivered messages expire (default 24h)
@@ -40,6 +41,9 @@ type Guards struct {
 	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // steer or interrupt their running turn
 	AllowReadAny  bool `json:"allow_read_any,omitempty"`  // read their last message with fleet_status
 	MaxBroadcast  int  `json:"max_broadcast,omitempty"`   // recipients of one broadcast from an agent (default 8)
+	// AllowUnsandboxedSpawn lets a sandboxed agent spawn a harness that
+	// does not enforce sandboxes (ACP agents such as goose).
+	AllowUnsandboxedSpawn bool `json:"allow_unsandboxed_spawn,omitempty"`
 }
 
 func (g Guards) withDefaults() Guards {
@@ -57,6 +61,9 @@ func (g Guards) withDefaults() Guards {
 	}
 	if g.DefaultTTLSeconds <= 0 {
 		g.DefaultTTLSeconds = 24 * 3600
+	}
+	if g.OutPerMinute <= 0 {
+		g.OutPerMinute = 60
 	}
 	if g.SpawnPerMinute <= 0 {
 		g.SpawnPerMinute = 3
@@ -154,6 +161,7 @@ func (r *router) loop() {
 	defer close(r.done)
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
+	var lastTidy time.Time
 	for {
 		select {
 		case <-t.C:
@@ -162,6 +170,10 @@ func (r *router) loop() {
 			return
 		}
 		now := time.Now()
+		if now.Sub(lastTidy) > time.Minute {
+			lastTidy = now
+			r.tidy(now)
+		}
 		for _, m := range r.s.store.PendingMessages() {
 			select {
 			case <-r.stop:
@@ -189,6 +201,31 @@ func (r *router) loop() {
 			}(m)
 		}
 	}
+}
+
+// tidy drops state that would otherwise grow for as long as the
+// coordinator runs: rate-limit buckets that have refilled, triggers of
+// sessions that have ended, and finished messages past their retention.
+func (r *router) tidy(now time.Time) {
+	r.mu.Lock()
+	for k, b := range r.buckets {
+		if now.Sub(b.last) > 2*time.Minute {
+			delete(r.buckets, k)
+		}
+	}
+	ids := make([]string, 0, len(r.inbound))
+	for id := range r.inbound {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+	for _, id := range ids {
+		if sess, ok := r.s.store.Session(id); !ok || !live(sess) {
+			r.mu.Lock()
+			delete(r.inbound, id)
+			r.mu.Unlock()
+		}
+	}
+	r.s.store.PruneMessages(now)
 }
 
 // put stores a message and tells the fleet views.
@@ -427,16 +464,19 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			if kind == model.MsgAsk {
 				limit, class = r.guards.AskPerMinute, "ask"
 			}
-			key := class + "|" + from.sess.ID + "|" + t.user
+			// People share one bucket: names are free to invent, so a
+			// bucket per name would be no limit at all.
+			key := class + "|" + from.sess.ID + "|user:*"
 			if t.sess != nil {
 				key = class + "|" + from.sess.ID + "|" + t.sess.ID
 			}
 			if !r.allow(key, limit) {
 				return out, ErrRateLimit
 			}
-			// Every recipient also counts against the sender's own budget,
-			// so a broadcast cannot fan out past it.
-			if len(targets) > 1 && !r.allow("fanout|"+from.sess.ID, r.guards.SendPerMinute) {
+			// Every message also counts against the sender's own budget,
+			// whatever its recipients, so neither a broadcast nor many
+			// recipients can get past it.
+			if !r.allow("out|"+from.sess.ID, r.guards.OutPerMinute) {
 				return out, ErrRateLimit
 			}
 		}

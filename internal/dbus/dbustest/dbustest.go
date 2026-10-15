@@ -4,6 +4,7 @@
 package dbustest
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,8 +47,11 @@ func StartBus(t *testing.T) string {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	// The socket file appears at bind, a moment before the daemon listens:
+	// wait until a connection succeeds.
 	for i := 0; i < 100; i++ {
-		if _, err := os.Stat(sock); err == nil {
+		if c, err := net.Dial("unix", sock); err == nil {
+			c.Close()
 			return "unix:path=" + sock
 		}
 		time.Sleep(50 * time.Millisecond)

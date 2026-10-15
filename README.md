@@ -319,7 +319,8 @@ and config folders, and can start the tray at login. They only read local status
 Open `https://coord.lan:7480/`. Because the certificate comes from the
 fleet's own CA, the browser warns at first. Either:
 
-- install the CA: open `https://coord.lan:7480/ca.crt` and trust it (on
+- install the CA: open `https://coord.lan:7480/ca.crt`, check its SHA-256
+  fingerprint against the one `swyd coordinator init` printed, and trust it (on
   iOS: Settings, General, About, Certificate Trust Settings), or
 - put the UI behind `tailscale serve` for a publicly trusted certificate
   (see [docs/web-ui.md](docs/web-ui.md)).
@@ -370,8 +371,9 @@ Guards in `coordinator.json` bound what agents can do to each other: hop
 limits, rate limits, spawn depth and a fleet-wide daily token budget
 (`guards.max_daily_tokens`; set one before letting agents spawn freely). By
 default an agent spawns only on its own host, with its own harness, inside
-its own working directory, and its children inherit its approval policy and
-sandbox; agents steer, interrupt and stop only sessions they spawned. See
+its own working directory; its children inherit its approval policy and
+sandbox, and a sandboxed agent cannot start an unsandboxed harness (ACP
+agents such as goose ignore sandboxes). Agents steer, interrupt and stop only sessions they spawned. See
 [docs/messaging.md](docs/messaging.md), including its trust model: the
 guards are not a sandbox, and an agent with a shell can read its node's
 credentials.

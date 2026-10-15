@@ -5,43 +5,63 @@ package render
 import "io"
 
 // Safe wraps a terminal writer so text from agents and models cannot
-// control the terminal: it drops escape and other control characters
-// (keeping tab and newline), including the C1 controls such as U+009B (CSI).
-// Without it, an agent's output could rewrite what `swyd attach` shows,
-// set the window title or write to the clipboard.
+// control the terminal or disguise itself: it drops escape and other
+// control characters (keeping tab and newline), including the C1 controls
+// such as U+009B (CSI), and the bidirectional overrides and isolates
+// (U+202A–U+202E, U+2066–U+2069) that can make text read differently from
+// what it is. Without it, an agent's output could rewrite what
+// `swyd attach` shows, set the window title or write to the clipboard.
 func Safe(w io.Writer) io.Writer { return &safeWriter{w: w} }
 
 type safeWriter struct {
 	w       io.Writer
-	pending bool // the previous write ended in 0xC2, a C1 control's lead byte
+	pending []byte // the start of a sequence split across writes
+}
+
+// drop reports whether the bytes at the start of b form a character to
+// remove, and how many bytes it has; need > 0 means b is too short to tell.
+func drop(b []byte) (n int, remove bool, need bool) {
+	c := b[0]
+	switch {
+	case c == '\n' || c == '\t':
+		return 1, false, false
+	case c < 0x20 || c == 0x7f:
+		return 1, true, false
+	case c == 0xc2:
+		if len(b) < 2 {
+			return 0, false, true
+		}
+		return 2, b[1] >= 0x80 && b[1] <= 0x9f, false
+	case c == 0xe2:
+		if len(b) < 3 {
+			if len(b) == 2 && b[1] != 0x80 && b[1] != 0x81 {
+				return 1, false, false
+			}
+			return 0, false, true
+		}
+		bidi := (b[1] == 0x80 && b[2] >= 0xaa && b[2] <= 0xae) || (b[1] == 0x81 && b[2] >= 0xa6 && b[2] <= 0xa9)
+		if bidi {
+			return 3, true, false
+		}
+		return 1, false, false
+	}
+	return 1, false, false
 }
 
 func (s *safeWriter) Write(p []byte) (int, error) {
-	out := make([]byte, 0, len(p)+1)
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		if s.pending {
-			s.pending = false
-			if c >= 0x80 && c <= 0x9f {
-				continue // U+0080..U+009F
-			}
-			out = append(out, 0xc2)
+	buf := append(s.pending, p...)
+	s.pending = nil
+	out := make([]byte, 0, len(buf))
+	for i := 0; i < len(buf); {
+		n, remove, need := drop(buf[i:])
+		if need {
+			s.pending = append([]byte(nil), buf[i:]...)
+			break
 		}
-		switch {
-		case c == '\n' || c == '\t':
-		case c < 0x20 || c == 0x7f:
-			continue
-		case c == 0xc2:
-			if i+1 == len(p) {
-				s.pending = true
-				continue
-			}
-			if n := p[i+1]; n >= 0x80 && n <= 0x9f {
-				i++
-				continue
-			}
+		if !remove {
+			out = append(out, buf[i:i+n]...)
 		}
-		out = append(out, c)
+		i += n
 	}
 	if _, err := s.w.Write(out); err != nil {
 		return 0, err

@@ -114,7 +114,7 @@ func TestAgentSpawnUnknownPolicies(t *testing.T) {
 
 func TestAgentSpawnGuardsWiden(t *testing.T) {
 	s := testServer(t, Guards{SpawnHosts: []string{"*"}, SpawnHarnesses: []string{"goose"}, SpawnCwdRoots: []string{"/srv/work"}})
-	parent := addSession(t, s, "devbox", "lead", func(x *model.Session) { x.Cwd = "/home/dev/app" })
+	parent := addSession(t, s, "devbox", "lead", func(x *model.Session) { x.Cwd, x.Sandbox = "/home/dev/app", "danger-full-access" })
 	spec := model.SpawnSpec{Host: "buildbox", Harness: "goose", Cwd: "/srv/work/x"}
 	if err := s.agentSpawn(from(parent), &spec, 1); err != nil {
 		t.Fatal(err)
@@ -238,4 +238,67 @@ func TestConnectionLimits(t *testing.T) {
 		t.Fatal("a freed slot was not reused")
 	}
 	_ = held
+}
+
+// Made-up user: names and many recipients do not get an agent past its
+// budget: people share one bucket, and every message counts against the
+// sender's total.
+func TestAgentSendBudget(t *testing.T) {
+	s := testServer(t, Guards{SendPerMinute: 2, OutPerMinute: 5})
+	r := s.router
+	ctx := context.Background()
+	a := addSession(t, s, "devbox", "a")
+	sent := 0
+	for i := 0; i < 50; i++ {
+		if _, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "user:u" + string(rune('a'+i%26)) + string(rune('a'+i/26)), Text: "x"}); err == nil {
+			sent++
+		}
+	}
+	if sent != 2 {
+		t.Fatalf("%d messages to invented people got through, want 2", sent)
+	}
+	for i := 0; i < 10; i++ {
+		addSession(t, s, "devbox", "t"+string(rune('a'+i)))
+	}
+	sent = 0
+	for i := 0; i < 10; i++ {
+		if _, err := r.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "devbox/t" + string(rune('a'+i)), Text: "x"}); err == nil {
+			sent++
+		}
+	}
+	if sent != 3 { // 5 in all, 2 already used
+		t.Fatalf("%d messages to distinct sessions got through, want 3", sent)
+	}
+	s.router.tidy(time.Now().Add(10 * time.Minute))
+	s.router.mu.Lock()
+	n := len(s.router.buckets)
+	s.router.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d buckets left after tidying", n)
+	}
+}
+
+// A sandboxed agent cannot start a harness that ignores sandboxes, even
+// where spawn_harnesses allows that harness, unless the guards say so.
+func TestAgentSpawnKeepsSandbox(t *testing.T) {
+	s := testServer(t, Guards{SpawnHarnesses: []string{"goose"}})
+	parent := addSession(t, s, "devbox", "lead", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/w", "never", "read-only"
+	})
+	spec := model.SpawnSpec{Harness: "goose"}
+	if err := s.agentSpawn(from(parent), &spec, 1); err == nil || !strings.Contains(err.Error(), "does not enforce a sandbox") {
+		t.Fatalf("read-only codex agent spawned goose: %v", err)
+	}
+	s.router.guards.AllowUnsandboxedSpawn = true
+	spec = model.SpawnSpec{Harness: "goose"}
+	if err := s.agentSpawn(from(parent), &spec, 1); err != nil {
+		t.Fatalf("with allow_unsandboxed_spawn: %v", err)
+	}
+	// A goose agent (already unsandboxed) may spawn goose.
+	s.router.guards.AllowUnsandboxedSpawn = false
+	g := addSession(t, s, "devbox", "g", func(x *model.Session) { x.Cwd, x.Harness, x.Sandbox = "/w", "goose", "read-only" })
+	spec = model.SpawnSpec{}
+	if err := s.agentSpawn(from(g), &spec, 1); err != nil {
+		t.Fatalf("goose spawning goose: %v", err)
+	}
 }

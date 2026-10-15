@@ -232,9 +232,17 @@ func (n *Node) sender() {
 			for {
 				s.mu.Lock()
 				var batch []model.Event
+				size := 0
 				for _, ev := range s.unacked {
 					if ev.Seq > s.sentSeq {
+						// Bounded by count and bytes, well inside the
+						// coordinator's line limit, however big a backlog
+						// of diffs has grown.
+						if len(batch) > 0 && size+len(ev.Payload)+512 > maxBatchBytes {
+							break
+						}
 						batch = append(batch, ev)
+						size += len(ev.Payload) + 512
 						if len(batch) == 500 {
 							break
 						}

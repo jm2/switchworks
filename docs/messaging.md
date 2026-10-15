@@ -119,7 +119,8 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | Field | Default | Effect |
 | --- | --- | --- |
 | `max_hops` | 8 | longest chain of message-triggered turns; a send that would exceed it is refused |
-| `send_per_minute` | 30 | per sender → target pair |
+| `send_per_minute` | 30 | per sender → target pair (all `user:` recipients count as one target) |
+| `out_per_minute` | 60 | per agent, all its messages together |
 | `ask_per_minute` | 10 | per sender → target pair |
 | `max_spawn_depth` | 2 | spawned sessions may spawn, up to this depth |
 | `spawn_per_minute` | 3 | spawns per agent |
@@ -131,6 +132,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_steer_any` | false | let agents steer or interrupt sessions they did not spawn |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
 | `max_broadcast` | 8 | recipients of one broadcast from an agent |
+| `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose) |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits |
 
 People are not rate limited. Hops count from the message that started the
@@ -139,8 +141,11 @@ another agent is hop 1, and so on. A spawn counts as a hop too, so a loop of
 spawns and completion notices ends at `max_hops`.
 
 A session an agent spawns always inherits the agent's approval policy and
-sandbox, and its working directory is checked on the target host with
-symlinks resolved. Agents cannot set the label keys `host`, `harness`,
+sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such
+as goose run with the user's full access. So a sandboxed agent may not
+spawn one (even where `spawn_harnesses` allows it) unless
+`allow_unsandboxed_spawn` is set. The child's working directory is checked
+on the target host with symlinks (and Windows junctions) resolved. Agents cannot set the label keys `host`, `harness`,
 `parent` or any key starting with `owner.`, so routes such as
 `@owner.role=reviewer` stay under your control. (Plain labels such as `@role=reviewer`, and
 the paths of stopped sessions, can still be taken by an agent's children.)

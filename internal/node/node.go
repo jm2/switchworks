@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jm2/switchyard/internal/adapter"
 	"github.com/jm2/switchyard/internal/adapter/agyad"
@@ -410,10 +411,37 @@ func (s *session) emit(kind string, payload any) {
 	s.n.wakeSender()
 }
 
+// Size limits on what a node sends: one event's payload, and one batch of
+// events (the coordinator refuses lines over wire.MaxLine, which would
+// otherwise disconnect the node over the same batch forever).
+const (
+	maxEventPayload = 4 << 20
+	maxBatchBytes   = 8 << 20
+)
+
+// boundedPayload encodes payload, shrinking an oversized one: a turn diff
+// keeps its first part, anything else is replaced by a note of its size.
+func boundedPayload(kind string, payload any) json.RawMessage {
+	b := model.Marshal(payload)
+	if len(b) <= maxEventPayload {
+		return b
+	}
+	if d, ok := payload.(model.TurnDiff); ok {
+		const keep = 1 << 20
+		cut := keep
+		for cut > 0 && !utf8.RuneStart(d.Diff[cut]) {
+			cut--
+		}
+		d.Diff = d.Diff[:cut] + fmt.Sprintf("\n… (diff truncated by Switchyard: %d bytes in all)\n", len(d.Diff))
+		return model.Marshal(d)
+	}
+	return model.Marshal(map[string]any{"truncated": true, "kind": kind, "bytes": len(b)})
+}
+
 func (s *session) appendLocked(kind string, payload any) {
 	s.seq++
 	ev := model.Event{ID: ulid.New(), SessionID: s.rec.ID, Seq: s.seq, TS: time.Now().UTC(), Kind: kind,
-		Source: s.rec.Harness, Payload: model.Marshal(payload)}
+		Source: s.rec.Harness, Payload: boundedPayload(kind, payload)}
 	b, _ := json.Marshal(ev)
 	b = append(b, '\n')
 	if s.spool != nil {
@@ -900,11 +928,22 @@ func (n *Node) Close() error {
 	return n.saveState()
 }
 
+// sandboxed picks the harnesses that apply a session's sandbox setting.
+func sandboxed(names []string) []string {
+	out := []string{}
+	for _, h := range names {
+		if harness.EnforcesSandbox(h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 // hello builds the node's greeting.
 func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Features: []string{wire.FeatureCwdRoot},
-		Version:  version.Version, Adapters: n.Adapters()}
+		Features: []string{wire.FeatureCwdRoot}, Sandboxed: sandboxed(n.Adapters()),
+		Version: version.Version, Adapters: n.Adapters()}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
 		if !s.rec.Stopped || len(s.unacked) > 0 {
