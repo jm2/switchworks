@@ -294,7 +294,9 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 		// agent: it carries the hop count, and the child sees who sent it
 		// rather than taking it for the owner's words.
 		if _, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt}); err != nil {
-			return fleet.SpawnResult{ID: sess.ID, Path: sess.Path}, fmt.Errorf("spawned %s, but its prompt was not sent: %w", sess.Path, err)
+			// Stop the child rather than leave it idle with no task.
+			_, _ = s.SessionCommand(ctx, sess.ID, wire.Cmd{Op: wire.OpStop})
+			return fleet.SpawnResult{}, fmt.Errorf("spawned %s, but its prompt could not be sent (%w), so it was stopped", sess.Path, err)
 		}
 	}
 	return fleet.SpawnResult{ID: sess.ID, Path: sess.Path}, nil
