@@ -48,6 +48,9 @@ type StartSpec struct {
 	ApprovalPolicy string // codex: never | on-request | untrusted
 	Sandbox        string // codex: read-only | workspace-write | danger-full-access
 	Env            map[string]string
+	// CwdRoot, when set, is the directory Cwd must stay inside (sessions
+	// spawned by agents); adapters check it before every use of Cwd.
+	CwdRoot string
 
 	// MCP is an MCP server to attach to this session only (the fleet
 	// tools). It carries a per-session credential, so it is never persisted.

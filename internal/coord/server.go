@@ -41,6 +41,10 @@ type Server struct {
 
 	dropLogged map[string]time.Time // host -> last "dropped input" log
 
+	// hostMu orders changes to a host's pinned certificate (enroll, remove)
+	// against nodes completing their connection.
+	hostMu sync.Mutex
+
 	router *router
 	web    *webAuth
 
@@ -160,23 +164,9 @@ func (s *Server) handleNode(c net.Conn) {
 		return
 	}
 	host := certs[0].Subject.CommonName
-	rec, ok := s.store.Host(host)
-	if !ok {
-		s.logf("rejecting node %q from %s: not enrolled", host, c.RemoteAddr())
-		c.Close()
-		return
-	}
 	fp := pki.Fingerprint(certs[0])
-	switch rec.CertSHA256 {
-	case fp:
-	case "":
-		// Enrolled before certificates were pinned: trust the first one
-		// seen. Enrolling again replaces it.
-		rec.CertSHA256 = fp
-		_ = s.store.UpsertHost(rec)
-		s.logf("node %s: pinned certificate %s", host, fp)
-	default:
-		s.logf("rejecting node %q from %s: certificate %s was replaced or revoked", host, c.RemoteAddr(), fp)
+	if _, err := s.checkPin(host, fp); err != nil { // early refusal; checked again below
+		s.logf("rejecting node %q from %s: %v", host, c.RemoteAddr(), err)
 		c.Close()
 		return
 	}
@@ -197,21 +187,40 @@ func (s *Server) handleNode(c net.Conn) {
 
 	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
 		reqs: make(chan struct{}, maxNodeReqs)}
+	// The pin is checked again and the node registered under hostMu, which
+	// removing or re-enrolling the host also holds: a connection that was
+	// opened before either cannot complete after it.
+	s.hostMu.Lock()
+	rec, err := s.checkPin(host, fp)
+	if err != nil {
+		s.hostMu.Unlock()
+		s.logf("rejecting node %q from %s: %v", host, c.RemoteAddr(), err)
+		c.Close()
+		return
+	}
+	if rec.CertSHA256 == "" {
+		// Enrolled before certificates were pinned: trust the first one
+		// seen. Enrolling again replaces it.
+		rec.CertSHA256 = fp
+		s.logf("node %s: pinned certificate %s", host, fp)
+	}
+	rec.OS, rec.Arch, rec.Version, rec.Adapters = hello.OS, hello.Arch, hello.Version, hello.Adapters
+	rec.Connected, rec.LastSeen = true, time.Now()
+	_ = s.store.UpsertHost(rec)
 	s.mu.Lock()
 	if old := s.nodes[host]; old != nil {
 		go old.close()
 	}
 	s.nodes[host] = n
 	s.mu.Unlock()
-	rec.OS, rec.Arch, rec.Version, rec.Adapters = hello.OS, hello.Arch, hello.Version, hello.Adapters
-	rec.Connected, rec.LastSeen = true, time.Now()
-	_ = s.store.UpsertHost(rec)
+	s.hostMu.Unlock()
 	s.logf("node %s connected from %s (%s/%s, %s, adapters %v, %d sessions)", host, c.RemoteAddr(), hello.OS, hello.Arch, hello.Version, hello.Adapters, len(hello.Sessions))
 	s.publishHost(host)
 
 	acked := map[string]int64{}
 	for _, st := range hello.Sessions {
 		s.reconcile(host, st)
+		s.learnPolicies(host, st)
 		acked[st.ID] = s.store.LastSeq(st.ID)
 	}
 	if err := wc.Send(wire.TWelcome, "", "", wire.Welcome{Protocol: wire.ProtocolVersion, Acked: acked}); err != nil {
@@ -229,11 +238,13 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 	s.mu.Unlock()
 	if current {
+		s.hostMu.Lock()
 		if h, ok := s.store.Host(host); ok && h.CertSHA256 == fp {
 			h.Connected = false
 			h.LastSeen = time.Now()
 			_ = s.store.UpsertHost(h)
 		}
+		s.hostMu.Unlock()
 		s.logf("node %s disconnected", host)
 		s.publishHost(host)
 	}
@@ -273,6 +284,20 @@ func (s *Server) reconcile(host string, st wire.SessionState) {
 	if err != nil {
 		s.logf("node %s: adopt session %s (%s): %v", host, st.ID, st.Path, err)
 	}
+}
+
+// learnPolicies records the approval policy and sandbox a node reports for
+// one of its sessions, when the coordinator does not know them yet (sessions
+// from before they were recorded, or adopted ones).
+func (s *Server) learnPolicies(host string, st wire.SessionState) {
+	if validateSpawn(model.SpawnSpec{Harness: "x", ApprovalPolicy: st.ApprovalPolicy, Sandbox: st.Sandbox}) != nil {
+		return
+	}
+	_, _ = s.store.UpdateSession(st.ID, func(x *model.Session) {
+		if x.Host == host && x.ApprovalPolicy == "" && x.Sandbox == "" {
+			x.ApprovalPolicy, x.Sandbox = st.ApprovalPolicy, st.Sandbox
+		}
+	})
 }
 
 func knownStatus(st string) bool {
@@ -535,6 +560,20 @@ func (s *Server) publish(ev model.Event) {
 	}
 }
 
+// checkPin returns host's record if a node with certificate fingerprint fp
+// may connect: the host is enrolled and fp is its pinned certificate (or
+// none is pinned yet).
+func (s *Server) checkPin(host, fp string) (model.Host, error) {
+	rec, ok := s.store.Host(host)
+	switch {
+	case !ok:
+		return rec, errors.New("not enrolled")
+	case rec.CertSHA256 != "" && rec.CertSHA256 != fp:
+		return rec, fmt.Errorf("certificate %s was replaced or revoked", fp)
+	}
+	return rec, nil
+}
+
 // disconnect drops a host's node connection, if any.
 func (s *Server) disconnect(host string) {
 	if n, ok := s.node(host); ok {
@@ -617,6 +656,9 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 			return model.Session{}, fmt.Errorf("unknown host %q", spec.Host)
 		}
 		return model.Session{}, fmt.Errorf("host %q: %w", spec.Host, ErrOffline)
+	}
+	if spec.CwdRoot != "" && !contains(n.hello.Features, wire.FeatureCwdRoot) {
+		return model.Session{}, fmt.Errorf("host %q runs an older swyd that cannot confine sessions spawned by agents; upgrade it", spec.Host)
 	}
 	if !contains(n.hello.Adapters, spec.Harness) {
 		return model.Session{}, fmt.Errorf("host %q has no %s harness (available: %v)", spec.Host, spec.Harness, n.hello.Adapters)

@@ -11,9 +11,12 @@ package proc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -71,10 +74,15 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	if err := p.plat.attach(cmd); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		stdout.Close()
 		return nil, err
 	}
 	go func() {
 		p.waitErr = cmd.Wait()
+		// A descendant that left the process group may still hold the
+		// pipe's write end; give the reader a moment to drain what the
+		// process wrote, then end the read instead of waiting for it.
+		_ = stdout.SetReadDeadline(time.Now().Add(5 * time.Second))
 		p.plat.release()
 		close(p.done)
 	}()
@@ -146,6 +154,26 @@ func (p *Process) Kill() error {
 	err := p.plat.kill(p.cmd)
 	<-p.done
 	return err
+}
+
+// CheckWithin reports an error unless dir, with symlinks resolved, is root
+// or below it. Adapters call it right before every use of a session's cwd
+// when the session has a root (it was spawned by an agent), so the agent
+// cannot swap a directory for a symlink between spawn and use.
+func CheckWithin(root, dir string) error {
+	if root == "" {
+		return nil
+	}
+	r, err1 := filepath.EvalSymlinks(root)
+	d, err2 := filepath.EvalSymlinks(dir)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("cwd %q must be inside %q", dir, root)
+	}
+	rel, err := filepath.Rel(r, d)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("cwd %q is outside %q, the directory this session may work in", dir, root)
+	}
+	return nil
 }
 
 // LookPath resolves a binary like exec.LookPath, returning a clearer error.

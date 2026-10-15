@@ -902,7 +902,7 @@ function inboxView() {
           if (!box.value.trim()) return;
           btn.disabled = true;
           try {
-            await api('POST', `/v1/messages/${m.id}/reply`, {text: box.value.trim(), from: ME});
+            await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/reply`, {text: box.value.trim(), from: ME});
             drafts.delete(m.id);
             toast('Answer sent to ' + m.from);
           } catch (err) {

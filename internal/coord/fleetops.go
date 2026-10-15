@@ -342,6 +342,12 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 		}
 	}
 	spec.ApprovalPolicy, spec.Sandbox = p.ApprovalPolicy, p.Sandbox
+	if spec.ApprovalPolicy == "" {
+		spec.ApprovalPolicy = "untrusted" // unknown: the strictest, not the node's default
+	}
+	if spec.Sandbox == "" {
+		spec.Sandbox = "read-only"
+	}
 	spec.Prompt = "" // sent as a message once the child exists
 	if !s.router.allow("spawn|"+p.ID, g.SpawnPerMinute) {
 		return fmt.Errorf("spawn rate limit: at most %d a minute", g.SpawnPerMinute)

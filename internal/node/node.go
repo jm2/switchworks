@@ -26,11 +26,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/jm2/switchyard/internal/adapter"
 	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/proc"
 	"github.com/jm2/switchyard/internal/ulid"
 	"github.com/jm2/switchyard/internal/version"
 	"github.com/jm2/switchyard/internal/wire"
@@ -519,14 +521,19 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 		// An agent's spawn: the coordinator checked the path's text; here
 		// symlinks are resolved too, so a link inside the root cannot lead
 		// out of it.
-		if err := within(spec.CwdRoot, spec.Cwd); err != nil {
+		if err := proc.CheckWithin(spec.CwdRoot, spec.Cwd); err != nil {
 			return nil, err
+		}
+		// Keep the resolved path, so a symlink swapped in later is not
+		// followed (adapters check again before each use).
+		if real, err := filepath.EvalSymlinks(spec.Cwd); err == nil {
+			spec.Cwd = real
 		}
 	}
 	s := &session{n: n, rec: record{
 		ID: cmd.Session.ID, Path: cmd.Session.Path, Harness: harnessName, Status: model.StatusStarting, CreatedAt: time.Now(),
 		Spec: adapter.StartSpec{Name: cmd.Session.Path, Cwd: spec.Cwd, Model: spec.Model, Provider: spec.Provider,
-			ApprovalPolicy: approval, Sandbox: sandbox},
+			ApprovalPolicy: approval, Sandbox: sandbox, CwdRoot: spec.CwdRoot},
 	}}
 	if err := s.openSpool(); err != nil {
 		return nil, err
@@ -566,20 +573,6 @@ func spawnResult(ref *model.NativeRef, sp adapter.StartSpec) json.RawMessage {
 	return model.Marshal(wire.SpawnResult{NativeRef: ref, ApprovalPolicy: sp.ApprovalPolicy, Sandbox: sp.Sandbox})
 }
 
-// within checks that dir, with symlinks resolved, is root or below it.
-func within(root, dir string) error {
-	r, err1 := filepath.EvalSymlinks(root)
-	d, err2 := filepath.EvalSymlinks(dir)
-	if err1 != nil || err2 != nil {
-		return fmt.Errorf("cwd %q must be inside %q", dir, root)
-	}
-	rel, err := filepath.Rel(r, d)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("cwd %q is outside %q, the directory this agent may spawn in", dir, root)
-	}
-	return nil
-}
-
 func (n *Node) session(id string) (*session, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -604,14 +597,17 @@ func (s *session) handle() (adapter.Handle, error) {
 
 // quoteHeaders marks lines in a relayed message that look like Switchyard's
 // own header, so one agent cannot pass off text as coming from a person or
-// another sender.
+// another sender. Carriage returns count as line breaks, and leading spaces,
+// invisible characters and case are ignored when matching.
 func quoteHeaders(text string) string {
-	if !strings.Contains(text, "["+version.Slug) {
-		return text
-	}
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 	lines := strings.Split(text, "\n")
+	tag := "[" + strings.ToLower(version.Slug)
 	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimLeft(l, " \t>"), "["+version.Slug) {
+		bare := strings.TrimLeftFunc(l, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || r == '>' || unicode.IsControl(r)
+		})
+		if strings.HasPrefix(strings.ToLower(bare), tag) {
 			lines[i] = "(quoted) " + l
 		}
 	}
@@ -884,12 +880,14 @@ func (n *Node) Close() error {
 // hello builds the node's greeting.
 func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Version: version.Version, Adapters: n.Adapters()}
+		Features: []string{wire.FeatureCwdRoot},
+		Version:  version.Version, Adapters: n.Adapters()}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
 		if !s.rec.Stopped || len(s.unacked) > 0 {
 			h.Sessions = append(h.Sessions, wire.SessionState{ID: s.rec.ID, Path: s.rec.Path, Harness: s.rec.Harness,
-				Status: s.rec.Status, LastSeq: s.seq, NativeRef: s.rec.NativeRef})
+				Status: s.rec.Status, LastSeq: s.seq, NativeRef: s.rec.NativeRef,
+				ApprovalPolicy: s.rec.Spec.ApprovalPolicy, Sandbox: s.rec.Spec.Sandbox})
 		}
 		s.mu.Unlock()
 	}

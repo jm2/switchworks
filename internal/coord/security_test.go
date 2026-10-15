@@ -4,8 +4,10 @@ package coord
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
@@ -96,6 +98,20 @@ func TestAgentSpawnConfinement(t *testing.T) {
 	t.Fatal("no spawn rate limit")
 }
 
+// A parent whose policies are unknown hands its child the strictest ones,
+// not the node's defaults.
+func TestAgentSpawnUnknownPolicies(t *testing.T) {
+	s := testServer(t, Guards{})
+	parent := addSession(t, s, "devbox", "old", func(x *model.Session) { x.Cwd = "/w" })
+	spec := model.SpawnSpec{}
+	if err := s.agentSpawn(from(parent), &spec, 1); err != nil {
+		t.Fatal(err)
+	}
+	if spec.ApprovalPolicy != "untrusted" || spec.Sandbox != "read-only" {
+		t.Fatalf("child policies %q %q", spec.ApprovalPolicy, spec.Sandbox)
+	}
+}
+
 func TestAgentSpawnGuardsWiden(t *testing.T) {
 	s := testServer(t, Guards{SpawnHosts: []string{"*"}, SpawnHarnesses: []string{"goose"}, SpawnCwdRoots: []string{"/srv/work"}})
 	parent := addSession(t, s, "devbox", "lead", func(x *model.Session) { x.Cwd = "/home/dev/app" })
@@ -175,4 +191,51 @@ func TestAgentMessagingLimits(t *testing.T) {
 	if _, err := r.inbox(ctx, from(a), fleet.InboxArgs{Ticket: res.MessageID}); err != nil {
 		t.Fatalf("asker reading its ticket: %v", err)
 	}
+}
+
+// One client holding many connections open is turned away past its share
+// and does not block anyone else.
+func TestConnectionLimits(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := limitListener(inner, 100, 3)
+	defer ln.Close()
+	accepted := make(chan net.Conn, 10)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	var held []net.Conn
+	for i := 0; i < 5; i++ {
+		c, err := net.Dial("tcp", inner.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		held = append(held, c)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := len(accepted); n != 3 {
+		t.Fatalf("accepted %d connections from one address, want 3", n)
+	}
+	// Closing one frees a slot.
+	(<-accepted).Close()
+	c, err := net.Dial("tcp", inner.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a freed slot was not reused")
+	}
+	_ = held
 }

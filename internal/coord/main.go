@@ -208,7 +208,7 @@ func mainRun(args []string, stderr io.Writer) int {
 	if cfg.HTTPListen != "" {
 		// Plain HTTP carries the admin token and cookies unencrypted, and
 		// requests from loopback are trusted to say what a proxy forwarded.
-		if h, _, err := net.SplitHostPort(cfg.HTTPListen); err != nil || net.ParseIP(h) == nil || !net.ParseIP(h).IsLoopback() {
+		if h, _, err := net.SplitHostPort(cfg.HTTPListen); err != nil || (h != "localhost" && (net.ParseIP(h) == nil || !net.ParseIP(h).IsLoopback())) {
 			logger.Printf("http_listen %q must be a loopback address (127.0.0.1:port or [::1]:port)", cfg.HTTPListen)
 			return 1
 		}

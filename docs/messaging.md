@@ -142,7 +142,11 @@ A session an agent spawns always inherits the agent's approval policy and
 sandbox, and its working directory is checked on the target host with
 symlinks resolved. Agents cannot set the label keys `host`, `harness`,
 `parent` or any key starting with `owner.`, so routes such as
-`@owner.role=reviewer` stay under your control.
+`@owner.role=reviewer` stay under your control. (Plain labels such as `@role=reviewer`, and
+the paths of stopped sessions, can still be taken by an agent's children.)
+An agent's spawn is refused on a node too old to enforce the directory
+check, and a parent whose policies are unknown gives its child the
+strictest ones (`untrusted`, `read-only`).
 
 ## Trust model
 

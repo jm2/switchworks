@@ -94,11 +94,16 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 // marked gone. Enroll it again to bring it back.
 func (s *Server) handleRemoveHost(w http.ResponseWriter, r *http.Request) {
 	host := r.PathValue("id")
-	if err := s.store.DeleteHost(host); err != nil {
+	s.hostMu.Lock()
+	err := s.store.DeleteHost(host)
+	if err == nil {
+		s.disconnect(host)
+	}
+	s.hostMu.Unlock()
+	if err != nil {
 		writeErr(w, 404, err)
 		return
 	}
-	s.disconnect(host)
 	for _, sess := range s.store.Sessions() {
 		if sess.Host == host && live(sess) {
 			_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusGone })
@@ -556,16 +561,21 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	// The new certificate replaces any earlier one for this host, which can
 	// no longer connect.
+	s.hostMu.Lock()
 	h, known := s.store.Host(host)
 	if !known {
 		h = model.Host{ID: host, LastSeen: time.Now()}
 	}
 	h.CertSHA256 = pki.Fingerprint(parsed)
-	if err := s.store.UpsertHost(h); err != nil {
+	err = s.store.UpsertHost(h)
+	if err == nil {
+		s.disconnect(host)
+	}
+	s.hostMu.Unlock()
+	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	s.disconnect(host)
 	s.logf("enrolled host %s from %s", host, remoteHost(r))
 	writeJSON(w, 200, EnrollResponse{Host: host, Cert: string(cert), CA: string(s.ca.PEM), NodeAddr: s.cfg.PublicNode})
 }
@@ -578,9 +588,17 @@ func remoteHost(r *http.Request) string {
 	return h
 }
 
-// maxConns bounds open API connections, so idle or slow clients cannot use
-// up the file descriptors the event store also needs.
-const maxConns = 512
+// Connection limits for the API listener: per client address and in all.
+// A client over its share is turned away at once (not queued), so one
+// client holding connections open cannot lock others out, and the total
+// stays well inside the coordinator's file descriptors. The plain-HTTP
+// listener sees every request from its local proxy, so it has no per-client
+// limit.
+const (
+	maxConns       = 4096
+	maxConnsPerIP  = 64
+	plainConnLimit = 1024
+)
 
 // httpServer configures the API server's limits. Responses have no write
 // deadline, because event streams and waiting asks stay open; the
@@ -612,35 +630,49 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// limitListener accepts at most n connections at a time.
-func limitListener(ln net.Listener, n int) net.Listener {
-	return &limitedListener{Listener: ln, sem: make(chan struct{}, n), done: make(chan struct{})}
+// limitListener caps open connections, in all and (perIP > 0) per client
+// address, closing new ones over a limit right away.
+func limitListener(ln net.Listener, total, perIP int) net.Listener {
+	return &limitedListener{Listener: ln, total: total, perIP: perIP, byIP: map[string]int{}}
 }
 
 type limitedListener struct {
 	net.Listener
-	sem  chan struct{}
-	done chan struct{}
-	once sync.Once
-}
+	total, perIP int
 
-func (l *limitedListener) Close() error {
-	l.once.Do(func() { close(l.done) })
-	return l.Listener.Close()
+	mu   sync.Mutex
+	open int
+	byIP map[string]int
 }
 
 func (l *limitedListener) Accept() (net.Conn, error) {
-	select {
-	case l.sem <- struct{}{}:
-	case <-l.done:
-		return nil, net.ErrClosed
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ip := ""
+		if h, _, err := net.SplitHostPort(c.RemoteAddr().String()); err == nil {
+			ip = h
+		}
+		l.mu.Lock()
+		if l.open >= l.total || (l.perIP > 0 && l.byIP[ip] >= l.perIP) {
+			l.mu.Unlock()
+			_ = c.Close()
+			continue
+		}
+		l.open++
+		l.byIP[ip]++
+		l.mu.Unlock()
+		return &limitedConn{Conn: c, release: func() {
+			l.mu.Lock()
+			l.open--
+			if l.byIP[ip]--; l.byIP[ip] <= 0 {
+				delete(l.byIP, ip)
+			}
+			l.mu.Unlock()
+		}}, nil
 	}
-	c, err := l.Listener.Accept()
-	if err != nil {
-		<-l.sem
-		return nil, err
-	}
-	return &limitedConn{Conn: c, release: func() { <-l.sem }}, nil
 }
 
 type limitedConn struct {
@@ -663,7 +695,7 @@ func (s *Server) ServeAPI(ctx context.Context, ln net.Listener) error {
 	}
 	srv := s.httpServer()
 	srv.TLSConfig = tlsCfg
-	ln = limitListener(ln, maxConns)
+	ln = limitListener(ln, maxConns, maxConnsPerIP)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -681,7 +713,7 @@ func (s *Server) ServeAPI(ctx context.Context, ln net.Listener) error {
 // on the same machine (Config.HTTPListen).
 func (s *Server) ServePlain(ctx context.Context, ln net.Listener) error {
 	srv := s.httpServer()
-	ln = limitListener(ln, maxConns)
+	ln = limitListener(ln, plainConnLimit, 0)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

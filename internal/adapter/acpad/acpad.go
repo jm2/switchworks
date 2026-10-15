@@ -291,6 +291,9 @@ func (h *handle) mcpServers() []acp.McpServerStdio {
 // open starts an agent process and creates (sessionID == "") or reopens a
 // session in it, then registers.
 func (h *handle) open(ctx context.Context, sessionID string) error {
+	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return err
+	}
 	c, err := acp.Start(ctx, acp.Options{
 		Bin: h.a.cfg.Bin, Args: h.a.cfg.Args, Dir: h.spec.Cwd, Env: h.env(),
 		Stderr: h.a.cfg.Stderr, Tap: h.a.cfg.Tap,
