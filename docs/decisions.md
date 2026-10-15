@@ -125,3 +125,50 @@ trusted certificate without Switchyard handling ACME.
 **Approvals live by the composer.** On a phone the action you need is at
 the bottom, within reach, and the transcript only notes that an approval
 was requested and how it was answered.
+
+## M5: ACP agents, and agy on the documented schema
+
+**ACP before observed sessions.** Goose over ACP reaches DeepSeek, GLM and
+MiMo through their Anthropic-compatible endpoints, which removes the need
+for a Responses-to-Chat proxy in front of Codex. The ACP client is
+hand-written on `internal/jsonrpc` (now with an optional `"jsonrpc":"2.0"`
+field and a split send/wait call), keeping the module dependency-free.
+
+**One agent process per ACP session.** Codex shares one app-server per
+node; ACP sessions each get their own process. That isolates crashes and
+stuck turns, lets per-agent environment (provider keys) differ by harness
+name, and makes Stop and restart simple. The cost is memory per session.
+
+**Normalize tool calls into Codex's item shapes.** ACP tool calls become
+`commandExecution`, `fileChange` (with a unified diff computed from the
+old and new text), `mcpToolCall`, or a generic `toolCall`. The UI and CLI
+render the first three without changes; only `toolCall`, `reasoning` and
+`plan` are new.
+
+**Codex's decision vocabulary for ACP approvals.** `allow_once` /
+`allow_always` / `reject_once` / `reject_always` map to `accept` /
+`acceptForSession` / `decline` / `declineAlways`, plus `cancel`. Unknown
+option kinds are offered under their raw option id.
+
+**Fleet tools are approved automatically for ACP agents too.** Goose in
+`approve` mode asks before every tool; waiting on a person for
+`fleet_reply` would stall agent-to-agent traffic.
+
+**The prompt is written before Deliver returns.** An Interrupt right after
+a Deliver must reach the agent after the prompt, or the agent ignores the
+cancel. The same holds for agy, whose prompt line is written synchronously.
+
+**Session/load replay is discarded.** The coordinator already has the
+history; replayed updates arrive before the load response and are dropped.
+
+**agy: long-lived stream-json process.** `--input-format stream-json` is
+now documented, so each session keeps one process; `per_turn` keeps the
+single-shot mode. Usage is cumulative per process, so the baseline resets
+when a process starts.
+
+**agy fleet tools are opt-in and write files.** agy has no per-run MCP
+option. The node merges a credential-free `swyd` entry into the
+workspace's `.agents/mcp_config.json` (never touching other entries or an
+unparsable file) and an `mcp(swyd/*)` allow rule into agy's settings. It is
+off by default because it changes files outside Switchyard's own
+directories.

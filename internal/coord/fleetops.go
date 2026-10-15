@@ -150,7 +150,17 @@ func (s *Server) info(sess model.Session) fleet.SessionInfo {
 }
 
 func (s *Server) fleetList(from sender, a fleet.ListArgs) fleet.ListResult {
-	res := fleet.ListResult{Self: from.addr(), Sessions: []fleet.SessionInfo{}}
+	res := fleet.ListResult{Self: from.addr(), Hosts: []fleet.HostInfo{}, Sessions: []fleet.SessionInfo{}}
+	for _, h := range s.store.Hosts() {
+		if a.Host != "" && h.ID != a.Host {
+			continue
+		}
+		hs := h.Adapters
+		if hs == nil {
+			hs = []string{}
+		}
+		res.Hosts = append(res.Hosts, fleet.HostInfo{Host: h.ID, Online: s.Online(h.ID), Harnesses: hs})
+	}
 	var want map[string]string
 	if a.Label != "" {
 		k, v, _ := strings.Cut(a.Label, "=")

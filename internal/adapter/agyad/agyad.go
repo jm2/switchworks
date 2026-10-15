@@ -2,26 +2,37 @@
 
 // Package agyad adapts the Antigravity CLI (`agy`) to the adapter interface.
 //
-// EXPERIMENTAL. It relies only on documented headless behavior
-// (https://antigravity.google/docs/cli/headless):
+// EXPERIMENTAL: built from agy's documented headless mode
+// (https://antigravity.google/docs/cli/headless) and tested against a fake
+// that emits exactly the documented events; not yet run against a real agy.
 //
-//   - one `agy --output-format stream-json` process per turn, prompt on stdin
-//   - `--conversation <id>` to continue a conversation, `--model`, and
-//     `--dangerously-skip-permissions` (only when the session's sandbox is
-//     "danger-full-access"; otherwise headless soft-denies tools that need
-//     confirmation, subject to permissions.allow in agy's settings.json)
-//   - stream-json emits newline-delimited JSON events whose top-level "type"
-//     is init, step_update or result; result carries status, response,
-//     conversation_id and usage
+// By default each session runs one long-lived
 //
-// The fields inside step_update are not documented, so the parser is tolerant:
-// it pulls text out of common field names and keeps the raw event otherwise.
-// Capture real streams with `swyd dev run --harness agy --record FILE` and
-// tighten the parser once the schema is known.
+//	agy --output-format stream-json --input-format stream-json [--conversation ID]
 //
-// Differences from Codex: no approval relay, no mid-turn steering, interrupt
-// kills the turn's process, and the conversation id is only known after the
-// first turn's init/result event (session.registered is re-emitted then).
+// process. Prompts are written to its stdin as {"event":"user",...} lines;
+// every turn ends with its own "result" event. With Options.PerTurn, each
+// turn runs its own process (prompt on stdin, stdin then closed), which is
+// slower but uses only the older single-shot mode.
+//
+// stream-json output is NDJSON whose "event" field is init, step_update or
+// result, with the payload under the key of the same name. step_update
+// carries text_delta for agent text and tool_info for tool steps; result
+// carries status, response, conversation_id and usage (cumulative for the
+// process in stream-input mode).
+//
+// Differences from Codex: no approval relay (headless agy never asks; tools
+// that would need confirmation are soft-denied unless allowed in agy's
+// settings or the session runs with danger-full-access), no mid-turn
+// steering, and Interrupt stops the process (the next turn starts a new one
+// on the same conversation). The conversation id is only known once agy
+// reports it; session.registered is emitted again then.
+//
+// Fleet tools (Options.FleetTools, opt-in): agy has no per-run MCP flag, so
+// the node adds a "swyd" entry to the workspace's .agents/mcp_config.json
+// (command and args only; the per-session credentials reach `swyd mcp`
+// through the agy process environment) and, unless the session already
+// skips permissions, an "mcp(swyd/*)" allow rule to agy's settings.json.
 package agyad
 
 import (
@@ -31,6 +42,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -45,13 +57,27 @@ import (
 // Harness is this adapter's name.
 const Harness = "agy"
 
+// Options adjust agy behavior (node.json "agy" section).
+type Options struct {
+	// PerTurn runs one agy process per turn instead of one long-lived
+	// --input-format stream-json process per session.
+	PerTurn bool `json:"per_turn,omitempty"`
+	// FleetTools gives agy sessions the fleet tools through the
+	// workspace's .agents/mcp_config.json (see the package comment).
+	FleetTools bool `json:"fleet_tools,omitempty"`
+	// SettingsPath overrides ~/.gemini/antigravity-cli/settings.json, where
+	// the fleet tools' allow rule is added.
+	SettingsPath string `json:"settings_path,omitempty"`
+}
+
 // Config configures the adapter.
 type Config struct {
 	Bin       string            // default "agy"
 	ExtraArgs []string          // appended to every invocation
 	Env       map[string]string // environment overrides
+	Options   Options
 	Stderr    io.Writer
-	Tap       jsonrpc.Tap // raw stream capture: "out" = argv + prompt, "in" = stdout lines
+	Tap       jsonrpc.Tap // raw stream capture: "out" = argv and stdin lines, "in" = stdout lines
 	Logf      func(format string, args ...any)
 }
 
@@ -77,30 +103,38 @@ func (a *Adapter) Name() string { return Harness }
 
 // Start creates a session. agy assigns the conversation id on the first turn.
 func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
-	if _, err := proc.LookPath(a.cfg.Bin); err != nil {
-		return nil, err
-	}
-	h := a.newHandle(spec, sink, "")
-	h.emitRegistered(false)
-	h.setStatus(model.StatusIdle, "")
-	return h, nil
+	return a.open(spec, sink, "")
 }
 
-// Resume reattaches to a conversation by id.
+// Resume reattaches to a conversation by id. The process starts with the
+// next turn.
 func (a *Adapter) Resume(ctx context.Context, ref model.NativeRef, spec adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
 	if ref.Harness != "" && ref.Harness != Harness {
 		return nil, fmt.Errorf("agy adapter cannot resume %s session", ref.Harness)
 	}
+	return a.open(spec, sink, ref.ID)
+}
+
+func (a *Adapter) open(spec adapter.StartSpec, sink adapter.Sink, convID string) (adapter.Handle, error) {
 	if _, err := proc.LookPath(a.cfg.Bin); err != nil {
 		return nil, err
 	}
-	h := a.newHandle(spec, sink, ref.ID)
-	h.emitRegistered(true)
+	h := &handle{a: a, spec: spec, sink: sink, convID: convID, status: model.StatusStarting}
+	a.mu.Lock()
+	a.hs[h] = true
+	a.mu.Unlock()
+	if spec.MCP != nil && a.cfg.Options.FleetTools {
+		for _, w := range setupFleetTools(spec, a.cfg) {
+			a.cfg.Logf("agy: %s", w)
+			h.emit(model.KindWarning, model.ErrorEvent{Message: w})
+		}
+	}
+	h.emitRegistered(convID != "")
 	h.setStatus(model.StatusIdle, "")
 	return h, nil
 }
 
-// Close kills any running turn processes.
+// Close stops every agy process.
 func (a *Adapter) Close() error {
 	a.mu.Lock()
 	hs := make([]*handle, 0, len(a.hs))
@@ -109,17 +143,9 @@ func (a *Adapter) Close() error {
 	}
 	a.mu.Unlock()
 	for _, h := range hs {
-		_ = h.Stop(context.Background())
+		h.shutdown(false)
 	}
 	return nil
-}
-
-func (a *Adapter) newHandle(spec adapter.StartSpec, sink adapter.Sink, convID string) *handle {
-	h := &handle{a: a, spec: spec, sink: sink, convID: convID, status: model.StatusStarting}
-	a.mu.Lock()
-	a.hs[h] = true
-	a.mu.Unlock()
-	return h
 }
 
 type handle struct {
@@ -130,10 +156,13 @@ type handle struct {
 	mu           sync.Mutex
 	convID       string
 	status       string
-	running      *proc.Process
-	turnID       string
+	p            *proc.Process // the running agy process
+	turn         *turnState    // the active turn
 	stopped      bool
 	interrupting bool
+	lastRep      *model.Usage // last cumulative usage agy reported
+	total        model.Usage
+	deniedSeen   map[string]bool
 }
 
 func (h *handle) emit(kind string, p any) { h.sink(adapter.Event{Kind: kind, Payload: p}) }
@@ -173,6 +202,9 @@ func (h *handle) emitRegistered(resumed bool) {
 
 func (h *handle) args() []string {
 	args := []string{"--output-format", "stream-json"}
+	if !h.a.cfg.Options.PerTurn {
+		args = append(args, "--input-format", "stream-json")
+	}
 	if h.spec.Model != "" {
 		args = append(args, "--model", h.spec.Model)
 	}
@@ -181,10 +213,54 @@ func (h *handle) args() []string {
 		args = append(args, "--conversation", h.convID)
 	}
 	h.mu.Unlock()
-	if h.spec.Sandbox == "danger-full-access" {
+	switch h.spec.Sandbox {
+	case "danger-full-access":
 		args = append(args, "--dangerously-skip-permissions")
+	case "read-only", "workspace-write":
+		args = append(args, "--sandbox")
 	}
 	return append(args, h.a.cfg.ExtraArgs...)
+}
+
+func (h *handle) env() map[string]string {
+	env := map[string]string{}
+	for k, v := range h.a.cfg.Env {
+		env[k] = v
+	}
+	for k, v := range h.spec.Env {
+		env[k] = v
+	}
+	// agy starts `swyd mcp` from the workspace MCP config; the session's
+	// credentials reach it through agy's own environment.
+	if h.spec.MCP != nil && h.a.cfg.Options.FleetTools {
+		for k, v := range h.spec.MCP.Env {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+// startProc launches agy. Callers hold no locks.
+func (h *handle) startProc() (*proc.Process, error) {
+	args := h.args()
+	stderr := h.a.cfg.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	p, err := proc.Start(h.a.cfg.Bin, args, proc.Options{Dir: h.spec.Cwd, Env: proc.Environ(h.env()),
+		Stderr: &lineWriter{w: stderr, line: h.stderrLine}})
+	if err != nil {
+		return nil, fmt.Errorf("start agy: %w", err)
+	}
+	if tap := h.a.cfg.Tap; tap != nil {
+		b, _ := json.Marshal(map[string]any{"argv": append([]string{h.a.cfg.Bin}, args...)})
+		tap("out", b)
+	}
+	h.mu.Lock()
+	h.lastRep = nil // agy's cumulative usage restarts with each process
+	h.mu.Unlock()
+	go h.read(p)
+	return p, nil
 }
 
 // Deliver runs one turn. Only queue delivery is supported.
@@ -197,55 +273,63 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		h.mu.Unlock()
 		return adapter.ErrClosed
 	}
-	if h.running != nil {
+	if h.turn != nil {
 		h.mu.Unlock()
 		return adapter.ErrBusy
 	}
+	t := &turnState{h: h, id: ulid.New(), start: time.Now(), steps: map[int]*step{}}
+	h.turn = t
+	p := h.p
 	h.mu.Unlock()
 
-	args := h.args()
-	env := map[string]string{}
-	for k, v := range h.a.cfg.Env {
-		env[k] = v
-	}
-	for k, v := range h.spec.Env {
-		env[k] = v
-	}
-	stderr := h.a.cfg.Stderr
-	if stderr == nil {
-		stderr = io.Discard
-	}
-	p, err := proc.Start(h.a.cfg.Bin, args, proc.Options{Dir: h.spec.Cwd, Env: proc.Environ(env), Stderr: stderr})
-	if err != nil {
-		return fmt.Errorf("start agy: %w", err)
-	}
-	turnID := ulid.New()
-	h.mu.Lock()
-	h.running, h.turnID = p, turnID
-	h.mu.Unlock()
-	if tap := h.a.cfg.Tap; tap != nil {
-		b, _ := json.Marshal(map[string]any{"argv": append([]string{h.a.cfg.Bin}, args...), "prompt": in.Text})
-		tap("out", b)
-	}
-	// agy reads the prompt from stdin when stdin is not a terminal. Write it
-	// before returning so an immediate Interrupt (which closes stdin) cannot
-	// overtake it.
-	if _, err := io.WriteString(p.Stdin, in.Text); err != nil {
-		_ = p.Kill()
+	fail := func(err error) error {
 		h.mu.Lock()
-		h.running = nil
+		h.turn = nil
 		h.mu.Unlock()
-		return fmt.Errorf("write prompt to agy: %w", err)
+		return err
 	}
-	_ = p.Stdin.Close()
+	perTurn := h.a.cfg.Options.PerTurn
+	if p == nil || perTurn {
+		var err error
+		if p, err = h.startProc(); err != nil {
+			return fail(err)
+		}
+		h.mu.Lock()
+		h.p = p
+		h.mu.Unlock()
+	}
+	h.mu.Lock()
+	t.proc = p
+	h.mu.Unlock()
+	var line []byte
+	if perTurn {
+		line = []byte(in.Text)
+	} else {
+		line, _ = json.Marshal(map[string]any{"event": "user", "message": map[string]any{"content": in.Text}})
+		line = append(line, '\n')
+	}
+	if tap := h.a.cfg.Tap; tap != nil {
+		tap("out", bytes.TrimRight(line, "\n"))
+	}
+	userItem := model.Item{TurnID: t.id, ItemID: t.id + "-user", ItemType: "userMessage",
+		Raw: model.Marshal(map[string]any{"type": "userMessage", "content": []map[string]string{{"type": "text", "text": in.Text}}})}
+	h.emit(model.KindTurnStarted, model.TurnStarted{TurnID: t.id})
+	h.emit(model.KindItemStarted, userItem)
+	h.emit(model.KindItemCompleted, userItem)
 	h.setStatus(model.StatusActive, "")
-	h.emit(model.KindTurnStarted, model.TurnStarted{TurnID: turnID})
-	go h.readTurn(p, turnID)
+	// Write before returning so an immediate Interrupt cannot overtake it.
+	if _, err := p.Stdin.Write(line); err != nil {
+		_ = p.Kill()
+		return nil // read() reports the failed turn when the process ends
+	}
+	if perTurn {
+		_ = p.Stdin.Close()
+	}
 	return nil
 }
 
-func (h *handle) readTurn(p *proc.Process, turnID string) {
-	t := &turnState{h: h, turnID: turnID, msgID: turnID + "-msg"}
+// read consumes one agy process's stdout until it exits.
+func (h *handle) read(p *proc.Process) {
 	br := bufio.NewReaderSize(p.Stdout, 1<<20)
 	for {
 		line, err := br.ReadBytes('\n')
@@ -253,7 +337,7 @@ func (h *handle) readTurn(p *proc.Process, turnID string) {
 			if tap := h.a.cfg.Tap; tap != nil {
 				tap("in", s)
 			}
-			t.handleLine(s)
+			h.handleLine(s)
 		}
 		if err != nil {
 			break
@@ -261,12 +345,24 @@ func (h *handle) readTurn(p *proc.Process, turnID string) {
 	}
 	<-p.Done()
 	h.mu.Lock()
-	h.running = nil
+	if h.p == p {
+		h.p = nil
+	}
+	t := h.turn
+	if t != nil && t.proc != nil && t.proc != p {
+		t = nil // the turn belongs to a newer process
+	}
+	if t != nil {
+		h.turn = nil
+	}
 	interrupted := h.interrupting || h.stopped
 	h.interrupting = false
+	stopped := h.stopped
 	h.mu.Unlock()
-	if !t.done {
-		tc := model.TurnCompleted{TurnID: turnID, Status: "failed", Error: "agy exited without a result event"}
+	if t != nil {
+		t.flush()
+		tc := model.TurnCompleted{TurnID: t.id, Status: "failed", Error: "agy exited without a result event",
+			DurationMs: time.Since(t.start).Milliseconds()}
 		if interrupted {
 			tc.Status, tc.Error = "interrupted", ""
 		} else if err := p.Err(); err != nil {
@@ -274,116 +370,22 @@ func (h *handle) readTurn(p *proc.Process, turnID string) {
 		}
 		h.emit(model.KindTurnCompleted, tc)
 	}
-	h.mu.Lock()
-	stopped := h.stopped
-	h.mu.Unlock()
-	if !stopped {
+	if !stopped && t != nil {
 		h.setStatus(model.StatusIdle, "")
 	}
 }
 
-type turnState struct {
-	h        *handle
-	turnID   string
-	msgID    string
-	streamed strings.Builder
-	done     bool
-}
-
-func (t *turnState) noteConversation(ev map[string]any) {
-	id := firstString(ev, "conversation_id", "conversationId", "session_id", "sessionId")
-	if id == "" {
-		return
-	}
-	t.h.mu.Lock()
-	changed := t.h.convID != id
-	t.h.convID = id
-	t.h.mu.Unlock()
-	if changed {
-		t.h.emitRegistered(false)
-	}
-}
-
-func (t *turnState) handleLine(line []byte) {
-	var ev map[string]any
-	if err := json.Unmarshal(line, &ev); err != nil {
-		t.h.emit(model.KindWarning, model.ErrorEvent{TurnID: t.turnID, Message: "agy: non-JSON output: " + truncate(string(line), 200)})
-		return
-	}
-	typ, _ := ev["type"].(string)
-	t.noteConversation(ev)
-	switch typ {
-	case "init":
-	case "step_update", "agent_response":
-		if text := firstString(ev, "delta", "text", "content", "message"); text != "" {
-			t.streamed.WriteString(text)
-			t.h.emit(model.KindItemDelta, model.ItemDelta{TurnID: t.turnID, ItemID: t.msgID, Text: text})
-			return
-		}
-		t.h.emit(model.KindItemCompleted, model.Item{TurnID: t.turnID, ItemID: ulid.New(), ItemType: "agy." + typ, Raw: line})
-	case "result":
-		t.done = true
-		response := firstString(ev, "response", "result", "text")
-		if response == "" {
-			response = t.streamed.String()
-		}
-		if response != "" {
-			t.h.emit(model.KindItemCompleted, model.Item{TurnID: t.turnID, ItemID: t.msgID, ItemType: "agentMessage", Text: response, Raw: line})
-		}
-		if u, ok := ev["usage"].(map[string]any); ok {
-			usage := model.Usage{
-				InputTokens:       firstInt(u, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
-				CachedInputTokens: firstInt(u, "cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"),
-				OutputTokens:      firstInt(u, "output_tokens", "outputTokens", "completion_tokens", "candidatesTokens"),
-				ReasoningTokens:   firstInt(u, "reasoning_tokens", "reasoningTokens", "thoughts_tokens", "thoughtsTokens"),
-				TotalTokens:       firstInt(u, "total_tokens", "totalTokens"),
-			}
-			if usage.TotalTokens == 0 {
-				usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-			}
-			// agy reports per-run usage; Total is per turn until a
-			// conversation-level figure is known.
-			t.h.emit(model.KindUsage, model.UsageEvent{TurnID: t.turnID, Model: t.h.spec.Model, Last: usage, Total: usage})
-		}
-		status, _ := ev["status"].(string)
-		tc := model.TurnCompleted{TurnID: t.turnID, Status: mapStatus(status)}
-		if d, ok := ev["duration_seconds"].(float64); ok {
-			tc.DurationMs = int64(d * 1000)
-		}
-		if tc.Status == "failed" {
-			tc.Error = firstString(ev, "error", "message")
-			if tc.Error == "" {
-				tc.Error = "agy status " + status
-			}
-		}
-		t.h.emit(model.KindTurnCompleted, tc)
-	default:
-		t.h.emit(model.KindItemCompleted, model.Item{TurnID: t.turnID, ItemID: ulid.New(), ItemType: "agy." + orDefault(typ, "event"), Raw: line})
-	}
-}
-
-func mapStatus(s string) string {
-	switch strings.ToUpper(s) {
-	case "SUCCESS", "":
-		return "completed"
-	case "CANCELED", "CANCELLED", "INTERRUPTED":
-		return "interrupted"
-	default:
-		return "failed"
-	}
-}
-
-// Interrupt kills the running turn.
+// Interrupt stops the running turn's process; the next turn starts a new
+// process on the same conversation.
 func (h *handle) Interrupt(ctx context.Context) error {
 	h.mu.Lock()
-	p := h.running
-	if p != nil {
-		h.interrupting = true
-	}
-	h.mu.Unlock()
-	if p == nil {
+	p := h.p
+	if h.turn == nil || p == nil {
+		h.mu.Unlock()
 		return adapter.ErrNotActive
 	}
+	h.interrupting = true
+	h.mu.Unlock()
 	go func() { _ = p.Stop(4 * time.Second) }()
 	return nil
 }
@@ -393,49 +395,98 @@ func (h *handle) Resolve(ctx context.Context, approvalID, decision string) error
 	return adapter.ErrNotSupported
 }
 
-// Stop kills any running turn and ends management.
+// Stop kills any running process and ends management.
 func (h *handle) Stop(ctx context.Context) error {
+	h.shutdown(true)
+	return nil
+}
+
+func (h *handle) shutdown(announce bool) {
 	h.mu.Lock()
 	if h.stopped {
 		h.mu.Unlock()
-		return nil
+		return
 	}
 	h.stopped = true
-	p := h.running
+	p := h.p
 	h.mu.Unlock()
 	if p != nil {
+		_ = p.Stdin.Close() // a clean end for stream-input mode
 		_ = p.Stop(4 * time.Second)
 	}
 	h.a.mu.Lock()
 	delete(h.a.hs, h)
 	h.a.mu.Unlock()
-	h.setStatus(model.StatusStopped, "")
-	return nil
+	if announce {
+		h.setStatus(model.StatusStopped, "")
+	}
 }
 
-func firstString(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k].(string); ok && v != "" {
-			return v
+// --- stderr ---
+
+// deniedRe matches agy's notice that a tool was soft-denied in headless
+// mode (the exact wording is undocumented, so this is deliberately loose).
+var deniedRe = regexp.MustCompile(`(?i)(soft[- ]?denied|denied|requires? (approval|confirmation)|not (allowed|permitted)|permission)`)
+
+func (h *handle) stderrLine(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	low := strings.ToLower(line)
+	msg := ""
+	switch {
+	case strings.Contains(low, "authentication required") || strings.Contains(low, "not signed in"):
+		msg = "agy: " + line + " (sign in once by running agy interactively on this host)"
+	case deniedRe.MatchString(line):
+		msg = "agy: " + line + " (headless agy cannot ask; allow it in agy's settings.json permissions or spawn with sandbox danger-full-access)"
+	default:
+		return
+	}
+	h.mu.Lock()
+	if h.deniedSeen == nil {
+		h.deniedSeen = map[string]bool{}
+	}
+	dup := h.deniedSeen[line]
+	h.deniedSeen[line] = true
+	turnID := ""
+	if h.turn != nil {
+		turnID = h.turn.id
+	}
+	h.mu.Unlock()
+	if !dup || turnID != "" {
+		h.emit(model.KindWarning, model.ErrorEvent{TurnID: turnID, Message: truncate(msg, 500)})
+	}
+}
+
+// lineWriter forwards writes and reports complete lines.
+type lineWriter struct {
+	w    io.Writer
+	line func(string)
+	mu   sync.Mutex
+	buf  []byte
+}
+
+func (l *lineWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	l.buf = append(l.buf, b...)
+	var lines []string
+	for {
+		i := bytes.IndexByte(l.buf, '\n')
+		if i < 0 {
+			break
 		}
+		lines = append(lines, string(l.buf[:i]))
+		l.buf = l.buf[i+1:]
 	}
-	return ""
-}
-
-func firstInt(m map[string]any, keys ...string) int64 {
-	for _, k := range keys {
-		if v, ok := m[k].(float64); ok {
-			return int64(v)
-		}
+	if len(l.buf) > 64<<10 {
+		l.buf = l.buf[:0]
 	}
-	return 0
-}
-
-func orDefault(s, d string) string {
-	if s == "" {
-		return d
+	l.mu.Unlock()
+	for _, s := range lines {
+		l.line(s)
 	}
-	return s
+	return l.w.Write(b)
 }
 
 func truncate(s string, n int) string {

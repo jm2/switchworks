@@ -95,7 +95,7 @@ type Session struct {
 type SpawnSpec struct {
 	Host           string            `json:"host"`
 	Name           string            `json:"name"`
-	Harness        string            `json:"harness"` // "codex" (default) or "agy"
+	Harness        string            `json:"harness"` // "codex" (default), "agy", "goose" or a configured ACP agent
 	Cwd            string            `json:"cwd"`
 	Prompt         string            `json:"prompt,omitempty"`
 	Model          string            `json:"model,omitempty"`

@@ -111,6 +111,13 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 			}
 			_ = json.Unmarshal(p.Raw, &m)
 			r.line("⇄ %s.%s %s", m.Server, m.Tool, clip(string(m.Arguments), 160))
+		case "toolCall":
+			var m struct {
+				Title string `json:"title"`
+				Tool  string `json:"tool"`
+			}
+			_ = json.Unmarshal(p.Raw, &m)
+			r.line("⚙ %s", orStr(m.Title, m.Tool))
 		default:
 			if r.Verbose {
 				r.line("── %s started", p.ItemType)
@@ -180,6 +187,40 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 				}
 			}
 			r.line("  └ %s: %s", m.Status, clip(out, 200))
+		case "toolCall":
+			var m struct {
+				Status string `json:"status"`
+				Output string `json:"output"`
+			}
+			_ = json.Unmarshal(p.Raw, &m)
+			if m.Output != "" {
+				r.line("  └ %s: %s", m.Status, clip(m.Output, 200))
+			} else {
+				r.line("  └ %s", m.Status)
+			}
+		case "reasoning":
+			if r.Verbose && p.Text != "" {
+				r.line("── thinking: %s", clip(p.Text, 400))
+			}
+		case "plan":
+			var m struct {
+				Entries []struct {
+					Content string `json:"content"`
+					Status  string `json:"status"`
+				} `json:"entries"`
+			}
+			_ = json.Unmarshal(p.Raw, &m)
+			r.line("── plan")
+			for _, e := range m.Entries {
+				mark := "·"
+				switch e.Status {
+				case "completed":
+					mark = "✓"
+				case "in_progress":
+					mark = "▸"
+				}
+				r.line("  %s %s", mark, e.Content)
+			}
 		case "userMessage":
 		default:
 			if r.Verbose {
@@ -196,7 +237,7 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 		var p model.ApprovalRequested
 		_ = json.Unmarshal(payload, &p)
 		what := p.Command
-		if p.Kind == "file_change" {
+		if p.Kind == "file_change" && what == "" {
 			what = "file changes"
 		}
 		r.line("!! approval needed [%s] %s: %s", p.ApprovalID, p.Kind, what)
@@ -285,6 +326,13 @@ func clip(s string, n int) string {
 func orDash(s string) string {
 	if s == "" {
 		return "-"
+	}
+	return s
+}
+
+func orStr(s, d string) string {
+	if s == "" {
+		return d
 	}
 	return s
 }

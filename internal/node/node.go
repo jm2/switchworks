@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/adapter"
+	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/ulid"
@@ -49,13 +50,22 @@ type Config struct {
 	Agy struct {
 		Bin  string   `json:"bin,omitempty"`
 		Args []string `json:"args,omitempty"`
+		agyad.Options
 	} `json:"agy"`
+
+	// ACP lists Agent Client Protocol agents by harness name. "goose" is
+	// built in (`goose acp`, used when goose is on PATH); an entry for it
+	// overrides its binary, args, env or mode mapping, or disables it.
+	// Other names add agents, e.g. "opencode": {"bin": "opencode",
+	// "args": ["acp"]}.
+	ACP map[string]harness.ACPAgent `json:"acp,omitempty"`
 
 	// Defaults applied to spawns that do not set them.
 	DefaultApprovalPolicy string `json:"default_approval_policy,omitempty"` // codex: never | on-request | untrusted
 	DefaultSandbox        string `json:"default_sandbox,omitempty"`         // read-only | workspace-write | danger-full-access
 
-	// MCP controls the fleet tools attached to each Codex session.
+	// MCP controls the fleet tools attached to each session (Codex and ACP
+	// agents per session; agy through its workspace config, opt-in).
 	MCP struct {
 		Disabled bool     `json:"disabled,omitempty"`
 		Command  string   `json:"command,omitempty"` // default: this swyd binary

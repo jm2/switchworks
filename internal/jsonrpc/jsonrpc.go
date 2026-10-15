@@ -229,9 +229,27 @@ func marshalParams(params any) (json.RawMessage, error) {
 // Call sends a request and waits for its response. If result is non-nil the
 // response's result is decoded into it.
 func (c *Conn) Call(ctx context.Context, method string, params any, result any) error {
+	p, err := c.Send(method, params)
+	if err != nil {
+		return err
+	}
+	return p.Wait(ctx, result)
+}
+
+// Pending is a request that has been written but not yet answered.
+type Pending struct {
+	c      *Conn
+	id     int64
+	method string
+	ch     chan *Message
+}
+
+// Send writes a request and returns without waiting for the response, so
+// a caller can order later messages (e.g. a cancel notification) after it.
+func (c *Conn) Send(method string, params any) (*Pending, error) {
 	p, err := marshalParams(params)
 	if err != nil {
-		return fmt.Errorf("jsonrpc: marshal %s params: %w", method, err)
+		return nil, fmt.Errorf("jsonrpc: marshal %s params: %w", method, err)
 	}
 	id := c.nextID.Add(1)
 	ch := make(chan *Message, 1)
@@ -242,10 +260,15 @@ func (c *Conn) Call(ctx context.Context, method string, params any, result any) 
 		c.pmu.Lock()
 		delete(c.pending, id)
 		c.pmu.Unlock()
-		return err
+		return nil, err
 	}
+	return &Pending{c: c, id: id, method: method, ch: ch}, nil
+}
+
+// Wait waits for the response and decodes its result into result.
+func (p *Pending) Wait(ctx context.Context, result any) error {
 	select {
-	case m, ok := <-ch:
+	case m, ok := <-p.ch:
 		if !ok {
 			return ErrClosed
 		}
@@ -254,16 +277,16 @@ func (c *Conn) Call(ctx context.Context, method string, params any, result any) 
 		}
 		if result != nil && len(m.Result) > 0 {
 			if err := json.Unmarshal(m.Result, result); err != nil {
-				return fmt.Errorf("jsonrpc: decode %s result: %w", method, err)
+				return fmt.Errorf("jsonrpc: decode %s result: %w", p.method, err)
 			}
 		}
 		return nil
 	case <-ctx.Done():
-		c.pmu.Lock()
-		delete(c.pending, id)
-		c.pmu.Unlock()
+		p.c.pmu.Lock()
+		delete(p.c.pending, p.id)
+		p.c.pmu.Unlock()
 		return ctx.Err()
-	case <-c.done:
+	case <-p.c.done:
 		return ErrClosed
 	}
 }

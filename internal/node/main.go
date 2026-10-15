@@ -157,7 +157,7 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 		return harness.Options{}, err
 	}
 	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args,
-		Stderr: logFile, Logf: logf}
+		Agy: cfg.Agy.Options, ACP: cfg.ACP, Stderr: logFile, Logf: logf}
 	if cfg.Codex.Home != "" {
 		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}
 	}

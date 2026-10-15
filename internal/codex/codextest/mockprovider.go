@@ -126,6 +126,10 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[],"models":[]}`))
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/messages") {
+		m.serveAnthropic(w, r)
+		return
+	}
 	var body struct {
 		Input []json.RawMessage `json:"input"`
 	}

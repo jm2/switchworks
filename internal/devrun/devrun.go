@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/adapter"
+	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/render"
@@ -31,7 +32,7 @@ import (
 func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	h := fs.String("harness", "codex", "harness: codex or agy")
+	h := fs.String("harness", "codex", "harness: codex, agy, goose, or the name given with -acp-bin")
 	cwd := fs.String("cwd", ".", "working directory for the session")
 	modelName := fs.String("model", "", "model override")
 	provider := fs.String("provider", "", "model provider override (codex)")
@@ -40,6 +41,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	codexBin := fs.String("codex-bin", "", "codex binary (default: codex on PATH)")
 	codexHome := fs.String("codex-home", "", "CODEX_HOME for app-server (default: codex's own)")
 	agyBin := fs.String("agy-bin", "", "agy binary (default: agy on PATH)")
+	agyPerTurn := fs.Bool("agy-per-turn", false, "agy: one process per turn instead of a long-lived stream-json process")
+	gooseBin := fs.String("goose-bin", "", "goose binary (default: goose on PATH)")
+	acpBin := fs.String("acp-bin", "", "run -harness NAME as an ACP agent with this binary (e.g. -harness opencode -acp-bin opencode -acp-args acp)")
+	acpArgs := fs.String("acp-args", "acp", "space-separated arguments for -acp-bin")
 	record := fs.String("record", "", "write the raw protocol stream to this file (JSONL: {dir, line})")
 	autoApprove := fs.String("auto-approve", "", "answer every approval with this decision instead of asking (e.g. accept, cancel)")
 	verbose := fs.Bool("v", false, "verbose: show every event")
@@ -76,7 +81,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if *logs {
 		harnessStderr = stderr
 	}
-	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Stderr: harnessStderr,
+	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
 		Logf: func(f string, a ...any) {
 			if *verbose {
 				fmt.Fprintf(stderr, "swyd: "+f+"\n", a...)
@@ -84,6 +89,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}}
 	if *codexHome != "" {
 		opts.CodexEnv = map[string]string{"CODEX_HOME": *codexHome}
+	}
+	opts.ACP = map[string]harness.ACPAgent{}
+	if *gooseBin != "" {
+		opts.ACP["goose"] = harness.ACPAgent{Bin: *gooseBin}
+	}
+	if *acpBin != "" {
+		opts.ACP[*h] = harness.ACPAgent{Bin: *acpBin, Args: strings.Fields(*acpArgs)}
 	}
 	if rec != nil {
 		opts.Tap = rec.tap
@@ -225,7 +237,7 @@ func (a *approver) handle(ctx context.Context, req model.ApprovalRequested) {
 	var simple []string
 	for _, o := range options {
 		switch o {
-		case "accept", "acceptForSession", "decline", "cancel":
+		case "accept", "acceptForSession", "decline", "declineAlways", "cancel":
 			simple = append(simple, o)
 		}
 	}
@@ -238,13 +250,26 @@ func (a *approver) handle(ctx context.Context, req model.ApprovalRequested) {
 				decide("cancel")
 				return
 			}
-			d := strings.TrimSpace(line)
-			for _, o := range simple {
-				if d == o || (len(d) == 1 && strings.HasPrefix(o, d)) {
-					decide(o)
-					return
-				}
+			if o := pickDecision(simple, strings.TrimSpace(line)); o != "" {
+				decide(o)
+				return
 			}
 		}
 	}()
+}
+
+// pickDecision matches typed input to an offered decision: an exact name,
+// or a single letter for the shortest decision starting with it ("a" is
+// accept, not acceptForSession).
+func pickDecision(options []string, d string) string {
+	best := ""
+	for _, o := range options {
+		if d == o {
+			return o
+		}
+		if len(d) == 1 && strings.HasPrefix(o, d) && (best == "" || len(o) < len(best)) {
+			best = o
+		}
+	}
+	return best
 }

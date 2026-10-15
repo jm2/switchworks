@@ -254,12 +254,12 @@ function parseRouted(text) {
 const defaultDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'];
 const decisionLabel = {
   accept: 'Allow once', acceptForSession: 'Allow for this session', acceptWithExecpolicyAmendment: 'Always allow this command',
-  decline: 'Decline', cancel: 'Decline and stop the turn',
+  decline: 'Decline', declineAlways: 'Always decline', cancel: 'Decline and stop the turn',
 };
 
 function approvalCard(sessionID, a, onDone) {
   const card = h('div', {class: 'approval'});
-  const what = a.kind === 'file_change' ? 'File changes' : (a.command || a.kind);
+  const what = a.kind === 'file_change' ? `File changes${a.reason ? ': ' + a.reason : ''}` : (a.command || a.kind);
   const buttons = (a.decisions && a.decisions.length ? a.decisions : defaultDecisions).map((d) =>
     h('button', {type: 'button', class: d.startsWith('accept') ? '' : 'secondary', text: decisionLabel[d] || d, title: d, onclick: async (e) => {
       for (const b of card.querySelectorAll('button')) b.disabled = true;
@@ -485,8 +485,40 @@ function sessionView(id, full) {
       }
       case 'fileChange': {
         if (!done) return;
-        const paths = (raw.changes || []).map((c) => c.path).join(', ');
-        add(h('div', {class: 'ev'}, h('div', {class: 'block', text: `✎ ${raw.status || ''}: ${paths}`})));
+        const changes = raw.changes || [];
+        const paths = changes.map((c) => c.path).join(', ');
+        const el = h('div', {class: 'block', text: `✎ ${raw.status || ''}: ${paths}`});
+        const diff = changes.map((c) => c.diff || '').join('');
+        if (diff) el.append(h('details', {}, h('summary', {text: 'diff'}), h('pre', {text: diff.slice(0, 20000)})));
+        add(h('div', {class: 'ev'}, el));
+        break;
+      }
+      case 'toolCall': {
+        // Tools of non-Codex harnesses that are not commands, edits or MCP.
+        let it = known;
+        if (!it) {
+          const el = h('div', {class: 'block tool'}, h('div', {text: `⚙ ${raw.title || raw.tool || 'tool'}`}));
+          it = {el};
+          items.set(p.item_id, it);
+          add(h('div', {class: 'ev'}, el));
+        }
+        if (done) {
+          const out = raw.output || '';
+          it.el.append(h('div', {class: 'res', text: `└ ${raw.status}${out ? ': ' + clip(out, 240) : ''}`}));
+          if (out.length > 240) it.el.append(h('details', {}, h('summary', {text: 'full output'}), h('pre', {text: out.slice(-8000)})));
+        }
+        break;
+      }
+      case 'reasoning': {
+        if (!done || !p.text) return;
+        add(h('div', {class: 'ev'}, h('details', {class: 'block'}, h('summary', {text: 'thinking'}), h('pre', {text: p.text}))));
+        break;
+      }
+      case 'plan': {
+        if (!done) return;
+        const mark = {completed: '✓', in_progress: '▸', pending: '·'};
+        const lines = (raw.entries || []).map((e) => `${mark[e.status] || '·'} ${e.content}`).join('\n');
+        add(h('div', {class: 'ev'}, h('div', {class: 'block'}, h('div', {text: 'plan'}), h('pre', {text: lines}))));
         break;
       }
     }

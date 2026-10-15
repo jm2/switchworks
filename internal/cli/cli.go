@@ -210,7 +210,7 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "session name (default: the cwd's base name)")
 	cwd := fs.String("cwd", "", "working directory on the target host (required)")
-	h := fs.String("harness", "codex", "harness: codex or agy")
+	h := fs.String("harness", "codex", "harness: codex, agy, goose, or an ACP agent named in the node's node.json (see `swyd hosts`)")
 	modelName := fs.String("model", "", "model")
 	provider := fs.String("provider", "", "model provider (codex)")
 	approval := fs.String("approval", "", "codex approval policy: never, on-request, untrusted (default: node's)")
