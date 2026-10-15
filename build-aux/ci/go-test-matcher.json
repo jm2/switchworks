@@ -1,0 +1,14 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "go-test-line",
+      "severity": "error",
+      "pattern": [{ "regexp": "^\\s+([^\\s:]+_test\\.go):(\\d+): (.+)$", "file": 1, "line": 2, "message": 3 }]
+    },
+    {
+      "owner": "go-test-fail",
+      "severity": "error",
+      "pattern": [{ "regexp": "^((?:--- FAIL|panic|fatal error): .+)$", "message": 1 }]
+    }
+  ]
+}
