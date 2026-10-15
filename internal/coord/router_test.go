@@ -314,11 +314,13 @@ func TestExpiryAndFailure(t *testing.T) {
 	if m, _ := s.store.Message(msgs[0].ID); m.State != model.MsgExpired {
 		t.Fatalf("not expired: %+v", m)
 	}
-	// The sender is told.
+	// The sender is told (the notice is stored just after the expiry).
 	var notice *model.Message
-	for _, m := range s.store.Messages(store.MessageFilter{Session: a.ID}) {
-		if m.Kind == model.MsgSystem && m.ToSession == a.ID {
-			notice = &m
+	for deadline := time.Now().Add(5 * time.Second); notice == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		for _, m := range s.store.Messages(store.MessageFilter{Session: a.ID}) {
+			if m.Kind == model.MsgSystem && m.ToSession == a.ID {
+				notice = &m
+			}
 		}
 	}
 	if notice == nil || !strings.Contains(notice.Text, "expired") || notice.From != model.SystemSender {

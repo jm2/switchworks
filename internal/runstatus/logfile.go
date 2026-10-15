@@ -67,9 +67,14 @@ func (l *Log) open() error {
 func (l *Log) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.size > 0 && l.size+int64(len(p)) > maxLog {
+	if l.f != nil && l.size > 0 && l.size+int64(len(p)) > maxLog {
 		_ = l.f.Close()
+		l.f = nil
 		_ = os.Rename(l.path, l.path+".1")
+	}
+	// A failed reopen is retried on the next write, without rotating again
+	// (which would replace the .1 just made).
+	if l.f == nil {
 		if err := l.open(); err != nil {
 			return 0, err
 		}
@@ -83,5 +88,10 @@ func (l *Log) Write(p []byte) (int, error) {
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.f.Close()
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
 }

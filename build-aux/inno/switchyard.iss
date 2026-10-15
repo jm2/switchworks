@@ -55,6 +55,8 @@ DefaultDirName={userpf}\Switchyard
 ; can be writable by other users, who could then replace what the logon task
 ; runs.
 DisableDirPage=yes
+; Not even an earlier install's folder or /DIR= (PrepareToInstall checks).
+UsePreviousAppDir=no
 DefaultGroupName=Switchyard
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\swyd-tray.exe
@@ -185,6 +187,12 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
+  if CompareText(RemoveBackslashUnlessRoot(ExpandConstant('{app}')),
+                 ExpandConstant('{userpf}\Switchyard')) <> 0 then
+  begin
+    Result := 'Switchyard installs only into ' + ExpandConstant('{userpf}\Switchyard') + '.';
+    exit;
+  end;
   if FileExists(ExpandConstant('{app}\swyd.exe')) then
   begin
     RunSwyd('service stop --if-installed node');

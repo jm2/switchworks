@@ -128,7 +128,7 @@ func Query(role string) Info {
 // Status reports on both roles.
 func Status() Overview {
 	o := Overview{Version: version.Version, Node: Query(Node), Coordinator: Query(Coordinator), ConfigDir: paths.Base()}
-	o.WebUI = safeURL(webUI(o))
+	o.WebUI = webUI(o)
 	return o
 }
 
@@ -144,9 +144,20 @@ func safeURL(s string) string {
 	return s
 }
 
+// webUI returns the first usable web UI address among the candidates.
 func webUI(o Overview) string {
+	for _, c := range webUICandidates(o) {
+		if u := safeURL(c); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func webUICandidates(o Overview) []string {
+	var out []string
 	if s := o.Coordinator.Status; s != nil && s.WebUI != "" {
-		return s.WebUI
+		out = append(out, s.WebUI)
 	}
 	var cc struct {
 		PublicUI  string `json:"public_ui"`
@@ -154,10 +165,10 @@ func webUI(o Overview) string {
 	}
 	if readJSON(filepath.Join(paths.CoordinatorDir(), "coordinator.json"), &cc) == nil {
 		if cc.PublicUI != "" {
-			return strings.TrimSuffix(cc.PublicUI, "/") + "/"
+			out = append(out, strings.TrimSuffix(cc.PublicUI, "/")+"/")
 		}
 		if cc.PublicAPI != "" {
-			return "https://" + cc.PublicAPI + "/"
+			out = append(out, "https://"+cc.PublicAPI+"/")
 		}
 	}
 	// Only the address is read from cli.json, never the token.
@@ -165,18 +176,18 @@ func webUI(o Overview) string {
 		API string `json:"api"`
 	}
 	if readJSON(paths.CLIConfig(), &cli) == nil && cli.API != "" {
-		return strings.TrimSuffix(cli.API, "/") + "/"
+		out = append(out, strings.TrimSuffix(cli.API, "/")+"/")
 	}
 	if s := o.Node.Status; s != nil && s.WebUI != "" {
-		return s.WebUI
+		out = append(out, s.WebUI)
 	}
 	var nc struct {
 		CoordinatorAPI string `json:"coordinator_api"`
 	}
 	if readJSON(filepath.Join(paths.NodeDir(), "node.json"), &nc) == nil && nc.CoordinatorAPI != "" {
-		return "https://" + nc.CoordinatorAPI + "/"
+		out = append(out, "https://"+nc.CoordinatorAPI+"/")
 	}
-	return ""
+	return out
 }
 
 func readJSON(path string, v any) error {
@@ -203,6 +214,10 @@ func Install(role, exe string, noStart bool, out io.Writer) error {
 	exe, err := filepath.Abs(exe)
 	if err != nil {
 		return err
+	}
+	// Check (and register) where it really is, not a symlink to it.
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
 	}
 	if err := checkExecutable(exe); err != nil {
 		return err

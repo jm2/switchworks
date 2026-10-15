@@ -187,6 +187,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "Registered the logon task %q (runs %s; log %s)\n", name, bg, logFile)
+	removeLegacy(role, out)
 	if noStart {
 		return nil
 	}
@@ -198,6 +199,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 }
 
 func uninstall(role string, out io.Writer) error {
+	removeLegacy(role, out)
 	st, _ := query(role)
 	if !st.installed {
 		return nil
@@ -208,6 +210,36 @@ func uninstall(role string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Removed the logon task %q\n", unitName(role))
 	return nil
+}
+
+// legacyUnitName is the task name before it carried the SID.
+func legacyUnitName(role string) string {
+	name := "user"
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+		if i := strings.LastIndexByte(name, '\\'); i >= 0 {
+			name = name[i+1:]
+		}
+	}
+	return "Switchyard " + role + " (" + name + ")"
+}
+
+// removeLegacy deletes a task under the old name, if it is this user's:
+// another account with the same short name may own a task by that name.
+func removeLegacy(role string, out io.Writer) {
+	name := legacyUnitName(role)
+	u, err := user.Current()
+	if err != nil || name == unitName(role) {
+		return
+	}
+	x, err := schtasks("/Query", "/TN", name, "/XML")
+	if err != nil || !strings.Contains(x, "<UserId>"+u.Uid+"</UserId>") {
+		return
+	}
+	_, _ = schtasks("/End", "/TN", name)
+	if _, err := schtasks("/Delete", "/TN", name, "/F"); err == nil {
+		fmt.Fprintf(out, "Removed the old logon task %q\n", name)
+	}
 }
 
 func start(role string) error {

@@ -15,16 +15,30 @@ import (
 // directory; it is the one DLL loaded by name.
 var procGetSystemDirectoryW = syscall.NewLazyDLL("kernel32.dll").NewProc("GetSystemDirectoryW")
 
-// DLL returns a lazily loaded system DLL, by its full path.
+// DLL returns a lazily loaded system DLL, by its full path. If the system
+// directory cannot be found (which should not happen), it falls back to the
+// bare name: these are all KnownDLLs, which Windows maps from the system
+// directory regardless.
 func DLL(name string) *syscall.LazyDLL {
-	return syscall.NewLazyDLL(filepath.Join(systemDir(), name))
+	dir, ok := systemDir()
+	if !ok {
+		return syscall.NewLazyDLL(name)
+	}
+	return syscall.NewLazyDLL(filepath.Join(dir, name))
 }
 
-func systemDir() string {
-	buf := make([]uint16, 260)
-	n, _, _ := procGetSystemDirectoryW.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	if n == 0 || int(n) >= len(buf) {
-		return `C:\Windows\System32`
+func systemDir() (string, bool) {
+	size := 260
+	for range 4 {
+		buf := make([]uint16, size)
+		n, _, _ := procGetSystemDirectoryW.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+		switch {
+		case n == 0:
+			return "", false
+		case int(n) < len(buf):
+			return syscall.UTF16ToString(buf[:n]), true
+		}
+		size = int(n) + 1 // n is the size needed, with the terminator
 	}
-	return syscall.UTF16ToString(buf[:n])
+	return "", false
 }
