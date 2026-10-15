@@ -5,6 +5,7 @@ package node
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -152,7 +153,7 @@ func (n *Node) connectOnce(ctx context.Context, tlsCfg *tls.Config) error {
 
 type errUnexpected string
 
-func (e errUnexpected) Error() string { return "unexpected envelope " + string(e) }
+func (e errUnexpected) Error() string { return fmt.Sprintf("unexpected envelope %q", string(e)) }
 
 // applyAcks drops acknowledged events. On a fresh connection (welcome) it
 // also resets what has been sent, so everything unacked is resent.

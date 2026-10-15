@@ -8,7 +8,7 @@
 //     Install writes one into ~/.config/systemd/user.
 //   - macOS: a LaunchAgent in ~/Library/LaunchAgents (dev.switchyard.node).
 //   - Windows: a Task Scheduler task that starts at logon in the user's
-//     session, with least privilege ("Switchyard node (<user>)").
+//     session, with least privilege ("Switchyard node (<user>, <SID>)").
 //
 // Everything runs as the user who installs it: nothing here asks for root or
 // administrator rights, or creates a system service or a system user. The
@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,9 +132,32 @@ func Status() Overview {
 	return o
 }
 
+// safeURL keeps only plain http and https addresses: the trays open this
+// address, and the files it comes from should never make them open another
+// scheme (file:, or an app's custom one).
+func safeURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return ""
+	}
+	return s
+}
+
+// webUI returns the first usable web UI address among the candidates.
 func webUI(o Overview) string {
+	for _, c := range webUICandidates(o) {
+		if u := safeURL(c); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func webUICandidates(o Overview) []string {
+	var out []string
 	if s := o.Coordinator.Status; s != nil && s.WebUI != "" {
-		return s.WebUI
+		out = append(out, s.WebUI)
 	}
 	var cc struct {
 		PublicUI  string `json:"public_ui"`
@@ -141,10 +165,10 @@ func webUI(o Overview) string {
 	}
 	if readJSON(filepath.Join(paths.CoordinatorDir(), "coordinator.json"), &cc) == nil {
 		if cc.PublicUI != "" {
-			return strings.TrimSuffix(cc.PublicUI, "/") + "/"
+			out = append(out, strings.TrimSuffix(cc.PublicUI, "/")+"/")
 		}
 		if cc.PublicAPI != "" {
-			return "https://" + cc.PublicAPI + "/"
+			out = append(out, "https://"+cc.PublicAPI+"/")
 		}
 	}
 	// Only the address is read from cli.json, never the token.
@@ -152,18 +176,18 @@ func webUI(o Overview) string {
 		API string `json:"api"`
 	}
 	if readJSON(paths.CLIConfig(), &cli) == nil && cli.API != "" {
-		return strings.TrimSuffix(cli.API, "/") + "/"
+		out = append(out, strings.TrimSuffix(cli.API, "/")+"/")
 	}
 	if s := o.Node.Status; s != nil && s.WebUI != "" {
-		return s.WebUI
+		out = append(out, s.WebUI)
 	}
 	var nc struct {
 		CoordinatorAPI string `json:"coordinator_api"`
 	}
 	if readJSON(filepath.Join(paths.NodeDir(), "node.json"), &nc) == nil && nc.CoordinatorAPI != "" {
-		return "https://" + nc.CoordinatorAPI + "/"
+		out = append(out, "https://"+nc.CoordinatorAPI+"/")
 	}
-	return ""
+	return out
 }
 
 func readJSON(path string, v any) error {
@@ -186,6 +210,17 @@ func Install(role, exe string, noStart bool, out io.Writer) error {
 		if exe, err = Executable(); err != nil {
 			return err
 		}
+	}
+	exe, err := filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	// Check (and register) where it really is, not a symlink to it.
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	if err := checkExecutable(exe); err != nil {
+		return err
 	}
 	return install(role, exe, noStart, out)
 }
@@ -255,6 +290,23 @@ func Executable() (string, error) {
 		return "", fmt.Errorf("cannot find the %s binary: %w", version.Bin, err)
 	}
 	return filepath.Abs(p)
+}
+
+// checkExecutable refuses binaries the service manager could not rely on:
+// on macOS one inside a mounted disk image or an App Translocation copy
+// (gone after the next eject or reboot), and anywhere a path that service
+// definitions cannot carry safely.
+func checkExecutable(exe string) error {
+	if strings.ContainsFunc(exe, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fmt.Errorf("%q: control characters in the path", exe)
+	}
+	if runtime.GOOS == "darwin" && (strings.HasPrefix(exe, "/Volumes/") || strings.Contains(exe, "/AppTranslocation/")) {
+		return fmt.Errorf("%s runs from a disk image or a temporary copy; move Switchyard.app to Applications first", exe)
+	}
+	if runtime.GOOS == "windows" && strings.Contains(exe, "%") {
+		return fmt.Errorf("%q: Task Scheduler would expand the %% in this path; install somewhere without one", exe)
+	}
+	return nil
 }
 
 func exeSuffix() string {

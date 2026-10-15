@@ -45,3 +45,19 @@ func TestTaskXML(t *testing.T) {
 		t.Fatal("UTF-16 round trip changed the text")
 	}
 }
+
+func TestUnitNameCarriesSID(t *testing.T) {
+	n := unitName(Node)
+	if !strings.HasPrefix(n, "Switchyard node (") || !strings.Contains(n, ", S-1-") {
+		t.Fatalf("task name %q lacks the SID", n)
+	}
+	if legacyUnitName(Node) == n {
+		t.Fatal("legacy name equals the new one")
+	}
+}
+
+func TestCheckExecutableRejectsPercent(t *testing.T) {
+	if err := checkExecutable(`C:\Users\dev\100%\swyd.exe`); err == nil {
+		t.Fatal("a path with % was accepted")
+	}
+}

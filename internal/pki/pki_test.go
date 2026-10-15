@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -19,7 +20,9 @@ func TestCAIssueAndMutualTLS(t *testing.T) {
 	if err := InitCA(dir, nil); err == nil {
 		t.Fatal("InitCA must refuse to overwrite")
 	}
-	if fi, err := os.Stat(filepath.Join(dir, CAKeyFile)); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (the key is private through the
+	// directory's ACL, which the user profile already restricts).
+	if fi, err := os.Stat(filepath.Join(dir, CAKeyFile)); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("ca key perms: %v %v", fi.Mode(), err)
 	}
 	ca, err := LoadCA(dir)

@@ -159,7 +159,7 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(dir, "logs", "harness.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := runstatus.OpenPlainLog(filepath.Join(dir, "logs", "harness.log"))
 	if err != nil {
 		return harness.Options{}, err
 	}

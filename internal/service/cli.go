@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/jm2/switchyard/internal/render"
 )
 
 const usage = `usage: swyd service install [--no-start] [node|coordinator]
@@ -105,6 +107,11 @@ func status(role string, asJSON bool, stdout, stderr io.Writer) int {
 		}
 	}
 	o := Status()
+	if !asJSON {
+		// Host names, addresses and errors come from config and status
+		// files, and some from the coordinator: no terminal control codes.
+		stdout = render.Safe(stdout)
+	}
 	if asJSON {
 		var v any = o
 		switch role {

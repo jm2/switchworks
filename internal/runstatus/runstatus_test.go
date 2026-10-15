@@ -77,3 +77,24 @@ func TestStopNameStable(t *testing.T) {
 		t.Fatal("node and coordinator share a stop name")
 	}
 }
+
+func TestLogRotates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "x.log")
+	l, err := OpenPlainLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	chunk := make([]byte, 1<<20)
+	for i := 0; i < 25; i++ {
+		if _, err := l.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{path, path + ".1"} {
+		fi, err := os.Stat(p)
+		if err != nil || fi.Size() > maxLog {
+			t.Fatalf("%s: %v %v", p, fi, err)
+		}
+	}
+}

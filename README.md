@@ -85,8 +85,8 @@ Design decisions are recorded in [`docs/decisions.md`](docs/decisions.md).
 Pre-built packages for Linux (`.deb`, `.rpm`, Arch), macOS (`.dmg`) and Windows (installer) are
 available on the [Releases](https://github.com/jm2/switchyard/releases) page, with plain `swyd`
 archives for every platform. Download `SHA256SUMS.txt` with a package and check its SHA-256
-entry before installing; once the repository is public, `gh attestation verify <file> --repo
-jm2/switchyard` also checks a file's build provenance.
+entry before installing; `gh attestation verify <file> --repo jm2/switchyard` also checks a
+file's build provenance.
 
 **Everything runs as you, never as root or SYSTEM.** The packages install programs, systemd
 *user* units, the tray app and icons; they create no system service and no system user, and they

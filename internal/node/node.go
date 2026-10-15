@@ -892,6 +892,11 @@ func (n *Node) Close() error {
 		}
 		s.mu.Unlock()
 	}
+	// The harness log HarnessOptions opened (Windows cannot delete a file
+	// that is still open).
+	if l, ok := n.hopts.Stderr.(*runstatus.Log); ok {
+		_ = l.Close()
+	}
 	return n.saveState()
 }
 

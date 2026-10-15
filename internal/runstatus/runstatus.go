@@ -14,6 +14,7 @@ package runstatus
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -63,7 +64,15 @@ func (s Status) Fresh(now time.Time) bool {
 // Read loads dir's status file.
 func Read(dir string) (Status, error) {
 	var s Status
-	b, err := os.ReadFile(filepath.Join(dir, File))
+	f, err := os.Open(filepath.Join(dir, File))
+	if err != nil {
+		return s, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return s, errors.New("status file is not a regular file")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
 	if err != nil {
 		return s, err
 	}

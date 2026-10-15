@@ -6,6 +6,7 @@ package tray
 
 import (
 	"errors"
+	"github.com/jm2/switchyard/internal/paths"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,12 +92,12 @@ func setAutostart(on bool) error {
 			exe = "swyd-tray"
 		}
 	}
+	if strings.ContainsFunc(exe, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errors.New("the tray's path contains control characters; not writing an autostart entry")
+	}
 	text := "[Desktop Entry]\nType=Application\nName=Switchyard\n" +
 		"Comment=Switchyard node status in the system tray\n" +
 		"Exec=" + desktopQuote(exe) + "\nIcon=" + AppID + "\nTerminal=false\nNoDisplay=true\n" +
 		"X-GNOME-Autostart-enabled=true\n"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(text), 0o644)
+	return paths.WriteFile(path, []byte(text), 0o644)
 }

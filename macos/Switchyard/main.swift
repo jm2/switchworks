@@ -248,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return role == "node" ? [infoItem("Enroll with: swyd node enroll <token>")] : []
         }
         if !info.installed {
+            if !installedInApplications() {
+                return [infoItem("Move Switchyard to Applications to run the \(title) at login")]
+            }
             return [ActionItem("Run \(title) at login", enabled: idle) { [weak self] in
                 self?.runAction("setting up the \(role) service", ["service", "install", role])
             }]
@@ -289,7 +292,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(infoItem(b.prefix(1).uppercased() + String(b.dropFirst()) + "…"))
         }
         menu.addItem(.separator())
-        let ui = o.webUi.flatMap { URL(string: $0) }
+        // Only plain web addresses: never a file: URL or another app's scheme.
+        let ui = o.webUi.flatMap { URL(string: $0) }.flatMap { u in
+            (u.scheme == "https" || u.scheme == "http") && u.host != nil ? u : nil
+        }
         menu.addItem(ActionItem("Open Web UI", enabled: ui != nil) {
             if let ui = ui { NSWorkspace.shared.open(ui) }
         })
@@ -304,12 +310,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ActionItem("Open Logs Folder") { [weak self] in self?.openFolder(logs) })
         menu.addItem(ActionItem("Open Config Folder") { [weak self] in self?.openFolder(o.configDir) })
         menu.addItem(.separator())
-        let login = ActionItem("Open at Login") { [weak self] in self?.toggleLoginItem() }
+        let login = ActionItem("Open at Login", enabled: installedInApplications()) { [weak self] in self?.toggleLoginItem() }
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
         menu.addItem(infoItem("Switchyard \(o.version)"))
         menu.addItem(ActionItem("Quit Switchyard") { NSApp.terminate(nil) })
+    }
+
+    /// Login items and services must point at a copy that stays put: not
+    /// the mounted disk image, and not an App Translocation copy of an app
+    /// opened straight from Downloads.
+    private func installedInApplications() -> Bool {
+        let path = Bundle.main.bundlePath
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix("/Applications/") || path.hasPrefix(home + "/Applications/")
     }
 
     private func toggleLoginItem() {
