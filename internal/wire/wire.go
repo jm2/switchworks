@@ -61,6 +61,9 @@ type SessionState struct {
 	Status    string           `json:"status"`
 	LastSeq   int64            `json:"last_seq"`
 	NativeRef *model.NativeRef `json:"native_ref,omitempty"`
+	// What the session runs with (sessions it spawns inherit them).
+	ApprovalPolicy string `json:"approval_policy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
 }
 
 type Hello struct {
@@ -71,7 +74,13 @@ type Hello struct {
 	Version  string         `json:"version"`
 	Adapters []string       `json:"adapters"`
 	Sessions []SessionState `json:"sessions"`
+	// Features lists what this node enforces, so the coordinator does not
+	// rely on an older node for checks it would ignore.
+	Features []string `json:"features,omitempty"`
 }
+
+// FeatureCwdRoot: the node confines a spawn to SpawnSpec.CwdRoot.
+const FeatureCwdRoot = "cwd_root"
 
 type Welcome struct {
 	Protocol int              `json:"protocol"`
@@ -108,6 +117,13 @@ type Cmd struct {
 type SpawnCmd struct {
 	Session model.Session   `json:"session"`
 	Spec    model.SpawnSpec `json:"spec"`
+}
+
+// SpawnResult answers OpSpawn.
+type SpawnResult struct {
+	NativeRef      *model.NativeRef `json:"native_ref,omitempty"`
+	ApprovalPolicy string           `json:"approval_policy,omitempty"`
+	Sandbox        string           `json:"sandbox,omitempty"`
 }
 
 type MessageCmd struct {

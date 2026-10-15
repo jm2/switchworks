@@ -23,6 +23,7 @@ const usage = `swyd — %s %s: fleet control plane for coding agents
 Fleet:
   swyd ls                         list sessions on every host
   swyd hosts                      list enrolled hosts
+  swyd hosts rm <host>            revoke a host (its certificate stops working)
   swyd spawn <host> [flags] <prompt>
                                   start a managed session on a host
   swyd attach <session>           stream a session live (host/name or id)

@@ -18,16 +18,19 @@ import (
 
 // Errors.
 var (
-	ErrNotFound   = errors.New("not found")
-	ErrPathInUse  = errors.New("session path already in use")
-	ErrBadToken   = errors.New("invalid or expired enrollment token")
-	ErrSeqGap     = errors.New("event sequence gap")
-	ErrNoSuchHost = errors.New("unknown host")
+	ErrNotFound     = errors.New("not found")
+	ErrPathInUse    = errors.New("session path already in use")
+	ErrBadToken     = errors.New("invalid or expired enrollment token")
+	ErrSeqGap       = errors.New("event sequence gap")
+	ErrNoSuchHost   = errors.New("unknown host")
+	ErrBadSessionID = errors.New("invalid session id")
 )
 
 // Store is the coordinator's persistence boundary.
 type Store interface {
 	UpsertHost(h model.Host) error
+	// DeleteHost forgets a host and its unused enrollment tokens.
+	DeleteHost(id string) error
 	Host(id string) (model.Host, bool)
 	Hosts() []model.Host
 

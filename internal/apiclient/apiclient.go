@@ -137,6 +137,11 @@ func (c *Client) Hosts(ctx context.Context) ([]model.Host, error) {
 	return out, c.do(ctx, "GET", "/v1/hosts", nil, &out)
 }
 
+// RemoveHost revokes a host's certificate and forgets it.
+func (c *Client) RemoveHost(ctx context.Context, host string) error {
+	return c.do(ctx, "DELETE", "/v1/hosts/"+url.PathEscape(host), nil, nil)
+}
+
 func (c *Client) Sessions(ctx context.Context) ([]SessionView, error) {
 	var out []SessionView
 	return out, c.do(ctx, "GET", "/v1/sessions", nil, &out)

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
@@ -28,10 +29,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"name": version.Name, "version": version.Version})
 	})
-	mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /v1/enroll", bodyDeadline(s.handleEnroll))
 
 	authed := http.NewServeMux()
 	authed.HandleFunc("GET /v1/hosts", s.handleHosts)
+	authed.HandleFunc("DELETE /v1/hosts/{id}", s.handleRemoveHost)
 	authed.HandleFunc("GET /v1/sessions", s.handleSessions)
 	authed.HandleFunc("POST /v1/sessions", s.handleSpawn)
 	authed.HandleFunc("GET /v1/sessions/{id}", s.handleSession)
@@ -85,6 +87,32 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		hosts[i].Connected = s.Online(hosts[i].ID)
 	}
 	writeJSON(w, 200, hosts)
+}
+
+// handleRemoveHost revokes a host: its certificate stops working, its node
+// is disconnected, its enrollment tokens are dropped and its sessions are
+// marked gone. Enroll it again to bring it back.
+func (s *Server) handleRemoveHost(w http.ResponseWriter, r *http.Request) {
+	host := r.PathValue("id")
+	s.hostMu.Lock()
+	err := s.store.DeleteHost(host)
+	if err == nil {
+		s.disconnect(host)
+	}
+	s.hostMu.Unlock()
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	for _, sess := range s.store.Sessions() {
+		if sess.Host == host && live(sess) {
+			_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusGone })
+			s.publishSession(sess.ID)
+		}
+	}
+	s.fleetPublish("host_removed", map[string]string{"id": host})
+	s.logf("removed host %s", host)
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -526,8 +554,27 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if _, known := s.store.Host(host); !known {
-		_ = s.store.UpsertHost(model.Host{ID: host, LastSeen: time.Now()})
+	parsed, err := pki.ParseCert(cert)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	// The new certificate replaces any earlier one for this host, which can
+	// no longer connect.
+	s.hostMu.Lock()
+	h, known := s.store.Host(host)
+	if !known {
+		h = model.Host{ID: host, LastSeen: time.Now()}
+	}
+	h.CertSHA256 = pki.Fingerprint(parsed)
+	err = s.store.UpsertHost(h)
+	if err == nil {
+		s.disconnect(host)
+	}
+	s.hostMu.Unlock()
+	if err != nil {
+		writeErr(w, 500, err)
+		return
 	}
 	s.logf("enrolled host %s from %s", host, remoteHost(r))
 	writeJSON(w, 200, EnrollResponse{Host: host, Cert: string(cert), CA: string(s.ca.PEM), NodeAddr: s.cfg.PublicNode})
@@ -541,13 +588,114 @@ func remoteHost(r *http.Request) string {
 	return h
 }
 
+// Connection limits for the API listener: per client address and in all.
+// A client over its share is turned away at once (not queued), so one
+// client holding connections open cannot lock others out, and the total
+// stays well inside the coordinator's file descriptors. The plain-HTTP
+// listener sees every request from its local proxy, so it has no per-client
+// limit.
+const (
+	maxConns       = 4096
+	maxConnsPerIP  = 64
+	plainConnLimit = 1024
+)
+
+// httpServer configures the API server's limits. Responses have no write
+// deadline, because event streams and waiting asks stay open; the
+// unauthenticated endpoints get a body deadline (bodyDeadline).
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{Handler: securityHeaders(s.Handler()), ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
+}
+
+// bodyDeadline gives a request 30 seconds to send its body, for the
+// endpoints anyone can reach (enrollment, sign-in), whose handlers answer
+// at once.
+func bodyDeadline(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
+		next(w, r)
+	}
+}
+
+// securityHeaders adds HSTS over HTTPS. Browsers ignore it on a
+// connection whose certificate they do not trust, so it cannot lock anyone
+// out before the fleet CA is installed.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if secureRequest(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limitListener caps open connections, in all and (perIP > 0) per client
+// address, closing new ones over a limit right away.
+func limitListener(ln net.Listener, total, perIP int) net.Listener {
+	return &limitedListener{Listener: ln, total: total, perIP: perIP, byIP: map[string]int{}}
+}
+
+type limitedListener struct {
+	net.Listener
+	total, perIP int
+
+	mu   sync.Mutex
+	open int
+	byIP map[string]int
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ip := ""
+		if h, _, err := net.SplitHostPort(c.RemoteAddr().String()); err == nil {
+			ip = h
+		}
+		l.mu.Lock()
+		if l.open >= l.total || (l.perIP > 0 && l.byIP[ip] >= l.perIP) {
+			l.mu.Unlock()
+			_ = c.Close()
+			continue
+		}
+		l.open++
+		l.byIP[ip]++
+		l.mu.Unlock()
+		return &limitedConn{Conn: c, release: func() {
+			l.mu.Lock()
+			l.open--
+			if l.byIP[ip]--; l.byIP[ip] <= 0 {
+				delete(l.byIP, ip)
+			}
+			l.mu.Unlock()
+		}}, nil
+	}
+}
+
+type limitedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *limitedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
+}
+
 // ServeAPI serves the HTTPS API on ln until ctx ends.
 func (s *Server) ServeAPI(ctx context.Context, ln net.Listener) error {
 	tlsCfg, err := pki.ServerTLS(s.dir, nil)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: s.Handler(), TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second}
+	srv := s.httpServer()
+	srv.TLSConfig = tlsCfg
+	ln = limitListener(ln, maxConns, maxConnsPerIP)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -564,7 +712,8 @@ func (s *Server) ServeAPI(ctx context.Context, ln net.Listener) error {
 // ServePlain serves the same API and UI without TLS, for a reverse proxy
 // on the same machine (Config.HTTPListen).
 func (s *Server) ServePlain(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := s.httpServer()
+	ln = limitListener(ln, plainConnLimit, 0)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

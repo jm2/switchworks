@@ -59,10 +59,7 @@ func writeJSONFile(path string, v any, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), mode)
+	return paths.WriteFile(path, append(b, '\n'), mode)
 }
 
 // Init creates a coordinator directory: CA, server certificate, config and
@@ -151,7 +148,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	copied := false
 	if _, err := os.Stat(userCLI); os.IsNotExist(err) {
 		if b, err := os.ReadFile(filepath.Join(*dir, "cli.json")); err == nil {
-			if os.MkdirAll(filepath.Dir(userCLI), 0o700) == nil && os.WriteFile(userCLI, b, 0o600) == nil {
+			if paths.WriteFile(userCLI, b, 0o600) == nil {
 				copied = true
 			}
 		}
@@ -209,6 +206,12 @@ func mainRun(args []string, stderr io.Writer) int {
 		}
 	}()
 	if cfg.HTTPListen != "" {
+		// Plain HTTP carries the admin token and cookies unencrypted, and
+		// requests from loopback are trusted to say what a proxy forwarded.
+		if h, _, err := net.SplitHostPort(cfg.HTTPListen); err != nil || (h != "localhost" && (net.ParseIP(h) == nil || !net.ParseIP(h).IsLoopback())) {
+			logger.Printf("http_listen %q must be a loopback address (127.0.0.1:port or [::1]:port)", cfg.HTTPListen)
+			return 1
+		}
 		plainLn, err := net.Listen("tcp", cfg.HTTPListen)
 		if err != nil {
 			logger.Print(err)

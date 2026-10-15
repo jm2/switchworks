@@ -20,6 +20,7 @@ import (
 	"github.com/jm2/switchyard/internal/codex"
 	"github.com/jm2/switchyard/internal/jsonrpc"
 	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/proc"
 	"github.com/jm2/switchyard/internal/ulid"
 )
 
@@ -235,6 +236,9 @@ func (a *Adapter) unregister(h *handle) {
 
 // Start creates a new thread.
 func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
+	if err := proc.CheckWithin(spec.CwdRoot, spec.Cwd); err != nil {
+		return nil, err
+	}
 	c, err := a.getClient(ctx)
 	if err != nil {
 		return nil, err
@@ -342,6 +346,9 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 }
 
 func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
+	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return err
+	}
 	resp, err := c.ThreadResume(ctx, codex.ThreadResumeParams{
 		ThreadID:       h.threadID,
 		ApprovalPolicy: h.spec.ApprovalPolicy,

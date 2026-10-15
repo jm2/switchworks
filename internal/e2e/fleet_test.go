@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/coord"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/node"
 )
@@ -84,7 +85,8 @@ func TestFleetMessaging(t *testing.T) {
 	ctx := context.Background()
 	coordDir := t.TempDir()
 	work := t.TempDir()
-	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
+	// Let agents spawn on other hosts (by default only on their own).
+	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0", func(c *coord.Config) { c.Guards.SpawnHosts = []string{"*"} })
 	defer co.stop()
 	c := apiClient(t, coordDir)
 
@@ -172,13 +174,14 @@ func TestFleetMessaging(t *testing.T) {
 	// Spawn: the child runs, finishes, and its parent hears about it.
 	say(lead, call("fleet_spawn", map[string]any{"host": "buildbox", "cwd": work, "prompt": "build it", "name": "worker"}))
 	i = wl.waitFor(t, "spawned", i, agentSaidAll("tool fleet_spawn:", `"path": "buildbox/worker"`))
-	i = wl.waitFor(t, "completion notice", i, agentSaidAll("kind=done", "buildbox/worker", "echo: build it"))
+	// The prompt reaches the child as a message from its parent.
+	i = wl.waitFor(t, "completion notice", i, agentSaidAll("kind=done", "buildbox/worker", "from=devbox/lead kind=notify", "build it"))
 	worker, err := c.Resolve(ctx, "buildbox/worker")
 	if err != nil || worker.Parent != lead.ID {
 		t.Fatalf("worker: %+v %v", worker.Session, err)
 	}
 	say(lead, call("fleet_status", map[string]any{"session": "worker"}))
-	i = wl.waitFor(t, "status", i, agentSaidAll("tool fleet_status:", `"last_message": "echo: build it"`))
+	i = wl.waitFor(t, "status", i, agentSaidAll("tool fleet_status:", `"last_message": "echo: [`, "build it"))
 	say(lead, call("fleet_stop", map[string]any{"session": "buildbox/worker"}))
 	i = wl.waitFor(t, "stopped child", i, agentSaidAll("tool fleet_stop:", `"status": "stopped"`))
 	waitStatus(t, c, worker.ID, model.StatusStopped)

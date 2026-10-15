@@ -36,6 +36,9 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
 	if args == nil {
 		args = []string{}
 	}
+	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
+		return append(warns, "fleet tools unavailable: "+err.Error())
+	}
 	created, err := mergeMCPConfig(filepath.Join(cwd, workspaceMCP), m.Name, map[string]any{"command": cmd, "args": args})
 	if err != nil {
 		return append(warns, "fleet tools unavailable: "+err.Error())
@@ -60,6 +63,38 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
 		}
 	}
 	return warns
+}
+
+// insideWorkspace refuses to write rel under cwd when the workspace (which
+// the agent controls) has made it a symlink, or a path through one, that
+// leads somewhere else.
+func insideWorkspace(cwd, rel string) error {
+	root, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return err
+	}
+	p := cwd
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if os.IsNotExist(err) {
+			return nil // created fresh, inside cwd
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; not writing through it", p)
+		}
+	}
+	real, err := filepath.EvalSymlinks(filepath.Join(cwd, rel))
+	if err != nil {
+		return err
+	}
+	if r, err := filepath.Rel(root, real); err != nil || strings.HasPrefix(r, "..") {
+		return fmt.Errorf("%s is outside %s", real, root)
+	}
+	return nil
 }
 
 // mergeMCPConfig sets mcpServers[name] in an agy MCP config file, keeping
@@ -179,6 +214,21 @@ func gitExclude(cwd, rel string) error {
 				}
 				gitDir = p
 			}
+			// The workspace controls .git, so only write into what is
+			// really a git directory; a worktree's excludes live in its
+			// common directory.
+			if !isGitDir(gitDir) {
+				return fmt.Errorf("%s is not a git directory", gitDir)
+			}
+			if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+				c := strings.TrimSpace(string(b))
+				if !filepath.IsAbs(c) {
+					c = filepath.Join(gitDir, c)
+				}
+				if isGitDir(c) {
+					gitDir = c
+				}
+			}
 			r, err := filepath.Rel(dir, filepath.Join(cwd, rel))
 			if err != nil {
 				return err
@@ -191,10 +241,16 @@ func gitExclude(cwd, rel string) error {
 					return nil
 				}
 			}
-			if err := os.MkdirAll(filepath.Dir(ex), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Dir(ex), 0o755); err != nil && !os.IsExist(err) {
 				return err
 			}
-			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if fi, err := os.Lstat(filepath.Dir(ex)); err != nil || !fi.IsDir() {
+				return fmt.Errorf("%s is not a directory", filepath.Dir(ex))
+			}
+			if fi, err := os.Lstat(ex); err == nil && !fi.Mode().IsRegular() {
+				return fmt.Errorf("%s is not a regular file", ex)
+			}
+			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY|oNoFollow, 0o644)
 			if err != nil {
 				return err
 			}
@@ -212,6 +268,19 @@ func gitExclude(cwd, rel string) error {
 		}
 		dir = parent
 	}
+}
+
+// isGitDir reports whether dir looks like a git directory: a HEAD file and
+// an objects directory (or, for a worktree, a commondir file).
+func isGitDir(dir string) bool {
+	if fi, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "objects")); err == nil && fi.IsDir() {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, "commondir"))
+	return err == nil
 }
 
 func writeAtomic(path string, b []byte) error {

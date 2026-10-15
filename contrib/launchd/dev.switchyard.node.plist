@@ -3,7 +3,9 @@
   macOS LaunchAgent (runs as you, in your login session).
     cp dev.switchyard.node.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.switchyard.node.plist
-  Adjust the binary path. Logs go to /tmp/swyd-node.log.
+  Adjust the binary path, and replace YOU in the log paths with your user
+  name (launchd does not expand ~). Logs go to ~/Library/Logs/swyd-node.log,
+  which only you can read.
   LaunchAgents get a minimal PATH: set it so `codex` and `agy` resolve.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -22,7 +24,7 @@
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/swyd-node.log</string>
-  <key>StandardErrorPath</key><string>/tmp/swyd-node.log</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/swyd-node.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/swyd-node.log</string>
 </dict>
 </plist>

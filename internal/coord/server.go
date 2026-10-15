@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/pki"
 	"github.com/jm2/switchyard/internal/store"
@@ -36,6 +39,12 @@ type Server struct {
 	fleet map[chan FleetEvent]struct{} // fleet stream subscribers
 	acts  map[string]*activity         // session id -> recent activity
 
+	dropLogged map[string]time.Time // host -> last "dropped input" log
+
+	// hostMu orders changes to a host's pinned certificate (enroll, remove)
+	// against nodes completing their connection.
+	hostMu sync.Mutex
+
 	router *router
 	web    *webAuth
 
@@ -43,11 +52,16 @@ type Server struct {
 	wg     sync.WaitGroup
 }
 
+// maxNodeReqs bounds concurrent fleet operations per node.
+const maxNodeReqs = 64
+
 type nodeConn struct {
 	host  string
 	conn  *wire.Conn
 	raw   net.Conn
 	hello wire.Hello
+
+	reqs chan struct{} // fleet operations in progress
 
 	mu      sync.Mutex
 	pending map[string]chan cmdReply
@@ -150,8 +164,9 @@ func (s *Server) handleNode(c net.Conn) {
 		return
 	}
 	host := certs[0].Subject.CommonName
-	if _, ok := s.store.Host(host); !ok {
-		s.logf("rejecting node %q from %s: not enrolled", host, c.RemoteAddr())
+	fp := pki.Fingerprint(certs[0])
+	if _, err := s.checkPin(host, fp); err != nil { // early refusal; checked again below
+		s.logf("rejecting node %q from %s: %v", host, c.RemoteAddr(), err)
 		c.Close()
 		return
 	}
@@ -170,21 +185,42 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 	_ = tc.SetDeadline(time.Time{})
 
-	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan cmdReply{}, closed: make(chan struct{})}
+	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
+		reqs: make(chan struct{}, maxNodeReqs)}
+	// The pin is checked again and the node registered under hostMu, which
+	// removing or re-enrolling the host also holds: a connection that was
+	// opened before either cannot complete after it.
+	s.hostMu.Lock()
+	rec, err := s.checkPin(host, fp)
+	if err != nil {
+		s.hostMu.Unlock()
+		s.logf("rejecting node %q from %s: %v", host, c.RemoteAddr(), err)
+		c.Close()
+		return
+	}
+	if rec.CertSHA256 == "" {
+		// Enrolled before certificates were pinned: trust the first one
+		// seen. Enrolling again replaces it.
+		rec.CertSHA256 = fp
+		s.logf("node %s: pinned certificate %s", host, fp)
+	}
+	rec.OS, rec.Arch, rec.Version, rec.Adapters = hello.OS, hello.Arch, hello.Version, hello.Adapters
+	rec.Connected, rec.LastSeen = true, time.Now()
+	_ = s.store.UpsertHost(rec)
 	s.mu.Lock()
 	if old := s.nodes[host]; old != nil {
 		go old.close()
 	}
 	s.nodes[host] = n
 	s.mu.Unlock()
-	_ = s.store.UpsertHost(model.Host{ID: host, OS: hello.OS, Arch: hello.Arch, Version: hello.Version,
-		Adapters: hello.Adapters, Connected: true, LastSeen: time.Now()})
+	s.hostMu.Unlock()
 	s.logf("node %s connected from %s (%s/%s, %s, adapters %v, %d sessions)", host, c.RemoteAddr(), hello.OS, hello.Arch, hello.Version, hello.Adapters, len(hello.Sessions))
 	s.publishHost(host)
 
 	acked := map[string]int64{}
 	for _, st := range hello.Sessions {
 		s.reconcile(host, st)
+		s.learnPolicies(host, st)
 		acked[st.ID] = s.store.LastSeq(st.ID)
 	}
 	if err := wc.Send(wire.TWelcome, "", "", wire.Welcome{Protocol: wire.ProtocolVersion, Acked: acked}); err != nil {
@@ -202,31 +238,75 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 	s.mu.Unlock()
 	if current {
-		if h, ok := s.store.Host(host); ok {
+		s.hostMu.Lock()
+		if h, ok := s.store.Host(host); ok && h.CertSHA256 == fp {
 			h.Connected = false
 			h.LastSeen = time.Now()
 			_ = s.store.UpsertHost(h)
 		}
+		s.hostMu.Unlock()
 		s.logf("node %s disconnected", host)
 		s.publishHost(host)
 	}
 }
 
 // reconcile adopts sessions a node reports that the coordinator does not
-// know (e.g. after coordinator data loss).
+// know (e.g. after coordinator data loss). The node chooses the ID and path,
+// so both are checked: a canonical ULID, and a path on this host.
 func (s *Server) reconcile(host string, st wire.SessionState) {
 	if _, ok := s.store.Session(st.ID); ok {
 		return
 	}
-	name := st.Path
-	if len(name) > len(host)+1 && name[:len(host)+1] == host+"/" {
-		name = name[len(host)+1:]
+	name, onHost := strings.CutPrefix(st.Path, host+"/")
+	switch {
+	case !ulid.Valid(st.ID):
+		s.logf("node %s: not adopting session with invalid id %q", host, st.ID)
+		return
+	case !onHost || model.ValidateSessionName(name) != nil:
+		s.logf("node %s: not adopting session %s with path %q", host, st.ID, st.Path)
+		return
+	case model.ValidateName("harness", st.Harness) != nil:
+		s.logf("node %s: not adopting session %s with harness %q", host, st.ID, st.Harness)
+		return
+	}
+	if t, err := ulid.Time(st.ID); err != nil || t.After(time.Now().Add(time.Hour)) {
+		// An ID from the future would outrank every later session on its
+		// path (SessionByPath returns the newest).
+		s.logf("node %s: not adopting session %s: id is from the future", host, st.ID)
+		return
+	}
+	status := st.Status
+	if !knownStatus(status) {
+		status = model.StatusError
 	}
 	err := s.store.CreateSession(model.Session{ID: st.ID, Path: st.Path, Host: host, Name: name, Harness: st.Harness,
-		Mode: model.ModeManaged, NativeRef: st.NativeRef, Status: st.Status, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+		Mode: model.ModeManaged, NativeRef: st.NativeRef, Status: status, CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	if err != nil {
 		s.logf("node %s: adopt session %s (%s): %v", host, st.ID, st.Path, err)
 	}
+}
+
+// learnPolicies records the approval policy and sandbox a node reports for
+// one of its sessions, when the coordinator does not know them yet (sessions
+// from before they were recorded, or adopted ones).
+func (s *Server) learnPolicies(host string, st wire.SessionState) {
+	if validateSpawn(model.SpawnSpec{Harness: "x", ApprovalPolicy: st.ApprovalPolicy, Sandbox: st.Sandbox}) != nil {
+		return
+	}
+	_, _ = s.store.UpdateSession(st.ID, func(x *model.Session) {
+		if x.Host == host && x.ApprovalPolicy == "" && x.Sandbox == "" {
+			x.ApprovalPolicy, x.Sandbox = st.ApprovalPolicy, st.Sandbox
+		}
+	})
+}
+
+func knownStatus(st string) bool {
+	switch st {
+	case model.StatusStarting, model.StatusIdle, model.StatusActive, model.StatusWaitingApproval,
+		model.StatusError, model.StatusStopped, model.StatusGone:
+		return true
+	}
+	return false
 }
 
 func (s *Server) pinger(n *nodeConn) {
@@ -260,13 +340,10 @@ func (s *Server) readNode(n *nodeConn) {
 				s.logf("node %s: bad events: %v", n.host, err)
 				return
 			}
-			if err := s.ingest(n.host, p.Events); err != nil {
+			acked, err := s.ingest(n.host, p.Events)
+			if err != nil {
 				s.logf("node %s: store events: %v", n.host, err)
 				return
-			}
-			acked := map[string]int64{}
-			for _, ev := range p.Events {
-				acked[ev.SessionID] = s.store.LastSeq(ev.SessionID)
 			}
 			if err := n.conn.Send(wire.TAck, "", "", wire.Ack{Acked: acked}); err != nil {
 				return
@@ -281,8 +358,17 @@ func (s *Server) readNode(n *nodeConn) {
 				ch <- cmdReply{r: r}
 			}
 		case wire.TCmd:
-			// A fleet operation from one of the node's sessions.
-			go s.handleNodeReq(n, env)
+			// A fleet operation from one of the node's sessions, at most
+			// maxNodeReqs at a time per node (asks can wait for minutes).
+			select {
+			case n.reqs <- struct{}{}:
+				go func() {
+					defer func() { <-n.reqs }()
+					s.handleNodeReq(n, env)
+				}()
+			default:
+				_ = n.conn.Send(wire.TResult, "", env.ID, wire.Result{Error: "coordinator busy: too many fleet operations from this host; try again shortly"})
+			}
 		case wire.TPing:
 			_ = n.conn.Send(wire.TPong, "", "", nil)
 		case wire.TPong:
@@ -293,13 +379,26 @@ func (s *Server) readNode(n *nodeConn) {
 }
 
 // ingest stores events from host, projects them and notifies subscribers.
-func (s *Server) ingest(host string, evs []model.Event) error {
-	// Only accept events for sessions that belong to this host.
+// It returns the highest seq to acknowledge per session: events it refuses
+// are acknowledged too, so the node drops them from its spool rather than
+// resending them forever.
+func (s *Server) ingest(host string, evs []model.Event) (map[string]int64, error) {
+	acked := map[string]int64{}
 	ok := evs[:0:0]
 	for _, ev := range evs {
+		// Only sessions this coordinator created (or adopted from this
+		// host's hello) and that belong to this host: a node must not write
+		// into another host's logs or invent sessions.
 		sess, known := s.store.Session(ev.SessionID)
-		if known && sess.Host != host {
-			s.logf("node %s sent event for %s's session %s; dropped", host, sess.Host, ev.SessionID)
+		if !known || sess.Host != host || !ulid.Valid(ev.SessionID) {
+			s.logDrop(host, "event for session %q it does not own", ev.SessionID)
+			if known && sess.Host == host && ev.Seq > acked[ev.SessionID] {
+				acked[ev.SessionID] = ev.Seq
+			}
+			continue
+		}
+		if !validKind(ev.Kind) {
+			s.logDrop(host, "event with kind %q", ev.Kind)
 			continue
 		}
 		ok = append(ok, ev)
@@ -313,7 +412,42 @@ func (s *Server) ingest(host string, evs []model.Event) error {
 		}
 		s.route(ev)
 	}
-	return err
+	for _, ev := range ok {
+		acked[ev.SessionID] = s.store.LastSeq(ev.SessionID)
+	}
+	return acked, err
+}
+
+// validKind accepts event kinds shaped like the ones nodes emit
+// ("item.delta", "agy.step"): they reach SSE "event:" lines and the UI.
+func validKind(k string) bool {
+	if k == "" || len(k) > 64 {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// logDrop logs refused input from a node, at most once a minute per host.
+func (s *Server) logDrop(host, format string, args ...any) {
+	s.mu.Lock()
+	if s.dropLogged == nil {
+		s.dropLogged = map[string]time.Time{}
+	}
+	last := s.dropLogged[host]
+	now := time.Now()
+	if now.Sub(last) < time.Minute {
+		s.mu.Unlock()
+		return
+	}
+	s.dropLogged[host] = now
+	s.mu.Unlock()
+	s.logf("node %s: dropped "+format, append([]any{host}, args...)...)
 }
 
 // route feeds events the message router reacts to.
@@ -426,6 +560,27 @@ func (s *Server) publish(ev model.Event) {
 	}
 }
 
+// checkPin returns host's record if a node with certificate fingerprint fp
+// may connect: the host is enrolled and fp is its pinned certificate (or
+// none is pinned yet).
+func (s *Server) checkPin(host, fp string) (model.Host, error) {
+	rec, ok := s.store.Host(host)
+	switch {
+	case !ok:
+		return rec, errors.New("not enrolled")
+	case rec.CertSHA256 != "" && rec.CertSHA256 != fp:
+		return rec, fmt.Errorf("certificate %s was replaced or revoked", fp)
+	}
+	return rec, nil
+}
+
+// disconnect drops a host's node connection, if any.
+func (s *Server) disconnect(host string) {
+	if n, ok := s.node(host); ok {
+		n.close()
+	}
+}
+
 // ErrOffline means the target host is not connected.
 var ErrOffline = errors.New("host is not connected")
 
@@ -492,12 +647,18 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	if spec.Cwd == "" {
 		return model.Session{}, errors.New("cwd is required (a directory on the target host)")
 	}
+	if err := validateSpawn(spec); err != nil {
+		return model.Session{}, err
+	}
 	n, ok := s.node(spec.Host)
 	if !ok {
 		if _, known := s.store.Host(spec.Host); !known {
 			return model.Session{}, fmt.Errorf("unknown host %q", spec.Host)
 		}
 		return model.Session{}, fmt.Errorf("host %q: %w", spec.Host, ErrOffline)
+	}
+	if spec.CwdRoot != "" && !contains(n.hello.Features, wire.FeatureCwdRoot) {
+		return model.Session{}, fmt.Errorf("host %q runs an older swyd that cannot confine sessions spawned by agents; upgrade it", spec.Host)
 	}
 	if !contains(n.hello.Adapters, spec.Harness) {
 		return model.Session{}, fmt.Errorf("host %q has no %s harness (available: %v)", spec.Host, spec.Harness, n.hello.Adapters)
@@ -512,11 +673,18 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		return model.Session{}, err
 	}
 	s.publishSession(sess.ID)
-	if _, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID,
-		Spawn: &wire.SpawnCmd{Session: sess, Spec: spec}}, 2*time.Minute); err != nil {
+	res, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID,
+		Spawn: &wire.SpawnCmd{Session: sess, Spec: spec}}, 2*time.Minute)
+	if err != nil {
 		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusError })
 		s.publishSession(sess.ID)
 		return model.Session{}, fmt.Errorf("spawn on %s: %w", spec.Host, err)
+	}
+	var sr wire.SpawnResult
+	if json.Unmarshal(res.Data, &sr) == nil {
+		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) {
+			x.ApprovalPolicy, x.Sandbox = sr.ApprovalPolicy, sr.Sandbox
+		})
 	}
 	out, _ := s.store.Session(sess.ID)
 	return out, nil
@@ -530,6 +698,52 @@ func (s *Server) SessionCommand(ctx context.Context, id string, cmd wire.Cmd) (w
 	}
 	cmd.Session = id
 	return s.command(ctx, sess.Host, cmd, 30*time.Second)
+}
+
+var (
+	modelRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`)
+	labelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+)
+
+// validateSpawn checks the fields of a spawn that reach a harness's command
+// line or the fleet's routing.
+func validateSpawn(spec model.SpawnSpec) error {
+	if err := model.ValidateName("harness", spec.Harness); err != nil {
+		return err
+	}
+	for what, v := range map[string]string{"model": spec.Model, "provider": spec.Provider} {
+		if v != "" && !modelRe.MatchString(v) {
+			return fmt.Errorf("invalid %s %q", what, v)
+		}
+	}
+	switch spec.ApprovalPolicy {
+	case "", "never", "on-request", "on-failure", "untrusted":
+	default:
+		return fmt.Errorf("unknown approval policy %q (never, on-request, on-failure, untrusted)", spec.ApprovalPolicy)
+	}
+	switch spec.Sandbox {
+	case "", "read-only", "workspace-write", "danger-full-access":
+	default:
+		return fmt.Errorf("unknown sandbox %q (read-only, workspace-write, danger-full-access)", spec.Sandbox)
+	}
+	if len(spec.Prompt) > fleet.MaxTextBytes {
+		return fmt.Errorf("prompt is %d bytes; the limit is %d", len(spec.Prompt), fleet.MaxTextBytes)
+	}
+	if len(spec.Cwd) > 4096 || strings.ContainsAny(spec.Cwd, "\x00\n\r") {
+		return errors.New("invalid cwd")
+	}
+	if len(spec.Labels) > 16 {
+		return errors.New("at most 16 labels")
+	}
+	for k, v := range spec.Labels {
+		if !labelRe.MatchString(k) {
+			return fmt.Errorf("invalid label key %q", k)
+		}
+		if len(v) > 128 || strings.IndexFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			return fmt.Errorf("invalid value for label %q", k)
+		}
+	}
+	return nil
 }
 
 func contains(list []string, s string) bool {

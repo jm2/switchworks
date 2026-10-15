@@ -508,9 +508,7 @@ func TestFleetTools(t *testing.T) {
 	}
 	a, log := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, ".git", "info"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fakeGitDir(t, filepath.Join(repo, ".git"))
 	cwd := filepath.Join(repo, "sub")
 	if err := os.MkdirAll(filepath.Join(cwd, ".agents"), 0o755); err != nil {
 		t.Fatal(err)
@@ -616,4 +614,73 @@ func waitIdle(t *testing.T, h adapter.Handle) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("status %s", h.Status())
+}
+
+// fakeGitDir makes dir look enough like a git directory for gitExclude.
+func fakeGitDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The workspace is the agent's: its symlinks and .git files must not steer
+// Switchyard's writes elsewhere.
+func TestFleetToolsWorkspaceTricks(t *testing.T) {
+	outside := t.TempDir()
+	cwd := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(cwd, ".agents")); err != nil {
+		t.Skip("no symlinks:", err)
+	}
+	if err := insideWorkspace(cwd, workspaceMCP); err == nil {
+		t.Fatal("wrote through a symlinked .agents")
+	}
+
+	// A .git file pointing at an arbitrary directory is not followed.
+	repo := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: "+target+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitExclude(repo, workspaceMCP); err == nil {
+		t.Fatal("followed a gitdir that is not a git directory")
+	}
+	if _, err := os.Stat(filepath.Join(target, "info")); err == nil {
+		t.Fatal("created directories under the bogus gitdir")
+	}
+
+	// A symlinked info directory inside a real git directory is refused.
+	trap := t.TempDir()
+	gd := filepath.Join(t.TempDir(), "r")
+	fakeGitDir(t, filepath.Join(gd, ".git"))
+	if err := os.Symlink(trap, filepath.Join(gd, ".git", "info")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitExclude(gd, workspaceMCP); err == nil {
+		t.Fatal("wrote through a symlinked info directory")
+	}
+	if _, err := os.Stat(filepath.Join(trap, "exclude")); err == nil {
+		t.Fatal("exclude written into the symlink target")
+	}
+
+	// A worktree's excludes go to its common directory.
+	main := filepath.Join(t.TempDir(), ".git")
+	fakeGitDir(t, main)
+	wt := filepath.Join(main, "worktrees", "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(wt, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(wt, "commondir"), []byte("../..\n"), 0o644)
+	work := t.TempDir()
+	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+wt+"\n"), 0o644)
+	if err := gitExclude(work, workspaceMCP); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(main, "info", "exclude")); !strings.Contains(string(b), "/.agents/mcp_config.json") {
+		t.Fatalf("worktree exclude: %q", b)
+	}
 }

@@ -109,14 +109,22 @@ func Enroll(ctx context.Context, dir, token string, force bool) (Config, error) 
 		return cfg, err
 	}
 	for name, data := range map[string][]byte{"node.key": keyPEM, "node.crt": []byte(er.Cert), "ca.crt": []byte(er.CA)} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		if err := paths.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 			return cfg, err
 		}
 	}
-	cfg = Config{Host: er.Host, CoordinatorAPI: tok.API, CoordinatorNode: er.NodeAddr,
-		DefaultApprovalPolicy: "on-request", DefaultSandbox: "workspace-write"}
+	// Re-enrolling keeps the rest of an existing node.json (harnesses,
+	// defaults) and only points it at the new identity.
+	cfg = Config{DefaultApprovalPolicy: "on-request", DefaultSandbox: "workspace-write"}
+	if b, err := os.ReadFile(filepath.Join(dir, configFile)); err == nil {
+		var old Config
+		if json.Unmarshal(b, &old) == nil {
+			cfg = old
+		}
+	}
+	cfg.Host, cfg.CoordinatorAPI, cfg.CoordinatorNode = er.Host, tok.API, er.NodeAddr
 	b, _ := json.MarshalIndent(cfg, "", "  ")
-	if err := os.WriteFile(filepath.Join(dir, configFile), append(b, '\n'), 0o600); err != nil {
+	if err := paths.WriteFile(filepath.Join(dir, configFile), append(b, '\n'), 0o600); err != nil {
 		return cfg, err
 	}
 	return cfg, nil

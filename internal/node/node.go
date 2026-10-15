@@ -26,11 +26,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/jm2/switchyard/internal/adapter"
 	"github.com/jm2/switchyard/internal/adapter/agyad"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/proc"
 	"github.com/jm2/switchyard/internal/ulid"
 	"github.com/jm2/switchyard/internal/version"
 	"github.com/jm2/switchyard/internal/wire"
@@ -491,9 +493,9 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if existing, ok := n.sessions[cmd.Session.ID]; ok {
 		n.mu.Unlock()
 		existing.mu.Lock()
-		ref := existing.rec.NativeRef
+		ref, sp := existing.rec.NativeRef, existing.rec.Spec
 		existing.mu.Unlock()
-		return model.Marshal(map[string]any{"native_ref": ref}), nil // idempotent retry
+		return spawnResult(ref, sp), nil // idempotent retry
 	}
 	n.mu.Unlock()
 	spec := cmd.Spec
@@ -515,10 +517,23 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if fi, err := os.Stat(spec.Cwd); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("cwd %q is not a directory on %s", spec.Cwd, n.cfg.Host)
 	}
+	if spec.CwdRoot != "" {
+		// An agent's spawn: the coordinator checked the path's text; here
+		// symlinks are resolved too, so a link inside the root cannot lead
+		// out of it.
+		if err := proc.CheckWithin(spec.CwdRoot, spec.Cwd); err != nil {
+			return nil, err
+		}
+		// Keep the resolved path, so a symlink swapped in later is not
+		// followed (adapters check again before each use).
+		if real, err := filepath.EvalSymlinks(spec.Cwd); err == nil {
+			spec.Cwd = real
+		}
+	}
 	s := &session{n: n, rec: record{
 		ID: cmd.Session.ID, Path: cmd.Session.Path, Harness: harnessName, Status: model.StatusStarting, CreatedAt: time.Now(),
 		Spec: adapter.StartSpec{Name: cmd.Session.Path, Cwd: spec.Cwd, Model: spec.Model, Provider: spec.Provider,
-			ApprovalPolicy: approval, Sandbox: sandbox},
+			ApprovalPolicy: approval, Sandbox: sandbox, CwdRoot: spec.CwdRoot},
 	}}
 	if err := s.openSpool(); err != nil {
 		return nil, err
@@ -543,12 +558,19 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if strings.TrimSpace(spec.Prompt) != "" {
 		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Text: spec.Prompt})
 	}
-	ref := s.rec.NativeRef
+	ref, sp := s.rec.NativeRef, s.rec.Spec
 	s.mu.Unlock()
 	_ = n.saveState()
 	n.logf("session %s started (%s)", s.rec.Path, harnessName)
 	go n.tryDeliver(s)
-	return model.Marshal(map[string]any{"native_ref": ref}), nil
+	return spawnResult(ref, sp), nil
+}
+
+// spawnResult answers a spawn with the session's native reference and the
+// approval policy and sandbox it actually runs with (after node defaults),
+// which the coordinator gives to sessions it spawns.
+func spawnResult(ref *model.NativeRef, sp adapter.StartSpec) json.RawMessage {
+	return model.Marshal(wire.SpawnResult{NativeRef: ref, ApprovalPolicy: sp.ApprovalPolicy, Sandbox: sp.Sandbox})
 }
 
 func (n *Node) session(id string) (*session, error) {
@@ -571,6 +593,25 @@ func (s *session) handle() (adapter.Handle, error) {
 		return nil, errors.New("session is not running on its node (see its status)")
 	}
 	return s.h, nil
+}
+
+// quoteHeaders marks lines in a relayed message that look like Switchyard's
+// own header, so one agent cannot pass off text as coming from a person or
+// another sender. Carriage returns count as line breaks, and leading spaces,
+// invisible characters and case are ignored when matching.
+func quoteHeaders(text string) string {
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(text, "\n")
+	tag := "[" + strings.ToLower(version.Slug)
+	for i, l := range lines {
+		bare := strings.TrimLeftFunc(l, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || r == '>' || unicode.IsControl(r)
+		})
+		if strings.HasPrefix(strings.ToLower(bare), tag) {
+			lines[i] = "(quoted) " + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // formatMessage renders a queued message for the agent. Plain messages
@@ -596,7 +637,7 @@ func formatMessage(m queuedMsg) string {
 	case model.MsgReply:
 		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
 	}
-	b.WriteString(m.Text)
+	b.WriteString(quoteHeaders(m.Text))
 	return b.String()
 }
 
@@ -839,12 +880,14 @@ func (n *Node) Close() error {
 // hello builds the node's greeting.
 func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Version: version.Version, Adapters: n.Adapters()}
+		Features: []string{wire.FeatureCwdRoot},
+		Version:  version.Version, Adapters: n.Adapters()}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
 		if !s.rec.Stopped || len(s.unacked) > 0 {
 			h.Sessions = append(h.Sessions, wire.SessionState{ID: s.rec.ID, Path: s.rec.Path, Harness: s.rec.Harness,
-				Status: s.rec.Status, LastSeq: s.seq, NativeRef: s.rec.NativeRef})
+				Status: s.rec.Status, LastSeq: s.seq, NativeRef: s.rec.NativeRef,
+				ApprovalPolicy: s.rec.Spec.ApprovalPolicy, Sandbox: s.rec.Spec.Sandbox})
 		}
 		s.mu.Unlock()
 	}

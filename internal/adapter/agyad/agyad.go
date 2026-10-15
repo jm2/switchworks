@@ -244,6 +244,9 @@ func (h *handle) env() map[string]string {
 // before the reader starts, so a reader only ever treats its own turn as
 // ended when its process exits.
 func (h *handle) startProc(t *turnState) (*proc.Process, error) {
+	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return nil, err
+	}
 	args := h.args()
 	stderr := h.a.cfg.Stderr
 	if stderr == nil {

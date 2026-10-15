@@ -11,9 +11,12 @@ package proc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,25 +55,59 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Not cmd.StdoutPipe: Wait closes that pipe as soon as the process
+	// exits, which can drop the last lines a short-lived process wrote
+	// before the reader gets to them. With our own pipe the reader sees EOF
+	// only after everything written has been read.
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd.Stdout = stdoutW
 	if err := cmd.Start(); err != nil {
+		stdout.Close()
+		stdoutW.Close()
 		return nil, err
 	}
-	p := &Process{cmd: cmd, Stdin: stdin, Stdout: stdout, done: make(chan struct{})}
+	stdoutW.Close() // the child has its copy
+	p := &Process{cmd: cmd, Stdin: stdin, Stdout: &selfClosing{f: stdout}, done: make(chan struct{})}
 	if err := p.plat.attach(cmd); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		stdout.Close()
 		return nil, err
 	}
 	go func() {
 		p.waitErr = cmd.Wait()
+		// A descendant that left the process group may still hold the
+		// pipe's write end; give the reader a moment to drain what the
+		// process wrote, then end the read instead of waiting for it.
+		_ = stdout.SetReadDeadline(time.Now().Add(5 * time.Second))
 		p.plat.release()
 		close(p.done)
 	}()
 	return p, nil
+}
+
+// selfClosing closes the read end of the stdout pipe once reading it fails
+// (normally at EOF), since nothing else will.
+type selfClosing struct {
+	f    *os.File
+	once sync.Once
+}
+
+func (r *selfClosing) Read(b []byte) (int, error) {
+	n, err := r.f.Read(b)
+	if err != nil {
+		r.Close()
+	}
+	return n, err
+}
+
+func (r *selfClosing) Close() error {
+	var err error
+	r.once.Do(func() { err = r.f.Close() })
+	return err
 }
 
 // Pid returns the child's process id.
@@ -117,6 +154,26 @@ func (p *Process) Kill() error {
 	err := p.plat.kill(p.cmd)
 	<-p.done
 	return err
+}
+
+// CheckWithin reports an error unless dir, with symlinks resolved, is root
+// or below it. Adapters call it right before every use of a session's cwd
+// when the session has a root (it was spawned by an agent), so the agent
+// cannot swap a directory for a symlink between spawn and use.
+func CheckWithin(root, dir string) error {
+	if root == "" {
+		return nil
+	}
+	r, err1 := filepath.EvalSymlinks(root)
+	d, err2 := filepath.EvalSymlinks(dir)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("cwd %q must be inside %q", dir, root)
+	}
+	rel, err := filepath.Rel(r, d)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("cwd %q is outside %q, the directory this session may work in", dir, root)
+	}
+	return nil
 }
 
 // LookPath resolves a binary like exec.LookPath, returning a clearer error.

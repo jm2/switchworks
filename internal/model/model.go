@@ -21,6 +21,10 @@ type Host struct {
 	Adapters  []string  `json:"adapters"`
 	Connected bool      `json:"connected"`
 	LastSeen  time.Time `json:"last_seen"`
+	// CertSHA256 is the fingerprint of the host's current node certificate.
+	// Only that certificate may connect: enrolling again replaces it, and
+	// removing the host revokes it.
+	CertSHA256 string `json:"cert_sha256,omitempty"`
 }
 
 // Session modes.
@@ -83,12 +87,16 @@ type Session struct {
 	Caps      Caps              `json:"caps"`
 	Status    string            `json:"status"`
 	Parent    string            `json:"parent,omitempty"`
-	Model     string            `json:"model,omitempty"`
-	Provider  string            `json:"provider,omitempty"`
-	Usage     *Usage            `json:"usage,omitempty"`
-	LastSeq   int64             `json:"last_seq"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	// ApprovalPolicy and Sandbox are what the session runs with, as its node
+	// reported at spawn; sessions it spawns inherit them.
+	ApprovalPolicy string    `json:"approval_policy,omitempty"`
+	Sandbox        string    `json:"sandbox,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	Usage          *Usage    `json:"usage,omitempty"`
+	LastSeq        int64     `json:"last_seq"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // SpawnSpec is what a client asks for when starting a managed session.
@@ -104,6 +112,10 @@ type SpawnSpec struct {
 	Sandbox        string            `json:"sandbox,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	Parent         string            `json:"parent,omitempty"`
+	// CwdRoot, set by the coordinator for spawns by agents, is the
+	// directory Cwd must be inside; the node checks it with symlinks
+	// resolved.
+	CwdRoot string `json:"cwd_root,omitempty"`
 }
 
 // Event is one entry in a session's append-only log.

@@ -64,7 +64,7 @@ func listen(t *testing.T, addr string) net.Listener {
 	return nil
 }
 
-func startCoordinator(t *testing.T, dir, apiAddr, nodeAddr string) *coordinator {
+func startCoordinator(t *testing.T, dir, apiAddr, nodeAddr string, opts ...func(*coord.Config)) *coordinator {
 	t.Helper()
 	apiLn := listen(t, apiAddr)
 	nodeLn := listen(t, nodeAddr)
@@ -81,6 +81,9 @@ func startCoordinator(t *testing.T, dir, apiAddr, nodeAddr string) *coordinator 
 	cfg, err := coord.LoadConfig(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, o := range opts {
+		o(&cfg)
 	}
 	st, err := store.OpenFileStore(filepath.Join(dir, "data"))
 	if err != nil {

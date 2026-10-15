@@ -84,6 +84,9 @@ func newWebEnv(t *testing.T) *webEnv {
 func (e *webEnv) do(t *testing.T, method, path, body string, hdr map[string]string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(method, e.http.URL+path, strings.NewReader(body))
+	if strings.HasPrefix(path, "/ui/") {
+		req.Header.Set("X-Swyd-CSRF", "1") // as login.js and app.js send it
+	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -175,12 +178,38 @@ func TestWebSignIn(t *testing.T) {
 		t.Fatal("ca.crt is not a certificate")
 	}
 
-	// Sign-in failures are throttled (one failure above, this makes ten).
+	// Sign-in failures are throttled per client (one failure above, this
+	// makes ten), but a one-time link still works.
 	for i := 0; i < 9; i++ {
 		e.do(t, "POST", "/ui/login", `{"token":"wrong"}`, nil)
 	}
 	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
 		t.Fatalf("throttle: %d", r.StatusCode)
+	}
+	code = e.srv.web.newCode(time.Now(), time.Minute)
+	if r := e.do(t, "POST", "/ui/login", `{"code":"`+code+`"}`, nil); r.StatusCode != 200 {
+		t.Fatalf("link sign-in while tokens are throttled: %d", r.StatusCode)
+	}
+	if v, th := e.srv.web.checkToken("10.0.0.9", time.Now(), func() bool { return true }); !v || th {
+		t.Fatal("another client was throttled too")
+	}
+
+	// Signing out revokes that cookie on the server, not just in the browser.
+	if r := e.do(t, "POST", "/ui/logout", "", cookie); r.StatusCode != 200 {
+		t.Fatalf("logout: %d", r.StatusCode)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", cookie); r.StatusCode != 401 {
+		t.Fatalf("API with a signed-out cookie: %d", r.StatusCode)
+	}
+	if again, _ := loadWebAuth(filepath.Dir(e.srv.web.revokePath)); again.validCookie(ck.Value, time.Now()) {
+		t.Fatal("revocation not persisted")
+	}
+	// Without the CSRF header, neither sign-in nor sign-out is accepted.
+	req, _ := http.NewRequest("POST", e.http.URL+"/ui/login", strings.NewReader(`{"token":"x"}`))
+	if r, err := http.DefaultClient.Do(req); err != nil || r.StatusCode != 403 {
+		t.Fatalf("sign-in without CSRF header: %v %v", r, err)
+	} else {
+		r.Body.Close()
 	}
 }
 

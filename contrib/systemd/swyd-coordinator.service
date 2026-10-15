@@ -12,6 +12,20 @@ ExecStart=%h/.local/bin/swyd coordinator run
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
+# The coordinator needs nothing but its own directory and the network.
+# (The node unit is left unconfined: agents need your whole environment.)
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# As a system unit (User=...), also confine its filesystem view; user units
+# need unprivileged user namespaces for these, so they are off here:
+#ProtectSystem=strict
+#ProtectHome=read-only
+#ReadWritePaths=/home/<user>/.config/swyd
+#PrivateTmp=yes
 
 [Install]
 WantedBy=default.target

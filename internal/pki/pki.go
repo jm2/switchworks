@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jm2/switchyard/internal/paths"
 	"github.com/jm2/switchyard/internal/version"
 )
 
@@ -100,10 +101,7 @@ func Fingerprint(c *x509.Certificate) string {
 }
 
 func writeFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, mode)
+	return paths.WriteFile(path, data, mode)
 }
 
 // InitCA creates a CA and a server certificate valid for hosts (DNS names or

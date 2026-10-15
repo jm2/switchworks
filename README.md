@@ -96,7 +96,7 @@ on macOS and `C:\tools\swyd.exe` on Windows.
 
 ### Prerequisites
 
-- Go 1.24 or newer
+- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.2, if yours is older)
 - `make` (optional; the targets are short `go build` commands)
 
 ```bash
@@ -139,7 +139,12 @@ swyd coordinator run
 ```
 
 It listens on port **7480** (web UI, API and CLI) and **7481** (nodes).
-Allow both through the firewall from your workstations.
+Allow both through the firewall from your workstations only.
+
+> **Keep both ports on a private network or a tailnet, never the open
+> internet.** They are authenticated and encrypted, but Switchyard is not
+> hardened for internet exposure. To reach the web UI from elsewhere, use a
+> VPN or `tailscale serve` (see [docs/web-ui.md](docs/web-ui.md)).
 
 ### 2. Each workstation
 
@@ -189,7 +194,11 @@ coordinator:
 ssh coord.lan swyd coordinator cli-config > ~/.config/swyd/cli.json
 ```
 
-The file holds the admin token; keep it private (`chmod 600`).
+The file holds the admin token, which controls the whole fleet: keep it
+private (`chmod 600`), and do not copy it to a machine where agents run:
+harness sandboxes limit writes, not reads, so an agent there could read it.
+On those machines, use the web UI from your phone or another computer
+instead.
 
 ### 4. The web UI
 
@@ -243,10 +252,18 @@ swyd reply <ask-id> "ship it"
 swyd ask helper "status?"     # ask an agent yourself and wait for the answer
 ```
 
-Guards in `coordinator.json` bound agent-to-agent traffic: hop limits,
-per-pair rate limits, spawn depth, which hosts agents may spawn on, and a
-fleet-wide daily token budget (`guards.max_daily_tokens`). Set a budget
-before letting agents spawn freely. See [docs/messaging.md](docs/messaging.md).
+Guards in `coordinator.json` bound what agents can do to each other: hop
+limits, rate limits, spawn depth and a fleet-wide daily token budget
+(`guards.max_daily_tokens`; set one before letting agents spawn freely). By
+default an agent spawns only on its own host, with its own harness, inside
+its own working directory, and its children inherit its approval policy and
+sandbox; agents steer, interrupt and stop only sessions they spawned. See
+[docs/messaging.md](docs/messaging.md), including its trust model: the
+guards are not a sandbox, and an agent with a shell can read its node's
+credentials.
+
+If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
+certificate. Enrolling a host again also replaces its old certificate.
 
 ### Harnesses
 
@@ -340,6 +357,13 @@ Switchyard is a control plane, not an agent or a model gateway. It does not edit
 proxy model traffic, or store provider keys beyond what you put in a node's `node.json`. It is
 built for one person's (or one small team's) machines behind a private network, not as a
 multi-tenant service.
+
+---
+
+## Security
+
+Report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md), not in a public
+issue. It also sets out what Switchyard assumes about your network and your agents.
 
 ---
 

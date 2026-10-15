@@ -157,4 +157,7 @@ emits exactly the documented events. It has not been run against a real
   skips permissions, adds `mcp(swyd/*)` to `permissions.allow` in agy's
   settings. The session's credentials reach `swyd mcp` through agy's
   environment, which assumes agy passes its environment to MCP servers it
-  starts, as goose and Codex do. That is unverified.
+  starts, as goose and Codex do. That is unverified. It also means every
+  command and MCP server agy runs in that session can see the session's
+  fleet token. The node refuses to write through a symlinked `.agents`, and
+  only appends to `info/exclude` of a real git directory.

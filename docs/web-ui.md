@@ -67,8 +67,10 @@ warn about it at first. There are two ways to fix that:
    tailscale serve --bg --https=443 http://127.0.0.1:7482
    ```
 
-   `http_listen` serves the same API and UI over plain HTTP. Bind it to
-   loopback only.
+   `http_listen` serves the same API and UI over plain HTTP. It must be a
+   loopback address; the coordinator refuses to start otherwise. Only on
+   that listener, and only from loopback, does it trust the proxy's
+   `X-Forwarded-Proto` and `X-Forwarded-For` headers.
 
 ## Signing in
 
@@ -79,9 +81,10 @@ warn about it at first. There are two ways to fix that:
   once, within 15 minutes. The code is in the URL fragment, so it never
   reaches server logs or a `Referer`.
 
-The browser gets a 30-day session cookie. Sign out from the top bar. To sign
-every browser out, delete `ui.key` in the coordinator directory and restart
-the coordinator.
+The browser gets a 30-day session cookie. Signing out from the top bar
+revokes that cookie on the server too, so a copy of it stops working. To
+sign every browser out, delete `ui.key` in the coordinator directory and
+restart the coordinator.
 
 ## Security model
 
@@ -95,7 +98,12 @@ the coordinator.
   scripts or styles), `X-Frame-Options: DENY` and `Referrer-Policy:
   no-referrer`. Text from sessions is only ever inserted as text, never as
   HTML.
-- Failed sign-ins are limited to 10 a minute.
+- Failed token sign-ins are limited to 10 a minute per client. One-time
+  links are not limited (they cannot be guessed), so a flood of bad tokens
+  cannot keep you from signing in with a link.
+- Sign-in and sign-out also require `X-Swyd-CSRF: 1`. Over HTTPS the server
+  sends `Strict-Transport-Security`; browsers ignore it until they trust
+  the fleet CA, so it cannot lock anyone out.
 - The CLI's bearer token works on every endpoint as before.
 
 There is one identity, the owner. Messages sent from the UI come from
