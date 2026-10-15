@@ -96,7 +96,7 @@ on macOS and `C:\tools\swyd.exe` on Windows.
 
 ### Prerequisites
 
-- Go 1.24 or newer
+- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.2, if yours is older)
 - `make` (optional; the targets are short `go build` commands)
 
 ```bash
@@ -139,7 +139,12 @@ swyd coordinator run
 ```
 
 It listens on port **7480** (web UI, API and CLI) and **7481** (nodes).
-Allow both through the firewall from your workstations.
+Allow both through the firewall from your workstations only.
+
+> **Keep both ports on a private network or a tailnet, never the open
+> internet.** They are authenticated and encrypted, but Switchyard is not
+> hardened for internet exposure. To reach the web UI from elsewhere, use a
+> VPN or `tailscale serve` (see [docs/web-ui.md](docs/web-ui.md)).
 
 ### 2. Each workstation
 
@@ -352,6 +357,13 @@ Switchyard is a control plane, not an agent or a model gateway. It does not edit
 proxy model traffic, or store provider keys beyond what you put in a node's `node.json`. It is
 built for one person's (or one small team's) machines behind a private network, not as a
 multi-tenant service.
+
+---
+
+## Security
+
+Report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md), not in a public
+issue. It also sets out what Switchyard assumes about your network and your agents.
 
 ---
 
