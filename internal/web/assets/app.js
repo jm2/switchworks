@@ -165,6 +165,11 @@ function connectFleet() {
       changed(type, d);
     });
   }
+  fleetES.addEventListener('host_removed', (e) => {
+    const d = JSON.parse(e.data);
+    S.hosts.delete(d.id);
+    changed('host', d);
+  });
   fleetES.onerror = () => {
     setConn(false);
     if (fleetES.readyState === EventSource.CLOSED) {
@@ -534,7 +539,7 @@ function approvalCard(sessionID, a, onDone) {
     h('button', {type: 'button', class: d === 'accept' ? 'primary' : '', text: decisionLabel[d] || d, title: d, onclick: async () => {
       for (const b of card.querySelectorAll('button')) b.disabled = true;
       try {
-        await api('POST', `/v1/sessions/${sessionID}/approvals/${encodeURIComponent(a.approval_id)}`, {decision: d});
+        await api('POST', `/v1/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(a.approval_id)}`, {decision: d});
         card.classList.add('done');
         if (onDone) onDone();
       } catch (err) {
@@ -613,7 +618,7 @@ function sessionView(id, full) {
         res = await api('POST', '/v1/messages', {to: id, kind: 'ask', text, from: ME, wait_seconds: 0});
         toast(res.status === 'failed' ? 'Ask failed: ' + res.error : 'Asked. The answer will appear in Inbox');
       } else {
-        res = await api('POST', `/v1/sessions/${id}/messages`, {text, mode: mode.value, from: ME});
+        res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME});
         if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
         else if (mode.value === 'steer' && res.mode === 'queue') toast('Nothing was running, so it starts the next turn');
       }
@@ -643,9 +648,9 @@ function sessionView(id, full) {
       crumb(h('a', {href: '#/', text: s.host}), s.name),
       h('span', {class: 'pill only-wide ' + s.status, text: statusLabel[s.status] || s.status}),
       busy && s.caps && s.caps.interrupt ? iconBtn('pause', 'Interrupt the turn', () =>
-        api('POST', `/v1/sessions/${id}/interrupt`).catch((e) => toast(e.message))) : null,
+        api('POST', `/v1/sessions/${encodeURIComponent(id)}/interrupt`).catch((e) => toast(e.message))) : null,
       liveSession(s) ? iconBtn('stop', 'Stop session', () => {
-        if (confirm(`Stop ${s.path}? Its history is kept.`)) api('POST', `/v1/sessions/${id}/stop`).catch((e) => toast(e.message));
+        if (confirm(`Stop ${s.path}? Its history is kept.`)) api('POST', `/v1/sessions/${encodeURIComponent(id)}/stop`).catch((e) => toast(e.message));
       }) : null);
     input.placeholder = `Message ${s.name}`;
     const parent = s.parent && S.sessions.get(s.parent);
@@ -833,7 +838,7 @@ function sessionView(id, full) {
     if (after > 0 && !lastSeq) {
       log.append(h('p', {class: 'more'}, h('a', {href: `#/s/${id}/all`, text: 'Show earlier history'})));
     }
-    es = new EventSource(`/v1/sessions/${id}/stream?after=${after}`);
+    es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
       'message.failed', 'usage', 'error', 'warning', 'session.settled'];

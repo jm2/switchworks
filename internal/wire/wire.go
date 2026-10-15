@@ -110,6 +110,13 @@ type SpawnCmd struct {
 	Spec    model.SpawnSpec `json:"spec"`
 }
 
+// SpawnResult answers OpSpawn.
+type SpawnResult struct {
+	NativeRef      *model.NativeRef `json:"native_ref,omitempty"`
+	ApprovalPolicy string           `json:"approval_policy,omitempty"`
+	Sandbox        string           `json:"sandbox,omitempty"`
+}
+
 type MessageCmd struct {
 	ID      string `json:"id"`
 	From    string `json:"from"`

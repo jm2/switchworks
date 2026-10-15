@@ -54,7 +54,7 @@ func (s *Server) uiRoutes(mux *http.ServeMux) {
 		servePage(w, r, files, "index.html")
 	})
 	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) { servePage(w, r, files, "login.html") })
-	mux.HandleFunc("POST /ui/login", s.handleLogin)
+	mux.HandleFunc("POST /ui/login", bodyDeadline(s.handleLogin))
 	mux.HandleFunc("POST /ui/logout", s.handleLogout)
 	mux.HandleFunc("GET /ca.crt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-x509-ca-cert")

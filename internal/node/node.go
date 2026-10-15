@@ -491,9 +491,9 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if existing, ok := n.sessions[cmd.Session.ID]; ok {
 		n.mu.Unlock()
 		existing.mu.Lock()
-		ref := existing.rec.NativeRef
+		ref, sp := existing.rec.NativeRef, existing.rec.Spec
 		existing.mu.Unlock()
-		return model.Marshal(map[string]any{"native_ref": ref}), nil // idempotent retry
+		return spawnResult(ref, sp), nil // idempotent retry
 	}
 	n.mu.Unlock()
 	spec := cmd.Spec
@@ -514,6 +514,14 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	}
 	if fi, err := os.Stat(spec.Cwd); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("cwd %q is not a directory on %s", spec.Cwd, n.cfg.Host)
+	}
+	if spec.CwdRoot != "" {
+		// An agent's spawn: the coordinator checked the path's text; here
+		// symlinks are resolved too, so a link inside the root cannot lead
+		// out of it.
+		if err := within(spec.CwdRoot, spec.Cwd); err != nil {
+			return nil, err
+		}
 	}
 	s := &session{n: n, rec: record{
 		ID: cmd.Session.ID, Path: cmd.Session.Path, Harness: harnessName, Status: model.StatusStarting, CreatedAt: time.Now(),
@@ -543,12 +551,33 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if strings.TrimSpace(spec.Prompt) != "" {
 		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Text: spec.Prompt})
 	}
-	ref := s.rec.NativeRef
+	ref, sp := s.rec.NativeRef, s.rec.Spec
 	s.mu.Unlock()
 	_ = n.saveState()
 	n.logf("session %s started (%s)", s.rec.Path, harnessName)
 	go n.tryDeliver(s)
-	return model.Marshal(map[string]any{"native_ref": ref}), nil
+	return spawnResult(ref, sp), nil
+}
+
+// spawnResult answers a spawn with the session's native reference and the
+// approval policy and sandbox it actually runs with (after node defaults),
+// which the coordinator gives to sessions it spawns.
+func spawnResult(ref *model.NativeRef, sp adapter.StartSpec) json.RawMessage {
+	return model.Marshal(wire.SpawnResult{NativeRef: ref, ApprovalPolicy: sp.ApprovalPolicy, Sandbox: sp.Sandbox})
+}
+
+// within checks that dir, with symlinks resolved, is root or below it.
+func within(root, dir string) error {
+	r, err1 := filepath.EvalSymlinks(root)
+	d, err2 := filepath.EvalSymlinks(dir)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("cwd %q must be inside %q", dir, root)
+	}
+	rel, err := filepath.Rel(r, d)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("cwd %q is outside %q, the directory this agent may spawn in", dir, root)
+	}
+	return nil
 }
 
 func (n *Node) session(id string) (*session, error) {
@@ -571,6 +600,22 @@ func (s *session) handle() (adapter.Handle, error) {
 		return nil, errors.New("session is not running on its node (see its status)")
 	}
 	return s.h, nil
+}
+
+// quoteHeaders marks lines in a relayed message that look like Switchyard's
+// own header, so one agent cannot pass off text as coming from a person or
+// another sender.
+func quoteHeaders(text string) string {
+	if !strings.Contains(text, "["+version.Slug) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimLeft(l, " \t>"), "["+version.Slug) {
+			lines[i] = "(quoted) " + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // formatMessage renders a queued message for the agent. Plain messages
@@ -596,7 +641,7 @@ func formatMessage(m queuedMsg) string {
 	case model.MsgReply:
 		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
 	}
-	b.WriteString(m.Text)
+	b.WriteString(quoteHeaders(m.Text))
 	return b.String()
 }
 

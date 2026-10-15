@@ -10,6 +10,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/jm2/switchyard/internal/version"
 )
@@ -39,4 +40,37 @@ func CLIConfig() string {
 		return v
 	}
 	return filepath.Join(Base(), "cli.json")
+}
+
+// WriteFile replaces path with data, readable only as mode allows: it
+// writes a new file and renames it into place, so an existing file's looser
+// permissions, or a symlink at path, are never reused. Parent directories
+// are created 0700.
+func WriteFile(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // after a successful rename this is a no-op
+	if err := f.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

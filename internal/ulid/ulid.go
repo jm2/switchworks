@@ -112,3 +112,22 @@ func decodeChar(c byte) int {
 	}
 	return -1
 }
+
+// Valid reports whether id is a canonical ULID: 26 upper-case Crockford
+// base32 characters, the first no greater than '7'. Use it before an ID from
+// another process names a file or a record.
+func Valid(id string) bool {
+	if len(id) != 26 || id[0] > '7' {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c >= 'a' && c <= 'z' {
+			return false
+		}
+		if decodeChar(c) < 0 {
+			return false
+		}
+	}
+	return true
+}

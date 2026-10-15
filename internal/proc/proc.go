@@ -52,14 +52,22 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Not cmd.StdoutPipe: Wait closes that pipe as soon as the process
+	// exits, which can drop the last lines a short-lived process wrote
+	// before the reader gets to them. With our own pipe the reader sees EOF
+	// only after everything written has been read.
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	cmd.Stdout = stdoutW
 	if err := cmd.Start(); err != nil {
+		stdout.Close()
+		stdoutW.Close()
 		return nil, err
 	}
-	p := &Process{cmd: cmd, Stdin: stdin, Stdout: stdout, done: make(chan struct{})}
+	stdoutW.Close() // the child has its copy
+	p := &Process{cmd: cmd, Stdin: stdin, Stdout: &selfClosing{f: stdout}, done: make(chan struct{})}
 	if err := p.plat.attach(cmd); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -71,6 +79,27 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 		close(p.done)
 	}()
 	return p, nil
+}
+
+// selfClosing closes the read end of the stdout pipe once reading it fails
+// (normally at EOF), since nothing else will.
+type selfClosing struct {
+	f    *os.File
+	once sync.Once
+}
+
+func (r *selfClosing) Read(b []byte) (int, error) {
+	n, err := r.f.Read(b)
+	if err != nil {
+		r.Close()
+	}
+	return n, err
+}
+
+func (r *selfClosing) Close() error {
+	var err error
+	r.once.Do(func() { err = r.f.Close() })
+	return err
 }
 
 // Pid returns the child's process id.

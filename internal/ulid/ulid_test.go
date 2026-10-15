@@ -29,3 +29,18 @@ func TestMonotonicAndDecodable(t *testing.T) {
 		t.Fatalf("decoded time %v out of range", ts)
 	}
 }
+
+func TestValid(t *testing.T) {
+	if id := New(); !Valid(id) {
+		t.Fatalf("New() = %q not valid", id)
+	}
+	for _, bad := range []string{"", "01ARZ3NDEKTSV4RRFFQ69G5FA", "01arz3ndektsv4rrffq69g5fav", "81ARZ3NDEKTSV4RRFFQ69G5FAV",
+		"01ARZ3NDEKTSV4RRFFQ69G5FAU", "../ARZ3NDEKTSV4RRFFQ69G5FA", "01ARZ3NDEKTSV4RRFFQ69G5FA/"} {
+		if Valid(bad) {
+			t.Errorf("Valid(%q) = true", bad)
+		}
+	}
+	if !Valid("01ARZ3NDEKTSV4RRFFQ69G5FAV") {
+		t.Error("spec example rejected")
+	}
+}

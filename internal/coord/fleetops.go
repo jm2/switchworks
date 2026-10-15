@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -225,11 +226,18 @@ func (s *Server) fleetStatus(from sender, a fleet.StatusArgs) (fleet.StatusResul
 			return fleet.StatusResult{}, err
 		}
 	}
-	last := s.lastAgentMessage(sess.ID)
-	if len(last) > 4000 {
-		last = last[:4000] + "…"
+	res := fleet.StatusResult{SessionInfo: s.info(sess), UpdatedAt: sess.UpdatedAt}
+	// Agents read the output of themselves, their parent and their children
+	// only, unless the guards allow more.
+	if from.sess == nil || s.router.guards.AllowReadAny || sess.ID == from.sess.ID ||
+		sess.ID == from.sess.Parent || sess.Parent == from.sess.ID {
+		last := s.lastAgentMessage(sess.ID)
+		if len(last) > 4000 {
+			last = last[:4000] + "…"
+		}
+		res.LastMessage = last
 	}
-	return fleet.StatusResult{SessionInfo: s.info(sess), LastMessage: last, UpdatedAt: sess.UpdatedAt}, nil
+	return res, nil
 }
 
 // depth is how many spawn levels sit above a session.
@@ -246,16 +254,13 @@ func (s *Server) depth(sess model.Session) int {
 	return d
 }
 
+// Label keys agents may not set on sessions they spawn, so they cannot
+// claim routes the owner set up (@role=reviewer, say). Keys starting with
+// "owner." are reserved too.
+var reservedLabels = map[string]bool{"host": true, "harness": true, "parent": true}
+
 func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs) (fleet.SpawnResult, error) {
 	g := s.router.guards
-	if from.sess != nil {
-		if d := s.depth(*from.sess) + 1; d > g.MaxSpawnDepth {
-			return fleet.SpawnResult{}, fmt.Errorf("spawn depth limit: this would be level %d (max %d)", d, g.MaxSpawnDepth)
-		}
-		if len(g.SpawnHosts) > 0 && !contains(g.SpawnHosts, a.Host) {
-			return fleet.SpawnResult{}, fmt.Errorf("agents may not spawn on %q (allowed: %s)", a.Host, strings.Join(g.SpawnHosts, ", "))
-		}
-	}
 	if g.MaxDailyTokens > 0 && s.store.DailyTokens(time.Now().UTC().Format("2006-01-02")) >= g.MaxDailyTokens {
 		return fleet.SpawnResult{}, ErrBudget
 	}
@@ -273,12 +278,119 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 	}
 	spec := model.SpawnSpec{Host: a.Host, Name: name, Harness: a.Harness, Cwd: a.Cwd, Prompt: a.Prompt,
 		Model: a.Model, Labels: a.Labels, Parent: from.sessionID()}
+	hops := s.router.hopsFor(from)
+	if from.sess != nil {
+		if err := s.agentSpawn(from, &spec, hops); err != nil {
+			return fleet.SpawnResult{}, err
+		}
+	}
 	sess, err := s.Spawn(ctx, spec)
 	if err != nil {
 		return fleet.SpawnResult{}, err
 	}
-	s.router.started(sess.ID, s.router.hopsFor(from))
+	s.router.started(sess.ID, hops)
+	if from.sess != nil && strings.TrimSpace(a.Prompt) != "" {
+		// An agent's prompt goes to the child as a routed message from the
+		// agent: it carries the hop count, and the child sees who sent it
+		// rather than taking it for the owner's words.
+		if _, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt}); err != nil {
+			return fleet.SpawnResult{ID: sess.ID, Path: sess.Path}, fmt.Errorf("spawned %s, but its prompt was not sent: %w", sess.Path, err)
+		}
+	}
 	return fleet.SpawnResult{ID: sess.ID, Path: sess.Path}, nil
+}
+
+// agentSpawn applies the guards to a spawn by an agent and confines the
+// child to its parent's scope: same host, harness and directory tree unless
+// the guards allow more, and the parent's approval policy and sandbox.
+func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error {
+	g := s.router.guards
+	p := *from.sess
+	if d := s.depth(p) + 1; d > g.MaxSpawnDepth {
+		return fmt.Errorf("spawn depth limit: this would be level %d (max %d)", d, g.MaxSpawnDepth)
+	}
+	if hops > g.MaxHops {
+		return ErrHopLimit
+	}
+	if spec.Host == "" {
+		spec.Host = p.Host
+	}
+	switch {
+	case spec.Host == p.Host, contains(g.SpawnHosts, "*"), contains(g.SpawnHosts, spec.Host):
+	case len(g.SpawnHosts) == 0:
+		return fmt.Errorf("agents may spawn only on their own host (%s); guards.spawn_hosts allows others", p.Host)
+	default:
+		return fmt.Errorf("agents may not spawn on %q (allowed: %s, %s)", spec.Host, p.Host, strings.Join(g.SpawnHosts, ", "))
+	}
+	if spec.Harness == "" {
+		spec.Harness = p.Harness
+	}
+	if spec.Harness != p.Harness && !contains(g.SpawnHarnesses, "*") && !contains(g.SpawnHarnesses, spec.Harness) {
+		return fmt.Errorf("agents may spawn only their own harness (%s); guards.spawn_harnesses allows others", p.Harness)
+	}
+	if spec.Cwd == "" {
+		spec.Cwd = p.Cwd
+	}
+	root, ok := cwdRoot(p.Cwd, spec.Cwd, g.SpawnCwdRoots)
+	if !ok {
+		return fmt.Errorf("cwd %q is outside %s; guards.spawn_cwd_roots allows other directories", spec.Cwd, p.Cwd)
+	}
+	spec.CwdRoot = root
+	for k := range spec.Labels {
+		if reservedLabels[k] || strings.HasPrefix(k, "owner.") {
+			return fmt.Errorf("label %q is reserved for people", k)
+		}
+	}
+	spec.ApprovalPolicy, spec.Sandbox = p.ApprovalPolicy, p.Sandbox
+	spec.Prompt = "" // sent as a message once the child exists
+	if !s.router.allow("spawn|"+p.ID, g.SpawnPerMinute) {
+		return fmt.Errorf("spawn rate limit: at most %d a minute", g.SpawnPerMinute)
+	}
+	return nil
+}
+
+// cwdRoot returns the directory an agent's spawn cwd lies inside: its own
+// cwd, or one of the configured roots. The node checks the result again
+// with symlinks resolved.
+func cwdRoot(parentCwd, cwd string, roots []string) (string, bool) {
+	if contains(roots, "*") {
+		return "", true
+	}
+	for _, r := range append([]string{parentCwd}, roots...) {
+		if r != "" && pathWithin(r, cwd) {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// pathWithin reports whether dir is root or below it, comparing absolute
+// paths as text (in either separator style; a Windows path's case is
+// ignored). Paths with ".." segments never match.
+func pathWithin(root, dir string) bool {
+	norm := func(p string) (string, bool) {
+		p = strings.ReplaceAll(p, "\\", "/")
+		win := len(p) >= 3 && p[1] == ':' && p[2] == '/'
+		if !win && !strings.HasPrefix(p, "/") {
+			return "", false
+		}
+		for _, seg := range strings.Split(p, "/") {
+			if seg == ".." {
+				return "", false
+			}
+		}
+		p = strings.TrimRight(path.Clean(p), "/")
+		if win {
+			p = strings.ToLower(p)
+		}
+		return p, true
+	}
+	r, ok1 := norm(root)
+	d, ok2 := norm(dir)
+	if !ok1 || !ok2 {
+		return false
+	}
+	return d == r || strings.HasPrefix(d, r+"/") || r == ""
 }
 
 func (s *Server) fleetStop(ctx context.Context, from sender, a fleet.StopArgs) (fleet.StopResult, error) {

@@ -33,7 +33,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown command %q (see `swyd help`)\n", cmd)
 		return 2
 	}
-	return fn(rest, stdout, stderr)
+	// Fleet commands print agents' and models' text: keep it from
+	// controlling the terminal.
+	return fn(rest, render.Safe(stdout), render.Safe(stderr))
 }
 
 type command func(args []string, stdout, stderr io.Writer) int
@@ -148,6 +150,23 @@ func orDash(s string) string {
 }
 
 func cmdHosts(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "rm" || args[0] == "remove") {
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "usage: swyd hosts rm <host>")
+			return 2
+		}
+		c, ok := client(stderr)
+		if !ok {
+			return 1
+		}
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		if err := c.RemoveHost(ctx, args[1]); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "removed %s: its certificate no longer connects and its sessions are marked gone; enroll it again to bring it back\n", args[1])
+		return 0
+	}
 	c, ok := client(stderr)
 	if !ok {
 		return 1

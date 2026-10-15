@@ -9,7 +9,9 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/paths"
 	"github.com/jm2/switchyard/internal/pki"
 )
 
@@ -28,19 +31,23 @@ import (
 // add without a CORS preflight that this server never answers.
 
 const (
-	cookieName  = "swyd_session"
-	cookieTTL   = 30 * 24 * time.Hour
-	csrfHeader  = "X-Swyd-CSRF"
-	uiKeyFile   = "ui.key"
-	loginLinkTT = 15 * time.Minute
+	cookieName    = "swyd_session"
+	cookieTTL     = 30 * 24 * time.Hour
+	csrfHeader    = "X-Swyd-CSRF"
+	uiKeyFile     = "ui.key"
+	uiRevokedFile = "ui-revoked.json"
+	loginLinkTT   = 15 * time.Minute
+	maxFailures   = 10 // failed token sign-ins per client per minute
 )
 
 type webAuth struct {
-	key []byte
+	key        []byte
+	revokePath string
 
 	mu       sync.Mutex
-	codes    map[string]time.Time // sha256(code) -> expiry
-	failures []time.Time
+	codes    map[string]time.Time   // sha256(code) -> expiry
+	failures map[string][]time.Time // client -> recent failed token sign-ins
+	revoked  map[string]time.Time   // signed-out cookie id -> its expiry
 }
 
 // loadWebAuth reads (or creates) the cookie-signing key. Deleting ui.key
@@ -53,7 +60,7 @@ func loadWebAuth(dir string) (*webAuth, error) {
 		if _, err := rand.Read(key); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(path, key, 0o600); err != nil {
+		if err := paths.WriteFile(path, key, 0o600); err != nil {
 			return nil, err
 		}
 	} else if err != nil {
@@ -62,7 +69,12 @@ func loadWebAuth(dir string) (*webAuth, error) {
 	if len(key) < 32 {
 		return nil, errors.New(path + " is too short; delete it to make a new one")
 	}
-	return &webAuth{key: key, codes: map[string]time.Time{}}, nil
+	a := &webAuth{key: key, revokePath: filepath.Join(dir, uiRevokedFile), codes: map[string]time.Time{},
+		failures: map[string][]time.Time{}, revoked: map[string]time.Time{}}
+	if b, err := os.ReadFile(a.revokePath); err == nil {
+		_ = json.Unmarshal(b, &a.revoked)
+	}
+	return a, nil
 }
 
 func (a *webAuth) sign(payload []byte) []byte {
@@ -93,7 +105,35 @@ func (a *webAuth) validCookie(v string, now time.Time) bool {
 	if !hmac.Equal(got, a.sign(payload)) {
 		return false
 	}
-	return now.Unix() < int64(binary.BigEndian.Uint64(payload))
+	if now.Unix() >= int64(binary.BigEndian.Uint64(payload)) {
+		return false
+	}
+	a.mu.Lock()
+	_, out := a.revoked[cookieID(payload)]
+	a.mu.Unlock()
+	return !out
+}
+
+func cookieID(payload []byte) string { return base64.RawURLEncoding.EncodeToString(payload[8:]) }
+
+// revoke signs one cookie out for good, even if a copy of it survives.
+func (a *webAuth) revoke(v string, now time.Time) {
+	p, _, _ := strings.Cut(v, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil || len(payload) != 24 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, exp := range a.revoked {
+		if now.After(exp) {
+			delete(a.revoked, id)
+		}
+	}
+	a.revoked[cookieID(payload)] = time.Unix(int64(binary.BigEndian.Uint64(payload)), 0)
+	if b, err := json.Marshal(a.revoked); err == nil {
+		_ = paths.WriteFile(a.revokePath, b, 0o600)
+	}
 }
 
 // newCode mints a one-time login code.
@@ -119,28 +159,58 @@ func (a *webAuth) useCode(code string, now time.Time) bool {
 	return ok && now.Before(exp)
 }
 
-// throttled limits failed sign-ins to 10 a minute.
-func (a *webAuth) throttled(now time.Time) bool {
+// checkToken compares a sign-in token, limiting each client to maxFailures
+// failed attempts a minute. The check and the count happen under one lock,
+// so concurrent guesses cannot slip past the limit.
+func (a *webAuth) checkToken(client string, now time.Time, ok func() bool) (valid, throttled bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	keep := a.failures[:0]
-	for _, t := range a.failures {
+	if len(a.failures) > 10000 {
+		a.failures = map[string][]time.Time{} // bounded memory under a flood
+	}
+	recent := a.failures[client][:0]
+	for _, t := range a.failures[client] {
 		if now.Sub(t) < time.Minute {
-			keep = append(keep, t)
+			recent = append(recent, t)
 		}
 	}
-	a.failures = keep
-	return len(a.failures) >= 10
+	if len(recent) >= maxFailures {
+		a.failures[client] = recent
+		return false, true
+	}
+	if ok() {
+		a.failures[client] = recent
+		return true, false
+	}
+	a.failures[client] = append(recent, now)
+	return false, false
 }
 
-func (a *webAuth) failed(now time.Time) {
-	a.mu.Lock()
-	a.failures = append(a.failures, now)
-	a.mu.Unlock()
+// clientKey identifies a client for throttling: its address, or the address
+// a reverse proxy on this machine forwarded for.
+func clientKey(r *http.Request) string {
+	h := remoteHost(r)
+	if fromLocalProxy(r) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
+	}
+	return h
+}
+
+// fromLocalProxy reports whether a plain-HTTP request came from this
+// machine, the only place a trusted reverse proxy runs (Config.HTTPListen).
+func fromLocalProxy(r *http.Request) bool {
+	if r.TLS != nil {
+		return false
+	}
+	ip := net.ParseIP(remoteHost(r))
+	return ip != nil && ip.IsLoopback()
 }
 
 func secureRequest(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	return r.TLS != nil || (fromLocalProxy(r) && r.Header.Get("X-Forwarded-Proto") == "https")
 }
 
 func (s *Server) cookieAuthed(r *http.Request) bool {
@@ -177,6 +247,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get(csrfHeader) != "1" {
+		writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
+		return
+	}
 	var body struct {
 		Token string `json:"token,omitempty"`
 		Code  string `json:"code,omitempty"`
@@ -186,23 +260,38 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	if s.web.throttled(now) {
-		writeErr(w, http.StatusTooManyRequests, errors.New("too many failed sign-ins; wait a minute"))
-		return
+	var ok bool
+	switch {
+	case body.Code != "":
+		// One-time codes are 192-bit and single-use: no throttle, so a
+		// flood of bad tokens cannot block signing in with a link.
+		ok = s.web.useCode(body.Code, now)
+	case body.Token != "":
+		var throttled bool
+		ok, throttled = s.web.checkToken(clientKey(r), now, func() bool { return s.tokenOK(body.Token) })
+		if throttled {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many failed sign-ins; wait a minute"))
+			return
+		}
 	}
-	ok := (body.Token != "" && s.tokenOK(body.Token)) || (body.Code != "" && s.web.useCode(body.Code, now))
 	if !ok {
-		s.web.failed(now)
 		writeErr(w, http.StatusUnauthorized, errors.New("that token or link is not valid (links work once, for 15 minutes)"))
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.web.newCookie(now), Path: "/", MaxAge: int(cookieTTL.Seconds()),
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode})
-	s.logf("web sign-in from %s", r.RemoteAddr)
+	s.logf("web sign-in from %s", clientKey(r))
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get(csrfHeader) != "1" {
+		writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
+		return
+	}
+	if c, err := r.Cookie(cookieName); err == nil && s.web.validCookie(c.Value, time.Now()) {
+		s.web.revoke(c.Value, time.Now())
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode})
 	writeJSON(w, 200, map[string]bool{"ok": true})

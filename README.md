@@ -189,7 +189,10 @@ coordinator:
 ssh coord.lan swyd coordinator cli-config > ~/.config/swyd/cli.json
 ```
 
-The file holds the admin token; keep it private (`chmod 600`).
+The file holds the admin token, which controls the whole fleet: keep it
+private (`chmod 600`), and do not copy it to a machine where agents run
+without a sandbox, since an agent that can read it can use it. On those
+machines, use the web UI from your phone or another computer instead.
 
 ### 4. The web UI
 
@@ -243,10 +246,18 @@ swyd reply <ask-id> "ship it"
 swyd ask helper "status?"     # ask an agent yourself and wait for the answer
 ```
 
-Guards in `coordinator.json` bound agent-to-agent traffic: hop limits,
-per-pair rate limits, spawn depth, which hosts agents may spawn on, and a
-fleet-wide daily token budget (`guards.max_daily_tokens`). Set a budget
-before letting agents spawn freely. See [docs/messaging.md](docs/messaging.md).
+Guards in `coordinator.json` bound what agents can do to each other: hop
+limits, rate limits, spawn depth and a fleet-wide daily token budget
+(`guards.max_daily_tokens`; set one before letting agents spawn freely). By
+default an agent spawns only on its own host, with its own harness, inside
+its own working directory, and its children inherit its approval policy and
+sandbox; agents steer, interrupt and stop only sessions they spawned. See
+[docs/messaging.md](docs/messaging.md), including its trust model: the
+guards are not a sandbox, so keep agents that read untrusted input in
+sandboxed sessions.
+
+If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
+certificate. Enrolling a host again also replaces its old certificate.
 
 ### Harnesses
 

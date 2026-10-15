@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/ulid"
 )
 
 // FileStore keeps metadata in a JSON snapshot (state.json, rewritten
@@ -125,6 +126,9 @@ func OpenFileStore(dir string) (*FileStore, error) {
 			continue
 		}
 		id := e.Name()[:len(e.Name())-len(".jsonl")]
+		if !ulid.Valid(id) {
+			continue
+		}
 		l, err := openLog(filepath.Join(dir, "events", e.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("events %s: %w", id, err)
@@ -410,6 +414,22 @@ func (s *FileStore) UpsertHost(h model.Host) error {
 	return nil
 }
 
+func (s *FileStore) DeleteHost(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.hosts[id]; !ok {
+		return ErrNoSuchHost
+	}
+	delete(s.hosts, id)
+	for h, t := range s.tokens {
+		if t.Host == id {
+			delete(s.tokens, h)
+		}
+	}
+	s.dirty = true
+	return s.saveLocked()
+}
+
 func (s *FileStore) Host(id string) (model.Host, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -467,13 +487,22 @@ func (s *FileStore) Session(id string) (model.Session, bool) {
 	return *sess, true
 }
 
-// SessionByPath returns the newest session with path.
+// SessionByPath returns the session that holds path: the one live session
+// on it if there is one (CreateSession allows at most one), otherwise the
+// newest.
 func (s *FileStore) SessionByPath(path string) (model.Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var best *model.Session
 	for _, sess := range s.sessions {
-		if sess.Path == path && (best == nil || sess.ID > best.ID) {
+		if sess.Path != path {
+			continue
+		}
+		if !Reusable(*sess) {
+			best = sess
+			break
+		}
+		if best == nil || sess.ID > best.ID {
 			best = sess
 		}
 	}
@@ -502,6 +531,11 @@ func (s *FileStore) Sessions() []model.Session {
 func (s *FileStore) logFor(id string) (*eventLog, error) {
 	if l, ok := s.logs[id]; ok {
 		return l, nil
+	}
+	// The ID names a file, and nodes supply it: only a canonical ULID may,
+	// so no ID can leave events/ or alias another session's file.
+	if !ulid.Valid(id) {
+		return nil, fmt.Errorf("%w: %q", ErrBadSessionID, id)
 	}
 	l, err := openLog(filepath.Join(s.dir, "events", id+".jsonl"))
 	if err != nil {

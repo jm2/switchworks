@@ -21,14 +21,25 @@ import (
 
 // Guards bound what agents can do to each other and to the budget.
 type Guards struct {
-	MaxHops           int      `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 8)
-	AskPerMinute      int      `json:"ask_per_minute,omitempty"`      // per sender -> target pair (default 10)
-	SendPerMinute     int      `json:"send_per_minute,omitempty"`     // per sender -> target pair (default 30)
-	MaxSpawnDepth     int      `json:"max_spawn_depth,omitempty"`     // sessions spawned by spawned sessions... (default 2)
-	MaxDailyTokens    int64    `json:"max_daily_tokens,omitempty"`    // fleet-wide; refuses fleet_spawn once reached (0 = off)
-	SpawnHosts        []string `json:"spawn_hosts,omitempty"`         // hosts agents may spawn on (empty = all)
-	AllowStopAny      bool     `json:"allow_stop_any,omitempty"`      // agents may stop sessions they did not spawn
-	DefaultTTLSeconds int      `json:"default_ttl_seconds,omitempty"` // undelivered messages expire (default 24h)
+	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 8)
+	AskPerMinute      int   `json:"ask_per_minute,omitempty"`      // per sender -> target pair (default 10)
+	SendPerMinute     int   `json:"send_per_minute,omitempty"`     // per sender -> target pair (default 30)
+	MaxSpawnDepth     int   `json:"max_spawn_depth,omitempty"`     // sessions spawned by spawned sessions... (default 2)
+	MaxDailyTokens    int64 `json:"max_daily_tokens,omitempty"`    // fleet-wide; refuses fleet_spawn once reached (0 = off)
+	DefaultTTLSeconds int   `json:"default_ttl_seconds,omitempty"` // undelivered messages expire (default 24h)
+
+	// What agents may spawn. A child always inherits its parent's approval
+	// policy and sandbox.
+	SpawnHosts     []string `json:"spawn_hosts,omitempty"`      // hosts agents may spawn on; empty = the agent's own host, "*" = any
+	SpawnHarnesses []string `json:"spawn_harnesses,omitempty"`  // harnesses besides the agent's own; "*" = any
+	SpawnCwdRoots  []string `json:"spawn_cwd_roots,omitempty"`  // directories besides the agent's own cwd (and below); "*" = any
+	SpawnPerMinute int      `json:"spawn_per_minute,omitempty"` // per agent (default 3)
+
+	// What agents may do to sessions they did not spawn.
+	AllowStopAny  bool `json:"allow_stop_any,omitempty"`  // stop them
+	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // steer or interrupt their running turn
+	AllowReadAny  bool `json:"allow_read_any,omitempty"`  // read their last message with fleet_status
+	MaxBroadcast  int  `json:"max_broadcast,omitempty"`   // recipients of one broadcast from an agent (default 8)
 }
 
 func (g Guards) withDefaults() Guards {
@@ -46,6 +57,12 @@ func (g Guards) withDefaults() Guards {
 	}
 	if g.DefaultTTLSeconds <= 0 {
 		g.DefaultTTLSeconds = 24 * 3600
+	}
+	if g.SpawnPerMinute <= 0 {
+		g.SpawnPerMinute = 3
+	}
+	if g.MaxBroadcast <= 0 {
+		g.MaxBroadcast = 8
 	}
 	return g
 }
@@ -375,6 +392,18 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if err != nil {
 		return nil, err
 	}
+	if from.sess != nil {
+		if len(targets) > r.guards.MaxBroadcast {
+			return nil, fmt.Errorf("%s matches %d sessions; agents may broadcast to at most %d", args.To, len(targets), r.guards.MaxBroadcast)
+		}
+		if args.Mode == model.ModeSteer || args.Mode == model.ModeInterrupt {
+			for _, t := range targets {
+				if t.sess != nil && t.sess.Parent != from.sess.ID && !r.guards.AllowSteerAny {
+					return nil, fmt.Errorf("agents may %s only sessions they spawned; send it queued instead", args.Mode)
+				}
+			}
+		}
+	}
 	hops := r.hopsFor(from)
 	if hops > r.guards.MaxHops {
 		return nil, ErrHopLimit
@@ -403,6 +432,11 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 				key = class + "|" + from.sess.ID + "|" + t.sess.ID
 			}
 			if !r.allow(key, limit) {
+				return out, ErrRateLimit
+			}
+			// Every recipient also counts against the sender's own budget,
+			// so a broadcast cannot fan out past it.
+			if len(targets) > 1 && !r.allow("fanout|"+from.sess.ID, r.guards.SendPerMinute) {
 				return out, ErrRateLimit
 			}
 		}
@@ -686,7 +720,8 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 	var res fleet.InboxResult
 	if args.Ticket != "" {
 		ask, ok := r.s.store.Message(args.Ticket)
-		if !ok || ask.Kind != model.MsgAsk || (ask.FromSession != from.sessionID() && ask.From != from.addr()) {
+		mine := ask.FromSession == from.sessionID() && (from.sess != nil || ask.From == from.addr())
+		if !ok || ask.Kind != model.MsgAsk || !mine {
 			return res, fmt.Errorf("no ask %q from this session", args.Ticket)
 		}
 		t := &fleet.AskResult{Status: fleet.AskPending, MessageID: ask.ID, Target: ask.ToPath}

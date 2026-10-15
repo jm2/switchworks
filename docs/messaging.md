@@ -21,8 +21,10 @@ When a node starts or resumes a Codex thread it passes, in `thread/start` /
 Nothing is written to the user's `config.toml`. Codex starts `swyd mcp` with
 only `HOME`, `PATH` and that `env`. `swyd mcp` forwards each tool call to the
 node's local API (loopback only), authenticated with
-`HMAC(node secret, session id)`, so one session cannot act as another. The
-node forwards the call to the coordinator over its existing mTLS link.
+`HMAC(node secret, session id)`, so one session's tools act only as that
+session. The node forwards the call to the coordinator over its existing
+mTLS link. (This keeps sessions apart through the tools; it is not a
+boundary against an agent with a shell: see [Trust model](#trust-model).)
 
 `default_tools_approval_mode = "approve"` matters: without it Codex refuses
 MCP calls under the `never` approval policy ("requires approval, but
@@ -39,8 +41,8 @@ The model sees the tools in the `mcp__swyd` namespace.
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | recent traffic for this session; with `ticket`, check or wait on an ask |
-| `fleet_spawn` | start a helper session on a host; a completion notice comes back when it settles |
-| `fleet_status` | a session's status, model, usage and last message |
+| `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles |
+| `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
 
 ## Addresses
@@ -67,7 +69,13 @@ what is 6x7?
 
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
 notice), `system` (delivery failures and expiry). Plain messages from people
-(`swyd send`) are passed through without a header.
+(`swyd send`) are passed through without a header. A line in a relayed
+message that looks like a header is prefixed with `(quoted) `, so an agent
+cannot pass its text off as a person's.
+
+A spawned session's first prompt arrives the same way: from a person it is
+passed through; from an agent's `fleet_spawn` it is a `kind=notify` message
+from that agent.
 
 ## Delivery
 
@@ -114,14 +122,49 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `send_per_minute` | 30 | per sender → target pair |
 | `ask_per_minute` | 10 | per sender → target pair |
 | `max_spawn_depth` | 2 | spawned sessions may spawn, up to this depth |
-| `spawn_hosts` | all | hosts agents may spawn on |
+| `spawn_per_minute` | 3 | spawns per agent |
+| `spawn_hosts` | the agent's own host | other hosts agents may spawn on; `["*"]` for any |
+| `spawn_harnesses` | the agent's own harness | other harnesses agents may spawn; `["*"]` for any |
+| `spawn_cwd_roots` | the agent's own cwd | other directories agents may spawn in (and below); `["*"]` for any |
 | `max_daily_tokens` | off | fleet-wide; `fleet_spawn` is refused once reached (UTC day) |
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
+| `allow_steer_any` | false | let agents steer or interrupt sessions they did not spawn |
+| `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
+| `max_broadcast` | 8 | recipients of one broadcast from an agent |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits |
 
 People are not rate limited. Hops count from the message that started the
 sender's current work: a person's message is hop 0, the agent's message to
-another agent is hop 1, and so on.
+another agent is hop 1, and so on. A spawn counts as a hop too, so a loop of
+spawns and completion notices ends at `max_hops`.
+
+A session an agent spawns always inherits the agent's approval policy and
+sandbox, and its working directory is checked on the target host with
+symlinks resolved. Agents cannot set the label keys `host`, `harness`,
+`parent` or any key starting with `owner.`, so routes such as
+`@owner.role=reviewer` stay under your control.
+
+## Trust model
+
+- **People** hold the admin token (`cli.json`) or a web sign-in. They can do
+  anything.
+- **Nodes** hold a certificate for one host. A node can only report on and
+  run sessions of its own host. `swyd hosts rm <host>` revokes a host's
+  certificate, and enrolling a host again replaces it.
+- **Agents** act through the fleet tools, within the guards above.
+
+The guards are not a sandbox. An agent that can run commands as your user
+on its workstation can read that node's key and other sessions' tokens
+there, and act as that node. What contains it is the harness's own sandbox
+(Codex's `workspace-write` or `read-only`, with no network) and which hosts
+you enroll. In particular:
+
+- Do not put `cli.json` (the admin token) on a machine where agents run
+  without a sandbox: an agent that reads it controls the fleet.
+- Prefer sandboxed sessions for agents that read untrusted input (web
+  pages, issues, other people's code), since messages and spawns are how
+  a manipulated agent would reach the rest of the fleet.
+- If a workstation may be compromised, `swyd hosts rm` it.
 
 ## CLI
 

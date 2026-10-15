@@ -19,6 +19,7 @@
 | ACP adapter (Goose and others) | done | fake-agent tests: streaming, tool items (command, edit with diff, MCP, generic), reasoning, plans, approvals with every decision, cancel during approval, stuck agent killed, crash and reopen, `session/load` with replay suppressed, `session/resume`, no-reopen agents, mode/model/provider config, fleet tools auto-approved; real goose 1.54.0 against the mock's Anthropic endpoint: approvals, commands, usage, resume across processes, approval modes |
 | Goose in the fleet | done | e2e with real goose: fleet_list, goose → Codex fleet_ask, Codex → goose fleet_ask, resume after node restart; web UI driven in headless Chromium at phone size (tool cards, approval card, approve) |
 | Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
+| Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
 
 Tests: `make test` (race detector, about 30 s). `make test-codex` adds the
@@ -30,6 +31,12 @@ real-Codex test.
 - linux/arm64, darwin/arm64, windows/amd64: **compiled only.**
 
 ## Known gaps and risks
+
+- **Agents with a shell are inside the node's trust boundary.** The guards
+  limit what agents do through the fleet tools; a sandbox (Codex
+  `workspace-write`/`read-only`) is what keeps an agent away from the node's
+  key and other sessions' tokens. Goose and other ACP agents have no OS
+  sandbox.
 
 - **Windows untested.** Job-object teardown, `codex.cmd` shim resolution and
   the Task Scheduler setup in `contrib/` are unverified. winbox should be
