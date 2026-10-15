@@ -1,0 +1,99 @@
+name: Release
+# Every action is pinned to a full commit SHA; Dependabot keeps the pins and
+# their version comments current. Only the publish job gets a write token,
+# and it runs no project code.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build release archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # build provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Test tagged source
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+      - name: Build every release target
+        run: make cross VERSION="$GITHUB_REF_NAME"
+      - name: Check the version is stamped into the binary
+        run: |
+          out=$(dist/swyd-linux-amd64 version)
+          echo "$out"
+          case "$out" in
+            "swyd $GITHUB_REF_NAME "*) ;;
+            *) echo "::error::version was not stamped by -ldflags -X"; exit 1 ;;
+          esac
+      - name: Package archives and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for bin in dist/swyd-*; do
+            target=$(basename "$bin" .exe)
+            target=${target#swyd-}
+            name="swyd-${GITHUB_REF_NAME}-${target}"
+            stage="stage/$name"
+            mkdir -p "$stage"
+            case "$target" in
+              windows-*) cp "$bin" "$stage/swyd.exe" ;;
+              *) cp "$bin" "$stage/swyd" ;;
+            esac
+            cp LICENSE README.md "$stage/"
+            case "$target" in
+              windows-*) (cd stage && zip -qr "../release/$name.zip" "$name") ;;
+              *) tar -C stage --owner=0 --group=0 --numeric-owner -czf "release/$name.tar.gz" "$name" ;;
+            esac
+          done
+          (cd release && sha256sum -- * > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
+      # Attestations need a public repository (or GitHub Enterprise Cloud), so
+      # this step is skipped while the repository is private.
+      - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag --generate-notes --title "$GITHUB_REF_NAME" $prerelease
