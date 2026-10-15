@@ -14,7 +14,10 @@ const (
 	Slug = "switchyard"
 	// Bin is the binary / CLI name.
 	Bin = "swyd"
-	// Version is the release version. Overridden at build time with
-	// -ldflags "-X github.com/jm2/switchyard/internal/version.Version=..."
-	Version = "0.1.0-dev"
 )
+
+// Version is the release version. Overridden at build time with
+// -ldflags "-X github.com/jm2/switchyard/internal/version.Version=...".
+// It must stay a variable: the linker's -X flag cannot set a constant and
+// silently ignores one.
+var Version = "0.1.0-dev"

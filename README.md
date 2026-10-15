@@ -3,6 +3,7 @@
 # Switchyard
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![CI](https://github.com/jm2/switchyard/actions/workflows/ci.yml/badge.svg)](https://github.com/jm2/switchyard/actions/workflows/ci.yml)
 
 A self-hosted **control plane for coding agents** spread across several of your machines,
 written in dependency-free **Go**.
@@ -78,8 +79,9 @@ Design decisions are recorded in [`docs/decisions.md`](docs/decisions.md).
 
 ## Installation
 
-Switchyard has no pre-built packages yet. Build it from source (below) and put the `swyd` binary
-on each machine's `PATH`. The examples use `~/.local/bin/swyd` on Linux, `/usr/local/bin/swyd`
+Switchyard has no distribution packages yet. Tagged releases publish `swyd` archives for each
+supported platform, with a `SHA256SUMS.txt`, on the [Releases](https://github.com/jm2/switchyard/releases)
+page; otherwise build it from source (below). Put the `swyd` binary on each machine's `PATH`. The examples use `~/.local/bin/swyd` on Linux, `/usr/local/bin/swyd`
 on macOS and `C:\tools\swyd.exe` on Windows.
 
 ### Supported platforms

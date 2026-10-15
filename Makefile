@@ -2,13 +2,16 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.
 LDFLAGS := -s -w -X github.com/jm2/switchyard/internal/version.Version=$(VERSION)
 TARGETS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 
-.PHONY: build test test-codex vet cross clean
+.PHONY: build test test-codex vet fmt-check cross clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o swyd ./cmd/swyd
 
 vet:
 	go vet ./...
+
+fmt-check:
+	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 test: vet
 	go test -race ./...
