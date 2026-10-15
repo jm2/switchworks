@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jm2/switchyard/internal/paths"
 )
 
 const managerName = "launchd"
@@ -67,7 +69,9 @@ func launchPATH() string {
 	seen := map[string]bool{}
 	add := func(p string) {
 		for _, d := range filepath.SplitList(p) {
-			if d != "" && !seen[d] {
+			// Only absolute directories: a relative entry such as "."
+			// would make lookups depend on the agent's working directory.
+			if d != "" && filepath.IsAbs(d) && !seen[d] {
 				seen[d] = true
 				parts = append(parts, d)
 			}
@@ -108,6 +112,8 @@ func plistText(role, exe, path, logFile string) string {
     <string>` + xmlText(exe) + `</string>
     <string>` + role + `</string>
     <string>run</string>
+    <string>--log-file</string>
+    <string>` + xmlText(logFile) + `</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -121,8 +127,10 @@ func plistText(role, exe, path, logFile string) string {
   </dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Interactive</string>
-  <key>StandardOutPath</key><string>` + xmlText(logFile) + `</string>
-  <key>StandardErrorPath</key><string>` + xmlText(logFile) + `</string>
+  <!-- The log itself is --log-file (rotated at 10 MiB); this only catches
+       anything printed before it opens. -->
+  <key>StandardOutPath</key><string>` + xmlText(logFile+".launchd") + `</string>
+  <key>StandardErrorPath</key><string>` + xmlText(logFile+".launchd") + `</string>
 </dict>
 </plist>
 `
@@ -142,7 +150,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	}
 	// Replace a loaded agent so the new definition takes effect.
 	_ = command("launchctl", "bootout", target(role)).Run()
-	if err := os.WriteFile(path, []byte(plistText(role, exe, launchPATH(), logFile)), 0o644); err != nil {
+	if err := paths.WriteFile(path, []byte(plistText(role, exe, launchPATH(), logFile)), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Wrote %s (runs %s; log %s)\n", path, exe, logFile)

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"github.com/jm2/switchyard/internal/paths"
 	"io"
 	"os"
 	"os/exec"
@@ -126,7 +127,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, append([]byte(generatedMarker), text...), 0o644); err != nil {
+		if err := paths.WriteFile(path, append([]byte(generatedMarker), text...), 0o644); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "Wrote %s (runs %s)\n", path, exe)

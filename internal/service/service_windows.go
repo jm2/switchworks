@@ -44,17 +44,21 @@ func schtasksExe() string {
 
 func schtasks(args ...string) (string, error) { return run(schtasksExe(), args...) }
 
-// Task names are machine-wide, so they carry the user's name: two people on
-// one PC each get their own task.
+// Task names are machine-wide, so they carry the user's name and SID: two
+// people on one PC, even a local and a domain account with the same short
+// name, each get their own task.
 func unitName(role string) string {
-	name := "user"
+	name, sid := "user", ""
 	if u, err := user.Current(); err == nil {
-		name = u.Username
+		name, sid = u.Username, u.Uid
 		if i := strings.LastIndexByte(name, '\\'); i >= 0 {
 			name = name[i+1:]
 		}
 	}
-	return "Switchyard " + role + " (" + name + ")"
+	if sid == "" {
+		return "Switchyard " + role + " (" + name + ")"
+	}
+	return "Switchyard " + role + " (" + name + ", " + sid + ")"
 }
 
 func query(role string) (state, error) {

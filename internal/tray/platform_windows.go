@@ -6,6 +6,7 @@ package tray
 
 import (
 	"errors"
+	"github.com/jm2/switchyard/internal/winsys"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +15,10 @@ import (
 )
 
 var (
-	shell32           = syscall.NewLazyDLL("shell32.dll")
+	shell32           = winsys.DLL("shell32.dll")
 	procShellExecuteW = shell32.NewProc("ShellExecuteW")
 
-	advapi32            = syscall.NewLazyDLL("advapi32.dll")
+	advapi32            = winsys.DLL("advapi32.dll")
 	procRegCreateKeyExW = advapi32.NewProc("RegCreateKeyExW")
 	procRegSetValueExW  = advapi32.NewProc("RegSetValueExW")
 	procRegDeleteValueW = advapi32.NewProc("RegDeleteValueW")

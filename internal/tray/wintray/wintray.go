@@ -10,6 +10,8 @@ package wintray
 import (
 	"errors"
 	"fmt"
+	"github.com/jm2/switchyard/internal/winsys"
+	"os/user"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,9 +23,9 @@ import (
 )
 
 var (
-	user32   = syscall.NewLazyDLL("user32.dll")
-	shell32  = syscall.NewLazyDLL("shell32.dll")
-	gdi32    = syscall.NewLazyDLL("gdi32.dll")
+	user32   = winsys.DLL("user32.dll")
+	shell32  = winsys.DLL("shell32.dll")
+	gdi32    = winsys.DLL("gdi32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
 	procRegisterClassExW       = user32.NewProc("RegisterClassExW")
@@ -93,9 +95,16 @@ const (
 	errorAlreadyExists syscall.Errno = 183
 )
 
-// MutexName is held while the tray runs. The installer's AppMutex names it,
-// so setup can ask the user to close the tray before replacing it.
-const MutexName = "SwitchyardTray"
+// MutexName is held while the tray runs, one tray per user per session. It
+// carries the user's SID, so another account in the same session cannot
+// claim it first and keep this user's tray from starting. (The installer
+// closes the tray through Restart Manager, not this mutex.)
+func MutexName() string {
+	if u, err := user.Current(); err == nil && u.Uid != "" {
+		return "SwitchyardTray-" + u.Uid
+	}
+	return "SwitchyardTray"
+}
 
 // ErrAlreadyRunning is returned by Run when this session already has a tray.
 var ErrAlreadyRunning = fmt.Errorf("another %s tray is already running", version.Name)
@@ -205,7 +214,7 @@ func (b *Backend) Run(ready func()) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if m, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(utf16(MutexName)))); m == 0 {
+	if m, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(utf16(MutexName())))); m == 0 {
 		return fmt.Errorf("create mutex: %w", err)
 	} else if err == errorAlreadyExists {
 		syscall.CloseHandle(syscall.Handle(m))

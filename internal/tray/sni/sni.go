@@ -450,9 +450,15 @@ func (b *Backend) handleMenu(m *dbus.Message) {
 		names, _ := m.Body[1].([]any)
 		items, _ := b.snapshot()
 		var out []any
+		// Each item is returned once, whatever the request repeats.
+		seen := map[int32]bool{}
 		for _, x := range ids {
+			if len(seen) >= len(items) {
+				break
+			}
 			id, _ := x.(int32)
-			if id >= 1 && int(id) <= len(items) {
+			if id >= 1 && int(id) <= len(items) && !seen[id] {
+				seen[id] = true
 				out = append(out, []any{id, filterProps(itemProperties(items[id-1]), names)})
 			}
 		}

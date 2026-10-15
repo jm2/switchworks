@@ -21,9 +21,10 @@ var (
 )
 
 const (
-	eventModifyState = 0x0002
-	waitObject0      = 0
-	infinite         = 0xFFFFFFFF
+	eventModifyState   = 0x0002
+	errorAlreadyExists = 183
+	waitObject0        = 0
+	infinite           = 0xFFFFFFFF
 )
 
 func stopContext(parent context.Context, dir string) (context.Context, context.CancelFunc) {
@@ -33,9 +34,16 @@ func stopContext(parent context.Context, dir string) (context.Context, context.C
 		return ctx, cancel
 	}
 	// Manual-reset, initially unset. The default security descriptor lets
-	// only this user (and SYSTEM and administrators) open it.
-	ev, _, _ := procCreateEventW.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
+	// only this user (and SYSTEM and administrators) open it, but only if
+	// this call creates it: an event that already exists may belong to
+	// someone else (or another copy of this process), so it is not used and
+	// stopping falls back to signals and the service manager.
+	ev, _, callErr := procCreateEventW.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
 	if ev == 0 {
+		return ctx, cancel
+	}
+	if errno, ok := callErr.(syscall.Errno); ok && errno == errorAlreadyExists {
+		_ = syscall.CloseHandle(syscall.Handle(ev))
 		return ctx, cancel
 	}
 	// A second, unnamed event, set when ctx ends, releases the waiter.

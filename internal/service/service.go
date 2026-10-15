@@ -8,7 +8,7 @@
 //     Install writes one into ~/.config/systemd/user.
 //   - macOS: a LaunchAgent in ~/Library/LaunchAgents (dev.switchyard.node).
 //   - Windows: a Task Scheduler task that starts at logon in the user's
-//     session, with least privilege ("Switchyard node (<user>)").
+//     session, with least privilege ("Switchyard node (<user>, <SID>)").
 //
 // Everything runs as the user who installs it: nothing here asks for root or
 // administrator rights, or creates a system service or a system user. The
@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,8 +128,20 @@ func Query(role string) Info {
 // Status reports on both roles.
 func Status() Overview {
 	o := Overview{Version: version.Version, Node: Query(Node), Coordinator: Query(Coordinator), ConfigDir: paths.Base()}
-	o.WebUI = webUI(o)
+	o.WebUI = safeURL(webUI(o))
 	return o
+}
+
+// safeURL keeps only plain http and https addresses: the trays open this
+// address, and the files it comes from should never make them open another
+// scheme (file:, or an app's custom one).
+func safeURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return ""
+	}
+	return s
 }
 
 func webUI(o Overview) string {
@@ -186,6 +199,13 @@ func Install(role, exe string, noStart bool, out io.Writer) error {
 		if exe, err = Executable(); err != nil {
 			return err
 		}
+	}
+	exe, err := filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	if err := checkExecutable(exe); err != nil {
+		return err
 	}
 	return install(role, exe, noStart, out)
 }
@@ -255,6 +275,23 @@ func Executable() (string, error) {
 		return "", fmt.Errorf("cannot find the %s binary: %w", version.Bin, err)
 	}
 	return filepath.Abs(p)
+}
+
+// checkExecutable refuses binaries the service manager could not rely on:
+// on macOS one inside a mounted disk image or an App Translocation copy
+// (gone after the next eject or reboot), and anywhere a path that service
+// definitions cannot carry safely.
+func checkExecutable(exe string) error {
+	if strings.ContainsFunc(exe, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fmt.Errorf("%q: control characters in the path", exe)
+	}
+	if runtime.GOOS == "darwin" && (strings.HasPrefix(exe, "/Volumes/") || strings.Contains(exe, "/AppTranslocation/")) {
+		return fmt.Errorf("%s runs from a disk image or a temporary copy; move Switchyard.app to Applications first", exe)
+	}
+	if runtime.GOOS == "windows" && strings.Contains(exe, "%") {
+		return fmt.Errorf("%q: Task Scheduler would expand the %% in this path; install somewhere without one", exe)
+	}
+	return nil
 }
 
 func exeSuffix() string {

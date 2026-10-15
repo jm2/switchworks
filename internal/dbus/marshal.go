@@ -45,42 +45,74 @@ const (
 	maxDepth = 32
 )
 
-// nextType splits the first complete type off sig.
+// nextType splits the first complete type off sig, validating it as the
+// specification requires: a dict entry only as an array's element, with a
+// basic key and exactly one value; no empty structs; bounded nesting and
+// length.
 func nextType(sig string) (string, string, error) {
+	if len(sig) > 255 {
+		return "", "", errors.New("dbus: signature too long")
+	}
+	n, err := typeLen(sig, 0, false)
+	if err != nil {
+		return "", "", err
+	}
+	return sig[:n], sig[n:], nil
+}
+
+func isBasic(c byte) bool {
+	switch c {
+	case 'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd', 's', 'o', 'g', 'h':
+		return true
+	}
+	return false
+}
+
+// typeLen returns the length of the complete type at the start of sig.
+func typeLen(sig string, depth int, arrayElem bool) (int, error) {
 	if sig == "" {
-		return "", "", errors.New("dbus: empty signature")
+		return 0, errors.New("dbus: empty signature")
 	}
-	switch sig[0] {
-	case 'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd', 's', 'o', 'g', 'v', 'h':
-		return sig[:1], sig[1:], nil
-	case 'a':
-		elem, rest, err := nextType(sig[1:])
+	if depth > maxDepth {
+		return 0, errors.New("dbus: signature nested too deeply")
+	}
+	bad := func() (int, error) { return 0, fmt.Errorf("dbus: bad signature %q", sig) }
+	switch c := sig[0]; {
+	case isBasic(c) || c == 'v':
+		return 1, nil
+	case c == 'a':
+		n, err := typeLen(sig[1:], depth+1, true)
 		if err != nil {
-			return "", "", err
+			return 0, err
 		}
-		return "a" + elem, rest, nil
-	case '(', '{':
-		closeCh := byte(')')
-		if sig[0] == '{' {
-			closeCh = '}'
-		}
-		depth := 0
-		for i := 0; i < len(sig); i++ {
-			switch sig[i] {
-			case '(', '{':
-				depth++
-			case ')', '}':
-				depth--
-				if depth == 0 {
-					if sig[i] != closeCh {
-						return "", "", fmt.Errorf("dbus: bad signature %q", sig)
-					}
-					return sig[:i+1], sig[i+1:], nil
-				}
+		return 1 + n, nil
+	case c == '(':
+		i := 1
+		for i < len(sig) && sig[i] != ')' {
+			n, err := typeLen(sig[i:], depth+1, false)
+			if err != nil {
+				return 0, err
 			}
+			i += n
 		}
+		if i == 1 || i >= len(sig) {
+			return bad() // empty struct, or no closing parenthesis
+		}
+		return i + 1, nil
+	case c == '{':
+		if !arrayElem || len(sig) < 4 || !isBasic(sig[1]) {
+			return bad()
+		}
+		n, err := typeLen(sig[2:], depth+1, false)
+		if err != nil {
+			return 0, err
+		}
+		if 2+n >= len(sig) || sig[2+n] != '}' {
+			return bad()
+		}
+		return 2 + n + 1, nil
 	}
-	return "", "", fmt.Errorf("dbus: bad signature %q", sig)
+	return bad()
 }
 
 // splitTypes splits a signature into its complete types.
@@ -448,6 +480,9 @@ func (d *decoder) decode(sig string, depth int) (any, error) {
 	if depth > maxDepth {
 		return nil, errors.New("dbus: value nested too deeply")
 	}
+	if sig == "" {
+		return nil, errors.New("dbus: empty signature")
+	}
 	switch sig[0] {
 	case 'y':
 		b, err := d.take(1)
@@ -544,6 +579,7 @@ func (d *decoder) decode(sig string, depth int) (any, error) {
 		}
 		out := []any{}
 		for d.pos < end {
+			start := d.pos
 			var v any
 			if elem[0] == '{' {
 				if err := d.align(8); err != nil {
@@ -567,6 +603,9 @@ func (d *decoder) decode(sig string, depth int) (any, error) {
 				if err != nil {
 					return nil, err
 				}
+			}
+			if d.pos == start {
+				return nil, errors.New("dbus: array element of no size")
 			}
 			out = append(out, v)
 		}
