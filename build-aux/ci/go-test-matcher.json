@@ -3,7 +3,7 @@
     {
       "owner": "go-test-line",
       "severity": "error",
-      "pattern": [{ "regexp": "^\\s+([^\\s:]+_test\\.go):(\\d+): (?!(?:coord|node|agy|acp|codex|fake|mock|events): )(.+)$", "file": 1, "line": 2, "message": 3 }]
+      "pattern": [{ "regexp": "^\\s+([^\\s:]+_test\\.go):(\\d+): (?!coord: )(.+)$", "file": 1, "line": 2, "message": 3 }]
     },
     {
       "owner": "go-test-fail",
