@@ -194,6 +194,12 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Printf("load config (run `swyd node enroll <token>` first): %v", err)
 		return 1
 	}
+	lock, err := runstatus.Lock(*dir)
+	if err != nil {
+		logger.Print(err)
+		return 1
+	}
+	defer lock.Close()
 	hopts, err := HarnessOptions(*dir, cfg, logger.Printf)
 	if err != nil {
 		logger.Print(err)

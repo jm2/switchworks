@@ -544,40 +544,59 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	// The token is used and the host record written under hostMu, so a
+	// `hosts rm` cannot fall in between and be undone.
+	s.hostMu.Lock()
+	host, cert, err := s.enrollLocked(req)
+	s.hostMu.Unlock()
+	if err != nil {
+		writeErr(w, enrollStatus(err), err)
+		return
+	}
+	s.logf("enrolled host %s from %s", host, remoteHost(r))
+	writeJSON(w, 200, EnrollResponse{Host: host, Cert: string(cert), CA: string(s.ca.PEM), NodeAddr: s.cfg.PublicNode})
+}
+
+type enrollErr struct {
+	status int
+	err    error
+}
+
+func (e enrollErr) Error() string { return e.err.Error() }
+func (e enrollErr) Unwrap() error { return e.err }
+
+func enrollStatus(err error) int {
+	if e, ok := err.(enrollErr); ok {
+		return e.status
+	}
+	return 500
+}
+
+// enrollLocked uses an enrollment token and signs the node's certificate,
+// which replaces any earlier one for the host. Callers hold hostMu.
+func (s *Server) enrollLocked(req EnrollRequest) (string, []byte, error) {
 	host, err := s.store.ConsumeToken(pki.HashSecret(req.Secret))
 	if err != nil {
-		writeErr(w, 403, err)
-		return
+		return "", nil, enrollErr{403, err}
 	}
 	cert, err := s.ca.SignNodeCSR([]byte(req.CSR), host)
 	if err != nil {
-		writeErr(w, 400, err)
-		return
+		return "", nil, enrollErr{400, err}
 	}
 	parsed, err := pki.ParseCert(cert)
 	if err != nil {
-		writeErr(w, 500, err)
-		return
+		return "", nil, err
 	}
-	// The new certificate replaces any earlier one for this host, which can
-	// no longer connect.
-	s.hostMu.Lock()
 	h, known := s.store.Host(host)
 	if !known {
 		h = model.Host{ID: host, LastSeen: time.Now()}
 	}
 	h.CertSHA256 = pki.Fingerprint(parsed)
-	err = s.store.UpsertHost(h)
-	if err == nil {
-		s.disconnect(host)
+	if err := s.store.UpsertHost(h); err != nil {
+		return "", nil, err
 	}
-	s.hostMu.Unlock()
-	if err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-	s.logf("enrolled host %s from %s", host, remoteHost(r))
-	writeJSON(w, 200, EnrollResponse{Host: host, Cert: string(cert), CA: string(s.ca.PEM), NodeAddr: s.cfg.PublicNode})
+	s.disconnect(host)
+	return host, cert, nil
 }
 
 func remoteHost(r *http.Request) string {

@@ -83,8 +83,9 @@ func insideWorkspace(cwd, rel string) error {
 		if err != nil {
 			return err
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symlink; not writing through it", p)
+		// ModeIrregular covers Windows reparse points other than symlinks.
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("%s is a symlink or reparse point; not writing through it", p)
 		}
 	}
 	real, err := filepath.EvalSymlinks(filepath.Join(cwd, rel))

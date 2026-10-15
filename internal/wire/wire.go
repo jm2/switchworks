@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/jm2/switchyard/internal/model"
 )
@@ -77,6 +78,9 @@ type Hello struct {
 	// Features lists what this node enforces, so the coordinator does not
 	// rely on an older node for checks it would ignore.
 	Features []string `json:"features,omitempty"`
+	// Sandboxed lists the harnesses on this node that enforce a session's
+	// sandbox setting (Codex, agy); ACP agents do not.
+	Sandboxed []string `json:"sandboxed,omitempty"`
 }
 
 // FeatureCwdRoot: the node confines a spawn to SpawnSpec.CwdRoot.
@@ -206,9 +210,18 @@ func (c *Conn) Send(typ, id, re string, p any) error {
 	b = append(b, '\n')
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	// A peer that stops reading must not block senders forever: the
+	// connection fails instead, and is redialed.
+	if d, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = d.SetWriteDeadline(time.Now().Add(WriteTimeout))
+		defer d.SetWriteDeadline(time.Time{})
+	}
 	_, err = c.rw.Write(b)
 	return err
 }
+
+// WriteTimeout bounds one Send.
+const WriteTimeout = time.Minute
 
 // ErrTooLong is returned for envelopes over MaxLine.
 var ErrTooLong = errors.New("wire: envelope too long")

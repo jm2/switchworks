@@ -25,6 +25,10 @@ fail() {
 
 dump_logs() {
   set +e
+  # Log text is not ours: keep it from being read as workflow commands.
+  local token
+  token=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  echo "::stop-commands::$token"
   "$swyd" service status || true
   case $(uname -s) in
     Linux)
@@ -33,16 +37,26 @@ dump_logs() {
         journalctl --user -u "$u" --no-pager -n 40
       done ;;
   esac
+  local dirs=() d
   for d in "$("$swyd" service status --json node | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')" \
            "$("$swyd" service status --json coordinator | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')"; do
     d=${d//\\\\/\\}
-    [ -d "$d" ] || continue
+    [ -d "$d" ] && dirs+=("$d")
+  done
+  for d in ${dirs[@]+"${dirs[@]}"}; do
     for f in "$d"/*.log*; do
       [ -f "$f" ] || continue
       echo "--- $f"
       tail -n 40 "$f"
-      # The last lines as an annotation, readable without the job log.
-      echo "::error title=$(basename "$f")::$(tail -n 15 "$f" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+    done
+  done
+  echo "::$token::"
+  # The last lines as annotations, readable without the job log (escaped,
+  # so they cannot form a workflow command).
+  for d in ${dirs[@]+"${dirs[@]}"}; do
+    for f in "$d"/*.log*; do
+      [ -f "$f" ] || continue
+      echo "::error title=$(basename "$f")::$(tail -n 15 "$f" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%%0A", $0}')"
     done
   done
 }
@@ -93,7 +107,9 @@ fi
 "$swyd" version
 "$swyd" coordinator init --host 127.0.0.1 || fail "coordinator init"
 "$swyd" service install coordinator || fail "service install coordinator"
-wait_for 60 "the coordinator to run" status_has coordinator '"running":true'
+# "running" can come from the service manager before the process has
+# written its status file; wait for the file (it carries the pid).
+wait_for 60 "the coordinator to run" status_has coordinator '"pid":[1-9]'
 check_owner coordinator
 
 token=$("$swyd" coordinator enroll-token "$host") || fail "enroll-token"

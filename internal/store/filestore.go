@@ -322,6 +322,19 @@ func (s *FileStore) openMessages() error {
 	return nil
 }
 
+// PruneMessages drops finished messages older than the retention from
+// memory; the file is compacted at the next open.
+func (s *FileStore) PruneMessages(now time.Time) {
+	cutoff := now.Add(-messageRetention)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, m := range s.msgs {
+		if m.Terminal() && m.CreatedAt.Before(cutoff) {
+			delete(s.msgs, id)
+		}
+	}
+}
+
 func (s *FileStore) PutMessage(m model.Message) error {
 	if m.ID == "" {
 		return fmt.Errorf("message without id")

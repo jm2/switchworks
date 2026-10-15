@@ -343,6 +343,14 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 			return fmt.Errorf("label %q is reserved for people", k)
 		}
 	}
+	// A sandboxed agent may not start an unsandboxed one: a harness that
+	// ignores the sandbox setting (ACP agents) would get the user's full
+	// access, whatever the parent was limited to.
+	if s.enforcesSandbox(p.Host, p.Harness) && !s.enforcesSandbox(spec.Host, spec.Harness) &&
+		p.Sandbox != "danger-full-access" && !g.AllowUnsandboxedSpawn {
+		return fmt.Errorf("%s does not enforce a sandbox, and this session is sandboxed (%s); guards.allow_unsandboxed_spawn allows it",
+			spec.Harness, orDefault(p.Sandbox, "unknown"))
+	}
 	spec.ApprovalPolicy, spec.Sandbox = p.ApprovalPolicy, p.Sandbox
 	if spec.ApprovalPolicy == "" {
 		spec.ApprovalPolicy = "untrusted" // unknown: the strictest, not the node's default
@@ -355,6 +363,22 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 		return fmt.Errorf("spawn rate limit: at most %d a minute", g.SpawnPerMinute)
 	}
 	return nil
+}
+
+// enforcesSandbox reports whether harness on host applies the sandbox
+// setting, as the host's node says (older nodes: Codex and agy do).
+func (s *Server) enforcesSandbox(host, harness string) bool {
+	if n, ok := s.node(host); ok && n.hello.Sandboxed != nil {
+		return contains(n.hello.Sandboxed, harness)
+	}
+	return harness == "codex" || harness == "agy" || harness == ""
+}
+
+func orDefault(v, d string) string {
+	if v == "" {
+		return d
+	}
+	return v
 }
 
 // cwdRoot returns the directory an agent's spawn cwd lies inside: its own

@@ -118,7 +118,9 @@ func (s *Server) ServeNodes(ln net.Listener) error {
 	s.mu.Lock()
 	s.nodeLn = ln
 	s.mu.Unlock()
-	tl := tls.NewListener(ln, tlsCfg)
+	// Connections are capped before the handshake, as on the API listener,
+	// so unauthenticated clients cannot use up file descriptors.
+	tl := tls.NewListener(limitListener(ln, maxConns, maxConnsPerIP), tlsCfg)
 	for {
 		c, err := tl.Accept()
 		if err != nil {
