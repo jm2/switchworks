@@ -1,0 +1,29 @@
+# Maintainer: Switchyard Contributors <https://github.com/jm2/switchyard>
+#
+# AUR package: the prebuilt release, repackaged from the release's .deb files
+# (static Go binaries, systemd user units, desktop entry and icons). To
+# update: set pkgver, run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`,
+# and check the sums against the release's SHA256SUMS.txt.
+pkgname=switchyard-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Control plane for coding agents across your machines (swyd, tray icon, systemd user units)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jm2/switchyard"
+license=('GPL-3.0-or-later' 'OFL-1.1')
+provides=('switchyard')
+conflicts=('switchyard')
+options=('!strip' '!debug')
+optdepends=('gnome-shell-extension-appindicator: tray icon on GNOME')
+source_x86_64=("switchyard-$pkgver-amd64.deb::$url/releases/download/v$pkgver/switchyard-amd64.deb")
+source_aarch64=("switchyard-$pkgver-arm64.deb::$url/releases/download/v$pkgver/switchyard-arm64.deb")
+sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums_aarch64=('0000000000000000000000000000000000000000000000000000000000000000')
+
+package() {
+  bsdtar -xf data.tar.* -C "$pkgdir"
+  # Arch keeps license texts under /usr/share/licenses (GPL is in "licenses").
+  install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
+  mv "$pkgdir"/usr/share/doc/switchyard/OFL-*.txt "$pkgdir/usr/share/licenses/$pkgname/"
+  rm -rf "$pkgdir/usr/share/lintian" "$pkgdir/usr/share/doc/switchyard/changelog.gz" "$pkgdir/usr/share/doc/switchyard/copyright"
+}

@@ -1,0 +1,47 @@
+# Maintainer: Switchyard Contributors <https://github.com/jm2/switchyard>
+#
+# Builds the Switchyard checkout it is copied into; the AUR packages are
+# maintained separately (build-aux/arch/switchyard-bin/ is the -bin one).
+# From the repository root:
+#   cp build-aux/arch/PKGBUILD . && SWYD_VERSION=v0.2.0 makepkg -sf
+pkgname=switchyard
+# The release workflow passes the tag (SWYD_VERSION=v0.2.0-rc.1); pkgver
+# cannot hold "-", and "0.2.0rc.1" sorts before "0.2.0" as it should.
+_tag=${SWYD_VERSION:-v0.1.0}
+pkgver=${_tag#v}
+pkgver=${pkgver//-/}
+pkgrel=1
+pkgdesc="Control plane for coding agents across your machines (swyd, tray icon, systemd user units)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jm2/switchyard"
+license=('GPL-3.0-or-later' 'OFL-1.1')
+options=('!lto' '!debug' '!strip')
+depends=()
+optdepends=('gnome-shell-extension-appindicator: tray icon on GNOME')
+makedepends=('go' 'make')
+source=()
+
+build() {
+  cd "$startdir"
+  # go.mod names the Go release to build with; fetch it if the system Go is
+  # older.
+  export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly"
+  make build tray VERSION="$_tag"
+}
+
+check() {
+  cd "$startdir"
+  ./swyd version | grep -F "$_tag "
+}
+
+package() {
+  cd "$startdir"
+  mkdir -p bin-stage
+  cp swyd swyd-tray bin-stage/
+  build-aux/linux/install-tree.sh "$pkgdir" bin-stage /usr
+  rm -rf bin-stage
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 internal/web/assets/fonts/OFL-Onest.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Onest.txt"
+  install -Dm644 internal/web/assets/fonts/OFL-JetBrainsMono.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-JetBrainsMono.txt"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

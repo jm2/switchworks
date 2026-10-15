@@ -4,3 +4,5 @@
 *.test
 *.out
 /mock-codex-home/
+/swyd-tray
+/swyd-tray.exe
