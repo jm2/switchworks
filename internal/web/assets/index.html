@@ -1,31 +1,41 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#14171c">
+<meta name="theme-color" content="#141517">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Switchyard</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="preload" href="/static/fonts/onest.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="#/">Switchyard</a>
-  <span id="conn" class="conn" title="live updates"></span>
-  <span class="spacer"></span>
-  <a class="toplink" href="#/spawn">+ New</a>
-  <button id="theme" class="link" type="button" title="Theme">Dark</button>
-  <button id="signout" class="link" type="button">Sign out</button>
-</header>
-<main id="main"><p class="empty">Loading…</p></main>
-<nav class="tabs">
-  <a href="#/" data-tab="fleet">Fleet</a>
-  <a href="#/inbox" data-tab="inbox">Inbox<span id="inbox-badge" class="badge" hidden></span></a>
-  <a href="#/traffic" data-tab="traffic">Traffic</a>
-  <a href="#/usage" data-tab="usage">Usage</a>
-</nav>
+<aside id="side" class="side" aria-label="Navigation">
+  <div class="side-head">
+    <a class="brand" href="#/"><img src="/static/icon.svg" alt="" width="22" height="22">Switchyard</a>
+    <button id="side-close" class="icon-btn only-narrow" type="button" aria-label="Close menu"></button>
+  </div>
+  <a class="new-btn" href="#/spawn" id="side-new"></a>
+  <nav class="side-nav">
+    <a href="#/inbox" data-tab="inbox" id="nav-inbox"></a>
+    <a href="#/traffic" data-tab="traffic" id="nav-traffic"></a>
+    <a href="#/usage" data-tab="usage" id="nav-usage"></a>
+  </nav>
+  <div class="side-label">Hosts</div>
+  <div id="side-tree" class="tree"></div>
+  <div class="side-foot">
+    <div id="side-picker"></div>
+    <button id="settings" class="side-row" type="button" aria-haspopup="true"></button>
+  </div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+<div class="shell">
+  <header id="top" class="top"></header>
+  <main id="main"><p class="empty">Loading…</p></main>
+</div>
+<div id="menu" class="menu" role="menu" hidden></div>
 </body>
 </html>

@@ -1,26 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#14171c">
-<title>Sign in · Switchyard</title>
+<meta name="theme-color" content="#141517">
+<title>Sign in to Switchyard</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/login.js" defer></script>
 </head>
 <body class="login">
 <main class="login-box">
-  <h1>Switchyard</h1>
+  <div class="brand"><img src="/static/icon.svg" alt="" width="26" height="26">Switchyard</div>
   <form id="login">
     <label for="token">Admin token</label>
     <input id="token" name="token" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required>
-    <button type="submit">Sign in</button>
+    <button type="submit" class="primary">Sign in</button>
     <p id="msg" class="error" role="alert"></p>
   </form>
   <p class="hint">On a phone, run <code>swyd ui-link</code> on a computer and open the link it prints.
   The token is in <code>cli.json</code>.</p>
-  <p class="hint">Certificate warning? Install the fleet's <a href="/ca.crt">CA certificate</a>, or put the UI behind <code>tailscale serve</code>.</p>
+  <p class="hint">Seeing a certificate warning? Install the fleet's <a href="/ca.crt">CA certificate</a>, or put the UI behind <code>tailscale serve</code>.</p>
 </main>
 </body>
 </html>
