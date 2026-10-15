@@ -776,7 +776,29 @@ function route() {
   view.render();
 }
 
+// --- theme: dark by default; light or system per browser ---
+
+const themes = ['dark', 'light', 'system'];
+const themeLabel = {dark: 'Dark', light: 'Light', system: 'Auto'};
+function storedTheme() {
+  try { return themes.includes(localStorage.getItem('swyd-theme')) ? localStorage.getItem('swyd-theme') : 'dark'; } catch (e) { return 'dark'; }
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  const b = document.getElementById('theme');
+  if (b) { b.textContent = themeLabel[t]; b.title = `Theme: ${themeLabel[t]} (tap to change)`; }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--panel').trim() || '#1c2027';
+}
+applyTheme(storedTheme());
+
 document.addEventListener('DOMContentLoaded', () => {
+  applyTheme(storedTheme());
+  document.getElementById('theme').addEventListener('click', () => {
+    const next = themes[(themes.indexOf(storedTheme()) + 1) % themes.length];
+    try { localStorage.setItem('swyd-theme', next); } catch (e) { /* storage unavailable: applies to this page only */ }
+    applyTheme(next);
+  });
   document.getElementById('signout').addEventListener('click', async () => {
     await fetch('/ui/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Swyd-CSRF': '1'}});
     location.href = '/login';

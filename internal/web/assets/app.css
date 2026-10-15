@@ -1,44 +1,36 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Dark is the default. A viewer can choose light, or follow the system
+   setting, with the theme button (stored per browser in localStorage). */
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --ink: #1b1f24;
-  --muted: #667085;
-  --line: #e3e6ea;
-  --accent: #2f6fd6;
-  --ok: #1f8a4c;
-  --warn: #b7791f;
-  --bad: #c53030;
-  --agent: #eef3fb;
-  --user: #f1f8ee;
-  --routed: #fbf6ea;
-  --code: #f0f2f5;
+  --bg: #14171c;
+  --panel: #1c2027;
+  --ink: #e6e8eb;
+  --muted: #9aa3ae;
+  --line: #2c323b;
+  --accent: #7aa2f7;
+  --ok: #9ece6a;
+  --warn: #e0af68;
+  --bad: #f7768e;
+  --agent: #1f2633;
+  --user: #1f2a22;
+  --routed: #2a2620;
+  --code: #252a33;
   --tabs-h: 56px;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #667085; --line: #e3e6ea;
+  --accent: #2f6fd6; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030;
+  --agent: #eef3fb; --user: #f1f8ee; --routed: #fbf6ea; --code: #f0f2f5;
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #14171c;
-    --panel: #1c2027;
-    --ink: #e6e8eb;
-    --muted: #9aa3ae;
-    --line: #2c323b;
-    --accent: #7aa2f7;
-    --ok: #9ece6a;
-    --warn: #e0af68;
-    --bad: #f7768e;
-    --agent: #1f2633;
-    --user: #1f2a22;
-    --routed: #2a2620;
-    --code: #252a33;
-    color-scheme: dark;
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #667085; --line: #e3e6ea;
+    --accent: #2f6fd6; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030;
+    --agent: #eef3fb; --user: #f1f8ee; --routed: #fbf6ea; --code: #f0f2f5;
+    color-scheme: light;
   }
-}
-:root[data-theme="dark"] {
-  --bg: #14171c; --panel: #1c2027; --ink: #e6e8eb; --muted: #9aa3ae; --line: #2c323b;
-  --accent: #7aa2f7; --ok: #9ece6a; --warn: #e0af68; --bad: #f7768e;
-  --agent: #1f2633; --user: #1f2a22; --routed: #2a2620; --code: #252a33;
-  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 'use strict';
 
+// The sign-in page follows the theme chosen in the app (dark by default).
+try {
+  const t = localStorage.getItem('swyd-theme');
+  if (t === 'light' || t === 'system') document.documentElement.dataset.theme = t;
+} catch (e) { /* storage unavailable */ }
+
 async function signIn(body) {
   const r = await fetch('/ui/login', {
     method: 'POST', credentials: 'same-origin',
