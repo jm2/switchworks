@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# Template: build-aux/winget/render.sh fills in @VERSION@.
+PackageIdentifier: jm2.Switchyard
+PackageVersion: "@VERSION@"
+PackageLocale: en-US
+Publisher: Switchyard Contributors
+PublisherUrl: https://github.com/jm2/switchyard
+PublisherSupportUrl: https://github.com/jm2/switchyard/issues
+PackageName: Switchyard
+PackageUrl: https://github.com/jm2/switchyard
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/jm2/switchyard/blob/main/LICENSE
+ShortDescription: Control plane for coding agents across your machines.
+Description: |-
+  Switchyard shows every coding-agent session (Codex, Goose and other ACP agents) on every
+  host in one place, from a browser, a phone or the swyd command line, and lets agents on
+  different machines message each other. This package installs swyd and the Switchyard
+  tray icon for the current user; the node runs at sign-in as you, never as a service.
+Moniker: switchyard
+Tags:
+  - agents
+  - codex
+  - goose
+  - developer-tools
+  - cli
+ReleaseNotesUrl: https://github.com/jm2/switchyard/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Switchyard
+GenericName=Coding Agent Fleet
+Comment=Switchyard node status in the system tray
+Exec=swyd-tray
+Icon=io.github.jm2.Switchyard
+Terminal=false
+StartupNotify=false
+Categories=Development;
+Keywords=agents;codex;goose;fleet;tray;

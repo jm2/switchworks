@@ -14,14 +14,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/paths"
 	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchyard/internal/runstatus"
 	"github.com/jm2/switchyard/internal/version"
 )
 
@@ -149,7 +148,7 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Enrolled %s with %s (event stream %s); config in %s\nNext: swyd node run\n",
+	fmt.Fprintf(stdout, "Enrolled %s with %s (event stream %s); config in %s\nNext: swyd service install node (or swyd node run in a terminal)\n",
 		cfg.Host, cfg.CoordinatorAPI, cfg.CoordinatorNode, *dir)
 	return 0
 }
@@ -176,8 +175,18 @@ func mainRun(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("node run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", paths.NodeDir(), "node directory")
+	logFile := fs.String("log-file", "", "append the node's log to this file instead of stderr")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *logFile != "" {
+		f, err := runstatus.OpenLog(*logFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer f.Close()
+		stderr = f
 	}
 	logger := log.New(stderr, "node: ", log.LstdFlags)
 	cfg, err := LoadConfig(*dir)
@@ -196,7 +205,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		return 1
 	}
 	logger.Printf("%s %s node %s: harnesses %v, coordinator %s", version.Name, version.Version, cfg.Host, n.Adapters(), cfg.CoordinatorNode)
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := runstatus.StopContext(context.Background(), *dir)
 	defer cancel()
 	_ = n.Run(ctx)
 	if err := n.Close(); err != nil {

@@ -21,6 +21,12 @@
 | Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
 | Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
+| `swyd service` (user services) | Linux done; macOS, Windows written | systemd: unit rendering and quoting unit-tested, packaged units pass `systemd-analyze verify`; not run against a live user manager in the sandbox (no systemd there). LaunchAgent and logon-task code compiled and vetted only; the task XML is unit-tested on Windows CI |
+| Status file (`status.json`) | done | unit tests; a real coordinator and node run with `--log-file` reported running and connected, and the file went away on SIGTERM |
+| Linux tray (`swyd-tray`, StatusNotifierItem) | done, little real use | D-Bus codec round trips and talks to a real `dbus-daemon`; a fake StatusNotifierWatcher receives the registration, reads the item's properties, pixmaps, tooltip and menu layout, and clicks an item. Not yet looked at in a real panel |
+| Windows tray (`swyd-tray.exe`) | written | compiled and vetted only; never run |
+| macOS menu-bar app | written | Swift source parses (tree-sitter); never compiled or run (no macOS in the sandbox); built by the release workflow |
+| Packages | `.deb`, `.rpm`, Arch built locally | `.deb` built with dpkg-deb and lintian-clean, installed and run; `.rpm` built from a source tarball with rpmbuild (no scriptlets); both Arch PKGBUILDs built with makepkg; winget manifests validated against the 1.6.0 schemas. The Inno Setup installer and the `.dmg` are built only by the release workflow |
 
 Tests: `make test` (race detector, about 30 s). `make test-codex` adds the
 real-Codex test.
@@ -39,8 +45,9 @@ real-Codex test.
   limit writes and network, not reads. Keeping those secrets from agents
   would need an OS boundary, such as running the node as a separate user.
 
-- **Windows untested.** Job-object teardown, `codex.cmd` shim resolution and
-  the Task Scheduler setup in `contrib/` are unverified. winbox should be
+- **Windows untested.** Job-object teardown, `codex.cmd` shim resolution,
+  the logon task `swyd service install` registers, its graceful stop
+  through a named event, the tray and the installer are unverified. winbox should be
   the first real host.
 - **Codex daemon self-updates.** See m0-findings. If the node is later
   pointed at the shared daemon, the protocol can change under it.
