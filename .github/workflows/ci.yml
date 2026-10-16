@@ -132,6 +132,33 @@ jobs:
           if ($p.HasExited) { throw 'the first tray exited' }
           Stop-Process -Id $p.Id
 
+  container-smoke:
+    name: Container (rootless Podman)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install Podman and pasta
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q podman passt
+          # Ubuntu 24.04 limits unprivileged user namespaces, which rootless
+          # Podman needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -o bin/swyd ./cmd/swyd
+
+      - name: Coordinator image under Quadlet, with a node enrolled
+        run: bash build-aux/ci/container-smoke.sh "$PWD/bin/swyd"
+
   cross:
     name: Cross-compile
     runs-on: ubuntu-latest

@@ -85,6 +85,8 @@ jobs:
               *) tar -C stage --owner=0 --group=0 --numeric-owner -czf "release/$name.tar.gz" "$name" ;;
             esac
           done
+      - name: Add the coordinator's Quadlet unit
+        run: cp build-aux/container/switchyard-coordinator.container release/
       - name: Build .deb packages
         run: |
           set -euo pipefail
@@ -319,6 +321,7 @@ jobs:
             switchyard-x86_64.pkg.tar.zst
             switchyard-windows-x86_64-setup.exe
             switchyard-macos-aarch64.dmg
+            switchyard-coordinator.container
           )
           mkdir release
           for f in "${expected[@]}"; do
@@ -337,6 +340,59 @@ jobs:
           name: release
           path: release/
           if-no-files-found: error
+
+  # The coordinator's image, from the same Linux binaries as the archives,
+  # pushed only once every package has built. It runs nothing at build time,
+  # so both architectures build without emulation.
+  container:
+    name: Coordinator image (GHCR)
+    needs: [build, checksums]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-build
+          path: artifacts
+      - name: Stage the Linux binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            tar -xzf "artifacts/swyd-${GITHUB_REF_NAME}-linux-$arch.tar.gz" -C artifacts
+            cp "artifacts/swyd-${GITHUB_REF_NAME}-linux-$arch/swyd" "dist/swyd-linux-$arch"
+          done
+      - name: Build and push
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/switchyard-coordinator"
+          tags=(-t "$image:$VERSION")
+          case "$GITHUB_REF_NAME" in *-*) ;; *) tags+=(-t "$image:latest") ;; esac
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name swyd >/dev/null
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f build-aux/container/Containerfile --build-arg VERSION="$VERSION" \
+            "${tags[@]}" --provenance=false --push --metadata-file meta.json .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$(jq -r '."containerimage.digest"' meta.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   # Attestations need a public repository (or GitHub Enterprise Cloud), so
   # this job is skipped while the repository is private.
@@ -361,8 +417,8 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [checksums, attest]
-    if: ${{ always() && needs.checksums.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
+    needs: [checksums, attest, container]
+    if: ${{ always() && needs.checksums.result == 'success' && needs.container.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
