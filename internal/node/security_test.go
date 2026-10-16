@@ -58,3 +58,15 @@ func TestBoundedPayload(t *testing.T) {
 		t.Fatal("a small payload changed")
 	}
 }
+
+// A diff of characters JSON escapes grows past the limit when encoded while
+// still shorter than the part that is kept: truncating it must not panic.
+func TestBoundedPayloadEscapedDiff(t *testing.T) {
+	for _, n := range []int{750_000, 3 << 20} {
+		d := model.TurnDiff{TurnID: "t", Diff: strings.Repeat("<", n)}
+		b := boundedPayload(model.KindTurnDiff, d)
+		if len(b) > maxEventPayload {
+			t.Fatalf("n=%d: payload %d bytes", n, len(b))
+		}
+	}
+}

@@ -4,6 +4,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,5 +126,64 @@ func TestRejectsUnsafeSessionIDs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "..", "escape.jsonl")); err == nil {
 		t.Fatal("event file written outside the store")
+	}
+}
+
+// Finished messages beyond the byte budget are dropped oldest first, and
+// the file is compacted while running.
+func TestPruneMessagesBudget(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	text := strings.Repeat("x", 1<<20)
+	now := time.Now()
+	n := maxMessageBytes/(1<<20) + 20
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("01J%023d", i)
+		m := model.Message{ID: id, Kind: model.MsgNotify, State: model.MsgPending, Text: text, CreatedAt: now}
+		_ = s.PutMessage(m)
+		m.State = model.MsgDelivered
+		_ = s.PutMessage(m)
+	}
+	s.PruneMessages(now)
+	total := 0
+	for _, m := range s.Messages(MessageFilter{}) {
+		total += len(m.Text)
+	}
+	if total > maxMessageBytes {
+		t.Fatalf("%d bytes of messages kept", total)
+	}
+	if _, ok := s.Message(fmt.Sprintf("01J%023d", 0)); ok {
+		t.Fatal("the oldest message survived")
+	}
+	if _, ok := s.Message(fmt.Sprintf("01J%023d", n-1)); !ok {
+		t.Fatal("the newest message was dropped")
+	}
+}
+
+// A running session that passes through "error" (its harness restarting)
+// keeps its path; one whose spawn failed does not.
+func TestErrorPathReuse(t *testing.T) {
+	s, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ref := &model.NativeRef{Harness: "codex", ID: "t1"}
+	_ = s.CreateSession(model.Session{ID: s1, Path: "devbox/a", Status: model.StatusError, NativeRef: ref})
+	if err := s.CreateSession(model.Session{ID: s2, Path: "devbox/a"}); !errors.Is(err, ErrPathInUse) {
+		t.Fatalf("path of a running session in error reused: %v", err)
+	}
+	_ = s.CreateSession(model.Session{ID: s3, Path: "devbox/b", Status: model.StatusError})
+	if err := s.CreateSession(model.Session{ID: "01JAAAAAAAAAAAAAAAAAAAAAA4", Path: "devbox/b", Status: model.StatusIdle}); err != nil {
+		t.Fatalf("path of a failed spawn not reusable: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		if got, _ := s.SessionByPath("devbox/b"); got.ID != "01JAAAAAAAAAAAAAAAAAAAAAA4" {
+			t.Fatalf("SessionByPath = %s", got.ID)
+		}
 	}
 }

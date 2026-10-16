@@ -70,6 +70,7 @@ func GooseConfig() Config {
 var defaultModes = map[string][]string{
 	"never":      {"auto", "bypassPermissions", "yolo", "full-access", "full_access"},
 	"on-request": {"smart_approve", "default", "ask"},
+	"on-failure": {"smart_approve", "default", "ask"},
 	"untrusted":  {"approve", "default", "ask"},
 }
 
@@ -326,7 +327,10 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 		}
 		return fmt.Errorf("%s session/new: %w", h.a.cfg.Harness, err)
 	}
-	h.configure(ctx, c, setup)
+	if err := h.configure(ctx, c, setup); err != nil {
+		_ = c.Kill()
+		return err
+	}
 	h.mu.Lock()
 	if h.closed {
 		// Stopped (or the node shut down) while the agent was starting:
@@ -350,7 +354,12 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 
 // configure applies provider, model and approval mode. Failures are
 // warnings: the session still works with the agent's own defaults.
-func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSetup) {
+// configure applies the spec to a new or reopened session. For a session
+// an agent spawned (it has a cwd root), failing to apply its approval
+// policy is an error: the child must not run with fewer approvals than its
+// parent asked for.
+func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSetup) error {
+	var modeErr error
 	warn := func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		h.a.cfg.Logf("%s: %s", h.a.cfg.Harness, msg)
@@ -384,18 +393,31 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 			warn("%s has no model option; set its model in its own config or env", h.a.cfg.Harness)
 		}
 	}
+	strict := h.spec.CwdRoot != "" && h.spec.ApprovalPolicy != "" && h.spec.ApprovalPolicy != "never"
 	if mode := h.modeFor(s); mode != "" {
 		if o := s.Option("mode"); o != nil {
 			if o.Current() != mode {
-				set("mode", mode)
+				if opts, err := c.SetConfigOption(ctx, s.SessionID, "mode", mode); err != nil {
+					warn("could not set mode to %q: %v", mode, err)
+					modeErr = err
+				} else if len(opts) > 0 {
+					s.ConfigOptions = opts
+				}
 			}
 		} else if s.Modes != nil && s.Modes.CurrentModeID != mode {
 			if err := c.SetMode(ctx, s.SessionID, mode); err != nil {
 				warn("could not set mode %q: %v", mode, err)
+				modeErr = err
 			}
 		}
-	} else if h.spec.ApprovalPolicy != "" && (s.Modes != nil || s.Option("mode") != nil) {
-		warn("no session mode matches approval policy %q; using the agent's default", h.spec.ApprovalPolicy)
+	} else if h.spec.ApprovalPolicy != "" {
+		if s.Modes != nil || s.Option("mode") != nil {
+			warn("no session mode matches approval policy %q; using the agent's default", h.spec.ApprovalPolicy)
+		}
+		modeErr = fmt.Errorf("no session mode matches approval policy %q", h.spec.ApprovalPolicy)
+	}
+	if strict && modeErr != nil {
+		return fmt.Errorf("%s: cannot apply approval policy %q to a session spawned by an agent: %w", h.a.cfg.Harness, h.spec.ApprovalPolicy, modeErr)
 	}
 	if o := s.Option("model"); o != nil {
 		h.modelName = o.Current()
@@ -407,6 +429,7 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 	} else {
 		h.provider = h.spec.Provider
 	}
+	return nil
 }
 
 // modeFor picks the agent's mode for the session's approval policy.

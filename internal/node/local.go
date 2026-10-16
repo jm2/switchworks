@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jm2/switchyard/internal/adapter"
@@ -85,9 +86,11 @@ func (n *Node) startLocal() error {
 		return err
 	}
 	l := &localAPI{ln: ln, secret: secret, url: "http://" + ln.Addr().String()}
+	ln = capListener(ln, maxLocalConns)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/fleet/{op}", n.handleLocal)
-	l.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	l.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
+		MaxHeaderBytes: 64 << 10}
 	go func() { _ = l.srv.Serve(ln) }()
 	n.local = l
 
@@ -233,4 +236,45 @@ func (n *Node) failRequests() {
 		ch <- reqReply{err: errNoCoordinator}
 		delete(n.reqs, id)
 	}
+}
+
+// maxLocalConns caps open connections to the local API. Anything on the host
+// can connect to it, token or not.
+const maxLocalConns = 64
+
+// capListener closes new connections at once while limit are open.
+func capListener(ln net.Listener, limit int) net.Listener {
+	return &cappedListener{Listener: ln, sem: make(chan struct{}, limit)}
+}
+
+type cappedListener struct {
+	net.Listener
+	sem chan struct{}
+}
+
+func (l *cappedListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case l.sem <- struct{}{}:
+			return &cappedConn{Conn: c, release: func() { <-l.sem }}, nil
+		default:
+			_ = c.Close()
+		}
+	}
+}
+
+type cappedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *cappedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
 }

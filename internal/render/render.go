@@ -241,6 +241,9 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 			what = "file changes"
 		}
 		r.line("!! approval needed [%s] %s: %s", p.ApprovalID, p.Kind, what)
+		if p.GrantRoot != "" {
+			r.line("   acceptForSession also allows writes under: %s", p.GrantRoot)
+		}
 		if p.Reason != "" {
 			r.line("   reason: %s", p.Reason)
 		}

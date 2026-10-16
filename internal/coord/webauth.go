@@ -189,11 +189,11 @@ func (a *webAuth) checkToken(client string, now time.Time, ok func() bool) (vali
 // clientKey identifies a client for throttling: its address, or the address
 // a reverse proxy on this machine forwarded for.
 func clientKey(r *http.Request) string {
-	h := remoteHost(r)
+	h := ipBucket(remoteHost(r))
 	if fromLocalProxy(r) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			return strings.TrimSpace(parts[len(parts)-1])
+			return ipBucket(strings.TrimSpace(parts[len(parts)-1]))
 		}
 	}
 	return h
@@ -255,7 +255,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token,omitempty"`
 		Code  string `json:"code,omitempty"`
 	}
-	if err := decodeBody(r, &body); err != nil {
+	if err := decodeBodyLimit(r, &body, 64<<10); err != nil {
 		writeErr(w, 400, err)
 		return
 	}

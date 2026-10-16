@@ -142,10 +142,20 @@ func (c *Conn) shutdown(err error) {
 	})
 }
 
+// maxLine caps one message from the harness. A longer line is dropped, so a
+// runaway harness cannot make us buffer without bound.
+const maxLine = 64 << 20
+
 func (c *Conn) readLoop(r io.Reader) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := readLine(br, maxLine)
+		if errors.Is(err, errLineTooLong) {
+			if c.tap != nil {
+				c.tap("in", []byte(`{"switchyard":"dropped an over-long line"}`))
+			}
+			continue
+		}
 		if len(bytes.TrimSpace(line)) > 0 {
 			if c.tap != nil {
 				c.tap("in", bytes.TrimRight(line, "\r\n"))
@@ -335,4 +345,28 @@ func (c *Conn) Reply(id json.RawMessage, result any) error {
 // ReplyError answers a request with an error.
 func (c *Conn) ReplyError(id json.RawMessage, code int, message string) error {
 	return c.write(Message{ID: id, Error: &Error{Code: code, Message: message}})
+}
+
+var errLineTooLong = errors.New("jsonrpc: line too long")
+
+// readLine reads up to and including '\n'. Past limit bytes it discards the
+// rest of the line and returns errLineTooLong.
+func readLine(br *bufio.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	for {
+		frag, err := br.ReadSlice('\n')
+		if len(buf)+len(frag) > limit {
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = br.ReadSlice('\n')
+			}
+			if err != nil {
+				return nil, err
+			}
+			return nil, errLineTooLong
+		}
+		buf = append(buf, frag...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return buf, err
+		}
+	}
 }

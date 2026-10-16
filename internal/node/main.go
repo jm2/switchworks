@@ -5,7 +5,9 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jm2/switchyard/internal/harness"
@@ -104,6 +107,11 @@ func Enroll(ctx context.Context, dir, token string, force bool) (Config, error) 
 	if er.Host != tok.Host {
 		return cfg, errors.New("coordinator issued a certificate for a different host")
 	}
+	if blk, _ := pem.Decode([]byte(er.CA)); blk == nil {
+		return cfg, errors.New("coordinator sent no CA certificate")
+	} else if c, err := x509.ParseCertificate(blk.Bytes); err != nil || pki.Fingerprint(c) != tok.Fingerprint {
+		return cfg, errors.New("coordinator sent a CA that does not match the token's fingerprint")
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return cfg, err
 	}
@@ -137,13 +145,27 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: swyd node enroll [--dir DIR] [--force] <token>")
+	// The token can come from stdin ("-") or $SWYD_ENROLL_TOKEN instead of
+	// the command line, where other users of the machine could read it.
+	token := os.Getenv("SWYD_ENROLL_TOKEN")
+	switch {
+	case fs.NArg() == 1 && fs.Arg(0) == "-":
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		token = strings.TrimSpace(string(b))
+	case fs.NArg() == 1:
+		token = fs.Arg(0)
+	case fs.NArg() == 0 && token != "":
+	default:
+		fmt.Fprintln(stderr, "usage: swyd node enroll [--dir DIR] [--force] <token | - >  (or set SWYD_ENROLL_TOKEN)")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cfg, err := Enroll(ctx, *dir, fs.Arg(0), *force)
+	cfg, err := Enroll(ctx, *dir, token, *force)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

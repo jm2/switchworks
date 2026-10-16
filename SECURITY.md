@@ -29,6 +29,9 @@ or tailnet:
 - An agent that can run commands as the node's user can read that node's key and session
   tokens; harness sandboxes limit writes and network, not reads. See the trust model in
   [`docs/messaging.md`](docs/messaging.md#trust-model).
+- The coordinator and the admin token control every node: whoever has either can start
+  sessions and run commands, through the harnesses, on all enrolled hosts. Keep the token
+  off the hosts agents run on, and treat the coordinator's machine as the most sensitive one.
 
 ## What is in scope
 

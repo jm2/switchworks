@@ -426,14 +426,21 @@ func boundedPayload(kind string, payload any) json.RawMessage {
 	if len(b) <= maxEventPayload {
 		return b
 	}
+	// The size that matters is the encoded one, which can be several times
+	// the raw text (JSON escapes <, >, & and control bytes as \u00XX).
 	if d, ok := payload.(model.TurnDiff); ok {
-		const keep = 1 << 20
-		cut := keep
-		for cut > 0 && !utf8.RuneStart(d.Diff[cut]) {
-			cut--
+		full := len(d.Diff)
+		for cut := min(1<<20, full); cut > 0; cut /= 2 {
+			c := cut // back up to a character boundary
+			for c > 0 && c < full && !utf8.RuneStart(d.Diff[c]) {
+				c--
+			}
+			t := d
+			t.Diff = d.Diff[:c] + fmt.Sprintf("\n… (diff truncated by Switchyard: %d bytes in all)\n", full)
+			if tb := model.Marshal(t); len(tb) <= maxEventPayload {
+				return tb
+			}
 		}
-		d.Diff = d.Diff[:cut] + fmt.Sprintf("\n… (diff truncated by Switchyard: %d bytes in all)\n", len(d.Diff))
-		return model.Marshal(d)
 	}
 	return model.Marshal(map[string]any{"truncated": true, "kind": kind, "bytes": len(b)})
 }
@@ -531,6 +538,9 @@ func (n *Node) resume(s *session) {
 func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, error) {
 	if cmd == nil {
 		return nil, errors.New("spawn: missing body")
+	}
+	if !ulid.Valid(cmd.Session.ID) {
+		return nil, errors.New("spawn: bad session id")
 	}
 	n.mu.Lock()
 	if existing, ok := n.sessions[cmd.Session.ID]; ok {
@@ -643,7 +653,8 @@ func (s *session) handle() (adapter.Handle, error) {
 // another sender. Carriage returns count as line breaks, and leading spaces,
 // invisible characters and case are ignored when matching.
 func quoteHeaders(text string) string {
-	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	// Every character a renderer or model might take as a line break.
+	text = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u2028", "\n", "\u2029", "\n", "\u0085", "\n", "\v", "\n", "\f", "\n").Replace(text)
 	lines := strings.Split(text, "\n")
 	tag := "[" + strings.ToLower(version.Slug)
 	for i, l := range lines {

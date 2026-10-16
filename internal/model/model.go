@@ -89,14 +89,17 @@ type Session struct {
 	Parent    string            `json:"parent,omitempty"`
 	// ApprovalPolicy and Sandbox are what the session runs with, as its node
 	// reported at spawn; sessions it spawns inherit them.
-	ApprovalPolicy string    `json:"approval_policy,omitempty"`
-	Sandbox        string    `json:"sandbox,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	Usage          *Usage    `json:"usage,omitempty"`
-	LastSeq        int64     `json:"last_seq"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ApprovalPolicy string `json:"approval_policy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
+	// PoliciesReported: the node, not the coordinator, chose them (its
+	// defaults), so they are not trusted beyond that node's own host.
+	PoliciesReported bool      `json:"policies_reported,omitempty"`
+	Model            string    `json:"model,omitempty"`
+	Provider         string    `json:"provider,omitempty"`
+	Usage            *Usage    `json:"usage,omitempty"`
+	LastSeq          int64     `json:"last_seq"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // SpawnSpec is what a client asks for when starting a managed session.
@@ -203,6 +206,9 @@ type ApprovalRequested struct {
 	Command    string `json:"command,omitempty"`
 	Cwd        string `json:"cwd,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// GrantRoot is a directory a file-change approval would also let the
+	// agent write under for the rest of the session (Codex).
+	GrantRoot string `json:"grant_root,omitempty"`
 	// Decisions lists the decisions the harness offers for this prompt, when
 	// it says (e.g. Codex may omit "decline"). Empty means the harness
 	// default set.

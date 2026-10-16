@@ -73,7 +73,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "install":
 		if !Query(role).Configured {
-			hint := "swyd node enroll <token>"
+			hint := "swyd node enroll - (token on stdin)"
 			if role == Coordinator {
 				hint = "swyd coordinator init --host <name>"
 			}

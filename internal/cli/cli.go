@@ -468,7 +468,7 @@ func cmdEvents(args []string, stdout, stderr io.Writer) int {
 			_ = enc.Encode(ev)
 			*after = ev.Seq
 		}
-		if len(evs) < 5000 {
+		if len(evs) == 0 { // a page can be short when its events are large
 			return 0
 		}
 	}

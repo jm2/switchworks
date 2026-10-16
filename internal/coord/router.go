@@ -44,6 +44,9 @@ type Guards struct {
 	// AllowUnsandboxedSpawn lets a sandboxed agent spawn a harness that
 	// does not enforce sandboxes (ACP agents such as goose).
 	AllowUnsandboxedSpawn bool `json:"allow_unsandboxed_spawn,omitempty"`
+	// AllowUnapprovedSpawn lets an agent whose approval policy is not
+	// "never" spawn agy, which never asks for approval.
+	AllowUnapprovedSpawn bool `json:"allow_unapproved_spawn,omitempty"`
 }
 
 func (g Guards) withDefaults() Guards {
@@ -445,9 +448,11 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if hops > r.guards.MaxHops {
 		return nil, ErrHopLimit
 	}
+	// The default is also the longest a message may wait: one that never
+	// expires would be kept and rescanned forever.
 	ttl := time.Duration(args.TTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = time.Duration(r.guards.DefaultTTLSeconds) * time.Second
+	if max := time.Duration(r.guards.DefaultTTLSeconds) * time.Second; ttl <= 0 || ttl > max {
+		ttl = max
 	}
 	group := ""
 	if len(targets) > 1 {
@@ -549,28 +554,53 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	var dr wire.DeliverResult
 	_ = json.Unmarshal(res.Data, &dr)
-	m.State, m.DeliveredAt = model.MsgDelivered, time.Now().UTC()
-	if dr.Mode != "" {
-		m.Mode = dr.Mode
+	out, _ := r.settle(m.ID, func(cur *model.Message) {
+		cur.State, cur.DeliveredAt = model.MsgDelivered, time.Now().UTC()
+		if dr.Mode != "" {
+			cur.Mode = dr.Mode
+		}
+	})
+	return out
+}
+
+// settle moves a still-pending message on, reading and writing it under
+// r.mu (as reply does), so a reply or another transition that landed
+// meanwhile is never overwritten by a stale copy. It returns the current
+// record and whether it changed it.
+func (r *router) settle(id string, fn func(*model.Message)) (model.Message, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || cur.State != model.MsgPending {
+		return cur, false
 	}
-	if cur, ok := r.s.store.Message(m.ID); ok && cur.State == model.MsgAnswered {
-		return cur // answered while in flight
-	}
-	_ = r.put(m)
-	return m
+	fn(&cur)
+	_ = r.put(cur)
+	return cur, true
 }
 
 func (r *router) fail(m model.Message, why string) model.Message {
-	m.State, m.Error = model.MsgFailed, why
-	_ = r.put(m)
-	r.notifySender(m, fmt.Sprintf("Your %s message %s to %s could not be delivered: %s", m.Kind, m.ID, m.To, why))
-	return m
+	out, changed := r.settle(m.ID, func(cur *model.Message) { cur.State, cur.Error = model.MsgFailed, why })
+	if !changed {
+		if _, stored := r.s.store.Message(m.ID); stored {
+			return out
+		}
+		// Not stored yet (a reply to an asker that is gone): record it.
+		m.State, m.Error = model.MsgFailed, why
+		_ = r.put(m)
+		out = m
+	}
+	r.notifySender(out, fmt.Sprintf("Your %s message %s to %s could not be delivered: %s", out.Kind, out.ID, out.To, why))
+	return out
 }
 
 func (r *router) expire(m model.Message) {
-	m.State, m.Error = model.MsgExpired, "expired before it could be delivered"
-	_ = r.put(m)
-	r.notifySender(m, fmt.Sprintf("Your %s message %s to %s expired before it could be delivered (its host was offline).", m.Kind, m.ID, m.To))
+	out, changed := r.settle(m.ID, func(cur *model.Message) {
+		cur.State, cur.Error = model.MsgExpired, "expired before it could be delivered"
+	})
+	if changed {
+		r.notifySender(out, fmt.Sprintf("Your %s message %s to %s expired before it could be delivered (its host was offline).", out.Kind, out.ID, out.To))
+	}
 }
 
 // notifySender queues a system notice for the sending session. Notices are
@@ -809,9 +839,9 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 func (r *router) onDelivered(sessionID, messageID string) {
 	m, ok := r.s.store.Message(messageID)
 	if !ok {
-		r.mu.Lock()
-		r.inbound[sessionID] = trigger{} // not a routed message
-		r.mu.Unlock()
+		// Not a routed message (a person's spawn prompt, recorded by
+		// started): keep what started the work, so a node cannot reset
+		// hops by reporting made-up messages.
 		return
 	}
 	r.mu.Lock()

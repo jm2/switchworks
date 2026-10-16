@@ -182,25 +182,13 @@ func (s *Server) fleetList(from sender, a fleet.ListArgs) fleet.ListResult {
 	return res
 }
 
-// lastAgentMessage scans the end of a session's log for its last reply.
+// lastAgentMessage is a session's last reply, as the activity tracker
+// keeps it (clipped), without reading its log.
 func (s *Server) lastAgentMessage(sessionID string) string {
-	last := s.store.LastSeq(sessionID)
-	after := last - 500
-	if after < 0 {
-		after = 0
-	}
-	evs, err := s.store.Events(sessionID, after, 0)
-	if err != nil {
-		return ""
-	}
-	for i := len(evs) - 1; i >= 0; i-- {
-		if evs[i].Kind != model.KindItemCompleted {
-			continue
-		}
-		var it model.Item
-		if json.Unmarshal(evs[i].Payload, &it) == nil && it.ItemType == "agentMessage" && it.Text != "" {
-			return it.Text
-		}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.acts[sessionID]; a != nil {
+		return a.last
 	}
 	return ""
 }
@@ -231,11 +219,7 @@ func (s *Server) fleetStatus(from sender, a fleet.StatusArgs) (fleet.StatusResul
 	// only, unless the guards allow more.
 	if from.sess == nil || s.router.guards.AllowReadAny || sess.ID == from.sess.ID ||
 		sess.ID == from.sess.Parent || sess.Parent == from.sess.ID {
-		last := s.lastAgentMessage(sess.ID)
-		if len(last) > 4000 {
-			last = last[:4000] + "…"
-		}
-		res.LastMessage = last
+		res.LastMessage = s.lastAgentMessage(sess.ID)
 	}
 	return res, nil
 }
@@ -333,8 +317,17 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 	if spec.Cwd == "" {
 		spec.Cwd = p.Cwd
 	}
-	root, ok := cwdRoot(p.Cwd, spec.Cwd, g.SpawnCwdRoots)
+	// On another host the parent's cwd means nothing (and the node that
+	// reported it may not be trusted there): only the configured roots.
+	parentRoot := p.Cwd
+	if spec.Host != p.Host {
+		parentRoot = ""
+	}
+	root, ok := cwdRoot(parentRoot, spec.Cwd, g.SpawnCwdRoots)
 	if !ok {
+		if parentRoot == "" {
+			return fmt.Errorf("cwd %q on another host must be inside guards.spawn_cwd_roots", spec.Cwd)
+		}
 		return fmt.Errorf("cwd %q is outside %s; guards.spawn_cwd_roots allows other directories", spec.Cwd, p.Cwd)
 	}
 	spec.CwdRoot = root
@@ -351,7 +344,18 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 		return fmt.Errorf("%s does not enforce a sandbox, and this session is sandboxed (%s); guards.allow_unsandboxed_spawn allows it",
 			spec.Harness, orDefault(p.Sandbox, "unknown"))
 	}
+	// Likewise for approvals: headless agy never asks, so a child there
+	// would run everything a person approves for its parent unasked.
+	if spec.Harness == "agy" && p.Harness != "agy" && p.ApprovalPolicy != "never" && !g.AllowUnapprovedSpawn {
+		return fmt.Errorf("agy does not ask for approvals, and this session's policy is %q; guards.allow_unapproved_spawn allows it",
+			orDefault(p.ApprovalPolicy, "unknown"))
+	}
 	spec.ApprovalPolicy, spec.Sandbox = p.ApprovalPolicy, p.Sandbox
+	if spec.Host != p.Host && p.PoliciesReported {
+		// Policies a node reported for its own sessions are not carried to
+		// another host.
+		spec.ApprovalPolicy, spec.Sandbox = "", ""
+	}
 	if spec.ApprovalPolicy == "" {
 		spec.ApprovalPolicy = "untrusted" // unknown: the strictest, not the node's default
 	}

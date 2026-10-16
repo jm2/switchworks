@@ -126,14 +126,18 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `spawn_per_minute` | 3 | spawns per agent |
 | `spawn_hosts` | the agent's own host | other hosts agents may spawn on; `["*"]` for any |
 | `spawn_harnesses` | the agent's own harness | other harnesses agents may spawn; `["*"]` for any |
-| `spawn_cwd_roots` | the agent's own cwd | other directories agents may spawn in (and below); `["*"]` for any |
+| `spawn_cwd_roots` | the agent's own cwd | other directories agents may spawn in (and below); `["*"]` for any. On another host only these count, so a cross-host spawn needs them |
 | `max_daily_tokens` | off | fleet-wide; `fleet_spawn` is refused once reached (UTC day) |
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
 | `allow_steer_any` | false | let agents steer or interrupt sessions they did not spawn |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
 | `max_broadcast` | 8 | recipients of one broadcast from an agent |
 | `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose) |
-| `default_ttl_seconds` | 86400 | how long an undelivered message waits |
+| `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
+| `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
+
+The coordinator keeps at most 256 MiB of messages; past that the oldest
+delivered, failed or expired ones are dropped first.
 
 People are not rate limited. Hops count from the message that started the
 sender's current work: a person's message is hop 0, the agent's message to
@@ -151,7 +155,11 @@ on the target host with symlinks (and Windows junctions) resolved. Agents cannot
 the paths of stopped sessions, can still be taken by an agent's children.)
 An agent's spawn is refused on a node too old to enforce the directory
 check, and a parent whose policies are unknown gives its child the
-strictest ones (`untrusted`, `read-only`).
+strictest ones (`untrusted`, `read-only`). Policies a node reported for its
+own default (rather than ones set at spawn) do not carry to another host;
+the child gets the strictest ones there too. An ACP child of an agent that
+asks for approval must get a matching mode from its agent, or it does not
+start.
 
 ## Trust model
 
