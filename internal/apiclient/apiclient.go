@@ -7,6 +7,7 @@ package apiclient
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,12 @@ type Config struct {
 	API   string `json:"api"`   // https://host:port
 	CA    string `json:"ca"`    // PEM
 	Token string `json:"token"` // bearer token: the admin token or a scoped API token
+
+	// Dial, when set, is the address to connect to instead of API's host
+	// and port; the certificate is still checked against API's host name.
+	// $SWYD_DIAL sets it too: inside the coordinator's container, where
+	// API's name may resolve to an address that does not lead back in.
+	Dial string `json:"-"`
 }
 
 // LoadConfig reads a cli.json.
@@ -64,10 +71,17 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dial := dialer.DialContext
+	if to := cmp.Or(cfg.Dial, os.Getenv("SWYD_DIAL")); to != "" {
+		dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, to)
+		}
+	}
 	tr := &http.Transport{
 		TLSClientConfig:     tlsCfg,
 		Proxy:               nil, // the coordinator is on the LAN; never route it through a proxy
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		DialContext:         dial,
 		TLSHandshakeTimeout: 10 * time.Second,
 		IdleConnTimeout:     90 * time.Second,
 	}
@@ -453,4 +467,16 @@ func (c *Client) FleetStream(ctx context.Context, fn func(typ string, data json.
 			data.WriteString(strings.TrimPrefix(line, "data: "))
 		}
 	}
+}
+
+// Health asks the coordinator's unauthenticated health endpoint for its
+// version.
+func (c *Client) Health(ctx context.Context) (string, error) {
+	var out struct {
+		Version string `json:"version"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/health", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Version, nil
 }

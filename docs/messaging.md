@@ -287,7 +287,11 @@ node and its agents as a separate user. In particular:
   cannot enroll a host of its own, remove hosts or mint tokens, and
   `swyd token rm devbox` cuts it off without touching the other machines.
 - The coordinator's directory holds the CA key and the admin `cli.json`:
-  do not run agents as the coordinator's user on its machine.
+  do not run agents as the coordinator's user on its machine. Running the
+  coordinator in a rootless Podman container under that same user does not
+  change this: the files are no longer plainly readable, but `podman
+  unshare` and `podman exec` reach them as that user. A container (or a
+  plain service) under a separate account, with no agents, does.
 - Prefer sandboxed sessions, and no unsandboxed peers on the same fleet,
   for agents that read untrusted input (web pages, issues, other people's
   code), since messages and spawns are how a manipulated agent would reach

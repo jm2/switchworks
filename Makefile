@@ -4,7 +4,7 @@ TARGETS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 # swyd-tray is built for Linux and Windows; macOS has the Swift menu-bar app.
 TRAY_TARGETS := linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: build tray test test-codex vet fmt-check cross bindir deb clean
+.PHONY: build tray test test-codex vet fmt-check cross bindir deb image clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o swyd ./cmd/swyd
@@ -56,6 +56,15 @@ bindir:
 # A .deb for ARCH (amd64 or arm64) from the cross-built binaries.
 deb: bindir
 	build-aux/linux/build-deb.sh "$(VERSION)" $(ARCH) dist/linux-$(ARCH) dist/switchyard-$(ARCH).deb
+
+# The coordinator's container image for this machine's architecture, from
+# the cross-built binary (CONTAINER=docker works too).
+CONTAINER ?= podman
+IMAGE ?= switchyard-coordinator:$(VERSION)
+image:
+	@arch=$$(go env GOARCH); test -f dist/swyd-linux-$$arch || { echo "run make cross first"; exit 1; }; \
+	$(CONTAINER) build -f build-aux/container/Containerfile --build-arg TARGETARCH=$$arch \
+		--build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 clean:
 	rm -rf swyd swyd-tray dist

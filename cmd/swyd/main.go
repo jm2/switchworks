@@ -56,6 +56,7 @@ Services:
   swyd coordinator enroll-token <host>
                                   print a one-time token to enroll a host
   swyd coordinator cli-config     print the admin CLI config (admin token: keep it off agent hosts)
+  swyd coordinator health         check the coordinator answers (a container's healthcheck)
   swyd node enroll -              enroll this host with a coordinator (token on stdin)
   swyd node run [flags]           run the node service
   swyd service install [node|coordinator]
