@@ -95,7 +95,7 @@ func Init(dir string, hosts []string, apiPort, nodePort int) (string, error) {
 // Main implements `swyd coordinator ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: swyd coordinator init|run|enroll-token|cli-config [flags]")
+		fmt.Fprintln(stderr, "usage: swyd coordinator init|run|enroll-token|cli-config|health [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -105,6 +105,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return mainRun(args[1:], stderr)
 	case "enroll-token":
 		return mainEnrollToken(args[1:], stdout, stderr)
+	case "health":
+		return mainHealth(args[1:], stdout, stderr)
 	case "cli-config":
 		fs := flag.NewFlagSet("cli-config", flag.ContinueOnError)
 		dir := fs.String("dir", paths.CoordinatorDir(), "coordinator directory")
@@ -319,5 +321,45 @@ func mainEnrollToken(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, tok)
+	return 0
+}
+
+// mainHealth checks that the coordinator in dir answers on its API port,
+// over loopback and against its own CA: the container's healthcheck.
+func mainHealth(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("coordinator health", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", paths.CoordinatorDir(), "coordinator directory")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, err := LoadConfig(*dir)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	ca, err := pki.LoadCA(*dir)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	_, port, err := net.SplitHostPort(cfg.APIListen)
+	if err != nil {
+		fmt.Fprintln(stderr, "api_listen:", err)
+		return 1
+	}
+	c, err := apiclient.New(apiclient.Config{API: "https://" + cfg.PublicAPI, CA: string(ca.PEM), Dial: net.JoinHostPort("127.0.0.1", port)})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	v, err := c.Health(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "unhealthy:", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "ok", v)
 	return 0
 }

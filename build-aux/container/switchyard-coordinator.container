@@ -1,0 +1,56 @@
+# Switchyard coordinator as a rootless Podman Quadlet.
+#
+# Install it for the user that runs the coordinator (ideally an account of
+# its own, with no agents):
+#
+#   mkdir -p ~/.config/containers/systemd
+#   cp switchyard-coordinator.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#
+# Then once, to create the CA and admin token in the volume (list every name
+# and address nodes will dial; the first is the one they use):
+#
+#   podman run --rm -v swyd-coordinator:/data ghcr.io/jm2/switchyard-coordinator:latest \
+#     coordinator init --host coord.lan,10.0.0.5
+#
+# and start it, keeping it running while you are logged out:
+#
+#   systemctl --user start switchyard-coordinator
+#   loginctl enable-linger "$USER"
+#
+# The CLI works inside it (enrollment tokens, scoped tokens, the admin
+# cli.json):
+#
+#   podman exec switchyard-coordinator swyd coordinator enroll-token devbox
+#   podman exec switchyard-coordinator swyd token create devbox --scope operate --cli-config
+
+[Unit]
+Description=Switchyard coordinator (container)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=switchyard-coordinator
+# Pin a version (or a digest) for production; :latest follows releases.
+Image=ghcr.io/jm2/switchyard-coordinator:latest
+Volume=swyd-coordinator:/data:Z
+PublishPort=7480:7480
+PublishPort=7481:7481
+# pasta keeps clients' real addresses, which the per-address connection and
+# sign-in limits need; slirp4netns would make every client look the same.
+Network=pasta
+NoNewPrivileges=true
+DropCapability=all
+ReadOnly=true
+HealthCmd=/usr/bin/swyd coordinator health
+HealthInterval=30s
+HealthOnFailure=kill
+# Follow releases with `podman auto-update` (and its timer), if you like.
+AutoUpdate=registry
+
+[Service]
+Restart=on-failure
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

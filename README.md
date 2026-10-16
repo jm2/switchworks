@@ -175,6 +175,35 @@ rights, into `%LOCALAPPDATA%\Programs\Switchyard`: `swyd.exe` (added to your `PA
 `swyd-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
 Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swyd`.
 
+### Podman (coordinator only)
+
+The coordinator also ships as a container image, `ghcr.io/jm2/switchyard-coordinator`
+(x86_64 and ARM64): `swyd` alone on an empty base, running as an unprivileged user, with its
+state in a volume. Nodes stay user services on the workstations, since sessions need your
+sign-ins and toolchains. To run it rootless with Quadlet, as the account that should own it,
+download `switchyard-coordinator.container` from the release:
+
+```bash
+mkdir -p ~/.config/containers/systemd
+cp switchyard-coordinator.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+podman run --rm -v swyd-coordinator:/data ghcr.io/jm2/switchyard-coordinator:latest \
+  coordinator init --host coord.lan,10.0.0.5
+systemctl --user start switchyard-coordinator
+loginctl enable-linger "$USER"
+```
+
+The CLI runs inside it for the coordinator's own commands, for example
+`podman exec switchyard-coordinator swyd coordinator enroll-token devbox`, and
+`podman exec switchyard-coordinator swyd coordinator cli-config` prints the admin `cli.json`
+(keep it in your password manager). The unit publishes 7480 and 7481, uses `pasta` so the
+coordinator sees clients' real addresses, drops all capabilities, keeps the root filesystem
+read-only, and restarts the container when its healthcheck (`swyd coordinator health`) fails.
+Back up the `swyd-coordinator` volume: it holds the CA key.
+
+A container under the same account as your agents is not a security boundary: they can reach
+its volume with `podman unshare`. Give it an account of its own on a machine where agents run.
+
 ### Archives
 
 `swyd-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows) holds just the binaries. Put `swyd`
