@@ -31,29 +31,45 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/enroll", bodyDeadline(s.handleEnroll))
 
-	authed := http.NewServeMux()
-	authed.HandleFunc("GET /v1/hosts", s.handleHosts)
-	authed.HandleFunc("DELETE /v1/hosts/{id}", s.handleRemoveHost)
-	authed.HandleFunc("GET /v1/sessions", s.handleSessions)
-	authed.HandleFunc("POST /v1/sessions", s.handleSpawn)
-	authed.HandleFunc("GET /v1/sessions/{id}", s.handleSession)
-	authed.HandleFunc("GET /v1/sessions/{id}/events", s.handleEvents)
-	authed.HandleFunc("GET /v1/sessions/{id}/stream", s.handleStream)
-	authed.HandleFunc("POST /v1/sessions/{id}/messages", s.handleMessage)
-	authed.HandleFunc("POST /v1/sessions/{id}/interrupt", s.handleSimple(wire.OpInterrupt))
-	authed.HandleFunc("POST /v1/sessions/{id}/stop", s.handleSimple(wire.OpStop))
-	authed.HandleFunc("POST /v1/sessions/{id}/approvals/{aid}", s.handleApprove)
-	authed.HandleFunc("POST /v1/enroll-tokens", s.handleEnrollToken)
-	authed.HandleFunc("POST /v1/messages", s.handlePostMessage)
-	authed.HandleFunc("GET /v1/messages", s.handleListMessages)
-	authed.HandleFunc("GET /v1/messages/{id}", s.handleGetMessage)
-	authed.HandleFunc("POST /v1/messages/{id}/reply", s.handleReplyMessage)
-	authed.HandleFunc("GET /v1/usage", s.handleUsage)
-	authed.HandleFunc("GET /v1/stream", s.handleFleetStream)
-	authed.HandleFunc("POST /v1/ui-links", s.handleUILink)
-	mux.Handle("/v1/", s.requireAuth(authed))
+	authed, scopes := newAPIMux(s.apiRoutes())
+	mux.Handle("/v1/", s.requireAuth(authed, scopes))
 	s.uiRoutes(mux)
 	return mux
+}
+
+// apiRoutes lists every authenticated endpoint with the scope it needs
+// (see scope). A route without one needs admin.
+func (s *Server) apiRoutes() []apiRoute {
+	return []apiRoute{
+		// read: look, never touch.
+		{"GET /v1/hosts", scopeRead, s.handleHosts},
+		{"GET /v1/sessions", scopeRead, s.handleSessions},
+		{"GET /v1/sessions/{id}", scopeRead, s.handleSession},
+		{"GET /v1/sessions/{id}/events", scopeRead, s.handleEvents},
+		{"GET /v1/sessions/{id}/stream", scopeRead, s.handleStream},
+		{"GET /v1/messages", scopeRead, s.handleListMessages},
+		{"GET /v1/messages/{id}", scopeRead, s.handleGetMessage},
+		{"GET /v1/usage", scopeRead, s.handleUsage},
+		{"GET /v1/stream", scopeRead, s.handleFleetStream},
+		// A sign-in link carries the minting credential's scope, never more.
+		{"POST /v1/ui-links", scopeRead, s.handleUILink},
+
+		// operate: drive sessions.
+		{"POST /v1/sessions", scopeOperate, s.handleSpawn},
+		{"POST /v1/sessions/{id}/messages", scopeOperate, s.handleMessage},
+		{"POST /v1/sessions/{id}/interrupt", scopeOperate, s.handleSimple(wire.OpInterrupt)},
+		{"POST /v1/sessions/{id}/stop", scopeOperate, s.handleSimple(wire.OpStop)},
+		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
+		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
+		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
+
+		// admin: change who is in the fleet and who may use it.
+		{"DELETE /v1/hosts/{id}", scopeAdmin, s.handleRemoveHost},
+		{"POST /v1/enroll-tokens", scopeAdmin, s.handleEnrollToken},
+		{"POST /v1/tokens", scopeAdmin, s.handleCreateToken},
+		{"GET /v1/tokens", scopeAdmin, s.handleListTokens},
+		{"DELETE /v1/tokens/{id}", scopeAdmin, s.handleDeleteToken},
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

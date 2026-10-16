@@ -49,9 +49,30 @@ SHA-256 fingerprint, so `swyd node enroll` can trust the coordinator before
 it has the CA. The node's certificate CN is its host id; the coordinator
 ignores whatever subject the CSR requested.
 
-**Admin access.** The CLI uses one bearer token, stored hashed in
-`coordinator.json` and in plain text in the 0600 `cli.json`. It is a single
-owner on a LAN plus Tailscale. Per-user tokens are not needed yet.
+**Admin access.** `init` makes one admin bearer token, stored hashed in
+`coordinator.json` and in plain text in the 0600 `cli.json`. Agents can read
+any `cli.json` on their machine, so the owner's other machines get named
+API tokens instead (`swyd token create`), each with one of three scopes:
+`read`, `operate` and `admin`. Still one owner, so tokens limit what a
+credential can do, not who it is. Tokens live in the coordinator store as a
+SHA-256 hash, like enrollment tokens (they are 256-bit random, so a slow
+hash adds nothing), and are deleted when revoked.
+
+`operate` includes spawning. A person's spawn is not confined like an
+agent's, so an operate token can start an agent with any prompt and any
+sandbox on any host. Leaving spawn out would make operate tokens useless
+for starting work from a phone or a workstation CLI, which is most of what
+they are for, while an agent holding one could already reach every session
+through messages. What operate cannot do is change the fleet's membership
+or credentials, so a leaked one can be revoked without re-enrolling
+anything. `read` is there for machines where even that is too much.
+
+Scopes are enforced in one place: every API route declares its scope in a
+table, and the auth middleware looks up the route the mux matched. A route
+without a declaration needs admin, and a test walks the table. Cookies and
+one-time links carry the scope (and the token id) inside the HMAC-signed
+payload, capped at the minting credential's scope, and a cookie is only
+honoured while its token still exists.
 
 ## Messaging
 
@@ -113,7 +134,7 @@ the tail of each log at startup, so it is not a second source of state.
 
 **Cookie sign-in next to the bearer token.** Phones should not need the
 token pasted, so `swyd ui-link` mints one-time links (code in the URL
-fragment). The cookie is HMAC-signed, `HttpOnly`, `SameSite=Strict`, and
+fragment), with the scope of the token that minted them. The cookie is HMAC-signed, `HttpOnly`, `SameSite=Strict`, and
 cookie-authenticated writes need a custom header. That is the CSRF defense,
 with no token plumbing in the pages.
 

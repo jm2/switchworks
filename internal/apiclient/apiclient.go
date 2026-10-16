@@ -28,7 +28,7 @@ import (
 type Config struct {
 	API   string `json:"api"`   // https://host:port
 	CA    string `json:"ca"`    // PEM
-	Token string `json:"token"` // admin bearer token
+	Token string `json:"token"` // bearer token: the admin token or a scoped API token
 }
 
 // LoadConfig reads a cli.json.
@@ -286,12 +286,19 @@ type UsageReport struct {
 type UILink struct {
 	URL       string    `json:"url"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// Scope is what the browser it signs in may do.
+	Scope string `json:"scope,omitempty"`
 }
 
-// UILink mints a one-time link that signs a browser in to the web UI.
-func (c *Client) UILink(ctx context.Context) (UILink, error) {
+// UILink mints a one-time link that signs a browser in to the web UI, with
+// this client's scope, or a lower one if scope is set.
+func (c *Client) UILink(ctx context.Context, scope string) (UILink, error) {
 	var out UILink
-	return out, c.do(ctx, "POST", "/v1/ui-links", map[string]any{}, &out)
+	body := map[string]any{}
+	if scope != "" {
+		body["scope"] = scope
+	}
+	return out, c.do(ctx, "POST", "/v1/ui-links", body, &out)
 }
 
 func (c *Client) Usage(ctx context.Context) (UsageReport, error) {

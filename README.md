@@ -223,7 +223,12 @@ swyd coordinator init --host coord.lan,10.0.0.5
 `--host` lists the names and addresses the server certificate covers. The
 first one is what nodes and the CLI will dial. Add a Tailscale name too if
 you use one. `init` creates a private CA, the server certificate and an
-admin token, and installs a CLI config for your user on this machine.
+admin token, and installs a CLI config with that token for your user on
+this machine (`--no-user-cli` skips that, for a machine where agents run).
+
+The admin token controls the whole fleet. Keep a copy somewhere safe, such
+as a password manager, and keep it off every machine where agents run (see
+[step 3](#3-the-cli-on-other-machines)).
 
 Run it as a service under your own user, so it starts at login:
 
@@ -288,18 +293,40 @@ with the harnesses it found.
 
 ### 3. The CLI on other machines
 
-The CLI works anywhere that can reach port 7480. Copy its config from the
-coordinator:
+The CLI works anywhere that can reach port 7480. Each machine gets its own
+named API token with only the access it needs. On a machine that has the
+admin token (the coordinator, or wherever you keep it), make a complete
+`cli.json` for another one:
 
 ```bash
-ssh coord.lan swyd coordinator cli-config > ~/.config/swyd/cli.json
+swyd token create devbox --scope operate --cli-config > devbox-cli.json
+# copy it to devbox as ~/.config/swyd/cli.json (chmod 600)
 ```
 
-The file holds the admin token, which controls the whole fleet: keep it
-private (`chmod 600`), and do not copy it to a machine where agents run:
-harness sandboxes limit writes, not reads, so an agent there could read it.
-On those machines, use the web UI from your phone or another computer
-instead.
+| Scope | What it allows |
+| --- | --- |
+| `read` | Look only: hosts, sessions, transcripts, live streams, messages, usage. `swyd ui-link` (read-only links). |
+| `operate` | `read`, plus day-to-day control: send, ask and reply, approve or decline, interrupt, stop, and spawn sessions. |
+| `admin` | Everything, including enrollment tokens, `swyd hosts rm` and managing tokens. The token `init` made is admin. |
+
+**Put only `read` or `operate` tokens on machines where agents run.**
+Harness sandboxes limit writes, not reads, so an agent there can read any
+`cli.json` on the machine. With an operate token it can do what you can do
+from that CLI, but cannot enroll hosts, revoke them or make tokens, and you
+can cut it off with one command. Note that `operate` includes spawning:
+sessions you spawn run with the options you give them, outside the guards
+that confine agents' own spawns. Use `read` where that is too much.
+
+```bash
+swyd token ls                     # name, scope, last use, expiry; never the secret
+swyd token rm devbox              # revoke it; browsers it signed in are signed out
+swyd token create phone --scope read --ttl 720h   # prints just the secret, once
+```
+
+Keep the admin token itself in a password manager or on one trusted
+machine without agents. `swyd coordinator cli-config` prints the admin
+`cli.json`; use it only there. `SWYD_CLI_CONFIG=/path/to/cli.json swyd ...`
+picks a config for one command.
 
 ### 4. The tray icon
 
@@ -326,9 +353,11 @@ fleet's own CA, the browser warns at first. Either:
 - put the UI behind `tailscale serve` for a publicly trusted certificate
   (see [docs/web-ui.md](docs/web-ui.md)).
 
-Sign in with the token from `cli.json`, or run `swyd ui-link` anywhere the
-CLI works and open the one-time link it prints. That is the easy way to
-sign in on a phone.
+Sign in with a token (a `read` or `operate` one for a browser you use
+day to day), or run `swyd ui-link` anywhere the CLI works and open the
+one-time link it prints. That is the easy way to sign in on a phone. The
+browser gets the scope of the token that signed it in, or of the token that
+made the link (`swyd ui-link --scope read` makes a read-only one).
 
 ---
 
@@ -380,7 +409,8 @@ guards are not a sandbox, and an agent with a shell can read its node's
 credentials.
 
 If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
-certificate. Enrolling a host again also replaces its old certificate.
+certificate and `swyd token rm <name>` its CLI token. Enrolling a host
+again also replaces its old certificate.
 
 ### Harnesses
 

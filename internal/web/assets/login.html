@@ -13,13 +13,13 @@
 <main class="login-box">
   <div class="brand"><img src="/static/icon.svg" alt="" width="26" height="26">Switchyard</div>
   <form id="login">
-    <label for="token">Admin token</label>
+    <label for="token">Token</label>
     <input id="token" name="token" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required>
     <button type="submit" class="primary">Sign in</button>
     <p id="msg" class="error" role="alert"></p>
   </form>
   <p class="hint">On a phone, run <code>swyd ui-link</code> on a computer and open the link it prints.
-  The token is in <code>cli.json</code>.</p>
+  Or paste an API token from <code>swyd token create</code>; the browser gets its scope.</p>
   <p class="hint">Seeing a certificate warning? Install the fleet's <a href="/ca.crt">CA certificate</a>, or put the UI behind <code>tailscale serve</code>.</p>
 </main>
 </body>

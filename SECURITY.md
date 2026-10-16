@@ -14,7 +14,7 @@ an issue that says only that you have a security report and how you can be reach
 with no detail of the problem.
 
 Include the affected component, a reproduction, and the impact you believe it has. Never include
-real admin tokens, enrollment tokens, node keys, `cli.json` contents or provider API keys;
+real admin or API tokens, enrollment tokens, node keys, `cli.json` contents or provider API keys;
 redact host names and paths you would rather not share.
 
 ## Deployment assumptions
@@ -27,16 +27,25 @@ or tailnet:
   exposure.
 - `http_listen`, when set, must be a loopback address for a reverse proxy on the same machine.
 - An agent that can run commands as the node's user can read that node's key and session
-  tokens; harness sandboxes limit writes and network, not reads. See the trust model in
-  [`docs/messaging.md`](docs/messaging.md#trust-model).
+  tokens, and any `cli.json` there; harness sandboxes limit writes and network, not reads.
+  See the trust model in [`docs/messaging.md`](docs/messaging.md#trust-model).
+- The admin token is kept off every machine where agents run (in a password manager, or on
+  one trusted machine). Machines with agents carry at most a `read` or `operate` API token
+  (`swyd token create`), which cannot enroll or remove hosts or manage tokens, and can be
+  revoked on its own. An `operate` token can still spawn sessions with any options on any
+  host, which is as much as a person at that CLI can do.
+- The coordinator's directory (CA key, `coordinator.json`, the admin `cli.json`) is readable
+  by anything running as its user. Do not run agents as that user on the coordinator's
+  machine.
 - The coordinator and the admin token control every node: whoever has either can start
-  sessions and run commands, through the harnesses, on all enrolled hosts. Keep the token
-  off the hosts agents run on, and treat the coordinator's machine as the most sensitive one.
+  sessions and run commands, through the harnesses, on all enrolled hosts.
 
 ## What is in scope
 
 - Authentication and authorization on the coordinator API, the web UI's sign-in, cookies and
-  CSRF checks, and one-time sign-in links.
+  CSRF checks, and one-time sign-in links, including any way for a `read` or `operate` API
+  token (or a browser or link it signed in) to do more than its scope allows, or to keep
+  working after it is revoked or expires.
 - The node protocol: mTLS, certificate pinning and revocation, enrollment tokens, and whether a
   node can read or change another host's sessions or the coordinator's files.
 - The fleet tools: whether an agent can escape the guards in `coordinator.json` (spawn
@@ -53,7 +62,7 @@ or tailnet:
 - What an agent does with the access you gave it: commands it runs inside its own sandbox or
   approval policy, or on an unsandboxed session.
 - Attacks that need the admin token, or a shell as the node's user (see the deployment
-  assumptions).
+  assumptions); and what an API token's holder does within its scope.
 - Vulnerabilities in Codex, Goose, agy or other harnesses; report those upstream.
 - A coordinator exposed to the internet against the guidance above.
 - Your network, firewall, tunnel or reverse-proxy configuration.
