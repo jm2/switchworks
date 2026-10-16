@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Package runstatus lets a running node or coordinator tell local tools, such
-// as `swyd service status` and the tray apps, that it is up and how it is
+// as `swk service status` and the tray apps, that it is up and how it is
 // doing, without opening a port.
 //
 // The running process writes status.json into its own directory (mode 0600)
@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // File is the status file's name inside the node or coordinator directory.

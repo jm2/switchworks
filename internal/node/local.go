@@ -19,22 +19,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/ulid"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/ulid"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
-// The local API is how `swyd mcp` (started by the harness inside a session)
+// The local API is how `swk mcp` (started by the harness inside a session)
 // reaches its node. It listens on loopback only. Each session gets its own
 // credential, HMAC(node secret, session id), passed in the MCP server's
 // environment, so one session's agent cannot act as another.
 
-// Environment variables read by `swyd mcp`.
+// Environment variables read by `swk mcp`.
 const (
-	EnvNodeURL     = "SWYD_NODE_URL"
-	EnvSession     = "SWYD_SESSION"
-	EnvSessionPath = "SWYD_SESSION_PATH"
-	EnvToken       = "SWYD_TOKEN"
+	EnvNodeURL     = "SWK_NODE_URL"
+	EnvSession     = "SWK_SESSION"
+	EnvSessionPath = "SWK_SESSION_PATH"
+	EnvToken       = "SWK_TOKEN"
 )
 
 // MCPToolTimeout is the per-call timeout given to the harness for fleet
@@ -98,7 +98,7 @@ func (n *Node) startLocal() error {
 	if n.mcpCmd == "" {
 		exe, err := os.Executable()
 		if err != nil {
-			return fmt.Errorf("find swyd binary for the MCP server: %w", err)
+			return fmt.Errorf("find swk binary for the MCP server: %w", err)
 		}
 		n.mcpCmd = exe
 	}
@@ -114,7 +114,7 @@ func (n *Node) mcpFor(sessionID, path string) *adapter.MCPServer {
 	if n.local == nil {
 		return nil
 	}
-	return &adapter.MCPServer{Name: "swyd", Command: n.mcpCmd, Args: n.mcpArgs, ToolTimeout: MCPToolTimeout,
+	return &adapter.MCPServer{Name: "swk", Command: n.mcpCmd, Args: n.mcpArgs, ToolTimeout: MCPToolTimeout,
 		Env: map[string]string{
 			EnvNodeURL: n.local.url, EnvSession: sessionID, EnvSessionPath: path, EnvToken: n.local.token(sessionID),
 		}}
@@ -127,7 +127,7 @@ func writeLocal(w http.ResponseWriter, status int, r LocalResponse) {
 }
 
 func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
-	id := r.Header.Get("X-Swyd-Session")
+	id := r.Header.Get("X-Swk-Session")
 	tok := r.Header.Get("Authorization")
 	if len(tok) > 7 && tok[:7] == "Bearer " {
 		tok = tok[7:]

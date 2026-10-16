@@ -14,7 +14,7 @@ import (
 // such as U+009B (CSI), and the bidirectional overrides and isolates
 // (U+202A–U+202E, U+2066–U+2069) that can make text read differently from
 // what it is. Without it, an agent's output could rewrite what
-// `swyd attach` shows, set the window title or write to the clipboard.
+// `swk attach` shows, set the window title or write to the clipboard.
 func Safe(w io.Writer) io.Writer { return &safeWriter{w: w} }
 
 type safeWriter struct {

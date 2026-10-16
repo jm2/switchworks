@@ -7,7 +7,7 @@ import (
 	"mime"
 	"net/http"
 
-	"github.com/jm2/switchyard/internal/web"
+	"github.com/jm2/switchworks/internal/web"
 )
 
 // The UI embeds its fonts; Go's built-in MIME table does not know WOFF2,
@@ -58,7 +58,7 @@ func (s *Server) uiRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/logout", s.handleLogout)
 	mux.HandleFunc("GET /ca.crt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
-		w.Header().Set("Content-Disposition", `attachment; filename="switchyard-ca.crt"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="switchworks-ca.crt"`)
 		_, _ = w.Write(s.ca.PEM)
 	})
 }

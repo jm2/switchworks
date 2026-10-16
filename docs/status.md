@@ -6,28 +6,28 @@
 | --- | --- | --- |
 | Codex app-server client | done | contract test against the 0.160.0 schema; real-Codex integration test (turn, approval round trip, resume across processes) |
 | Codex adapter | done | fake-app-server tests: turns, busy, steer, interrupt, approvals incl. offered decisions, app-server crash + auto-resume, resume across adapters |
-| `swyd dev run` | done | real Codex + mock provider: streaming, interactive approval, `--record` |
-| `swyd dev mock-provider` | done | used by the above |
+| `swk dev run` | done | real Codex + mock provider: streaming, interactive approval, `--record` |
+| `swk dev mock-provider` | done | used by the above |
 | PKI and enrollment | done | unit tests: mTLS accept/reject, fingerprint pinning, single-use and expiring tokens |
 | Coordinator store | done | unit tests: idempotent appends, reopen, torn-write recovery, path reuse |
 | Coordinator + node + CLI | done | in-process e2e over real sockets (spawn, queue, approvals, steer, interrupt, node restart, coordinator restart, contiguous log, delta coalescing); real processes with real Codex (spawn, attach, send, ls, node SIGTERM, coordinator SIGKILL, 52-event gap-free log) |
 | Messaging router | done | unit tests: address resolution, rate/hop guards, ask/reply races, held replies, expiry, completion notices |
-| `swyd mcp` | done | protocol tests (initialize, tools/list, tool errors, transient retry, two-phase ask); driven by real Codex 0.160.0 |
+| `swk mcp` | done | protocol tests (initialize, tools/list, tool errors, transient retry, two-phase ask); driven by real Codex 0.160.0 |
 | Fleet messaging end to end | done | in-process two-host e2e through the fake app-server's MCP client (list, cross-host ask inline and late, @label ask, person ↔ agent asks, guard errors, spawn + completion notice, status, stop, offline message delivered exactly once, hop limit); two real Codex app-servers on two hosts doing `fleet_ask` / `fleet_reply` |
 | Web UI | done | server tests (sign-in by token and one-time link, cookie flags, CSRF header, throttling, static files, CA download, fleet stream); e2e (fleet stream snapshot and updates, approvals and previews on session views, rebuilt after a coordinator restart); driven in headless Chromium at phone and desktop sizes, light and dark, against two real Codex hosts: approve a command, cross-host ask from the composer, answer an agent's question, traffic, usage, spawn form, no console errors. Dark-default refresh (sidebar on desktop, drawer on phones, bundled fonts) re-checked the same way |
 | ACP client | done | ACP v1 schema (agentclientprotocol repo); traffic recorded from goose 1.54.0 |
 | ACP adapter (Goose and others) | done | fake-agent tests: streaming, tool items (command, edit with diff, MCP, generic), reasoning, plans, approvals with every decision, cancel during approval, stuck agent killed, crash and reopen, `session/load` with replay suppressed, `session/resume`, no-reopen agents, mode/model/provider config, fleet tools auto-approved; real goose 1.54.0 against the mock's Anthropic endpoint: approvals, commands, usage, resume across processes, approval modes |
 | Goose in the fleet | done | e2e with real goose: fleet_list, goose → Codex fleet_ask, Codex → goose fleet_ask, resume after node restart; web UI driven in headless Chromium at phone size (tool cards, approval card, approve) |
-| Images in messages and prompts | done | unit tests: type sniffing, limits, safe names, path confinement (outside the cwd, `..`, symlinked file, symlinked directory out, the node's key and directory inside the cwd, FIFOs), coordinator attachment store (retention, pinning, cap, digests), node queue files; Codex adapter writes private `localImage` files and removes them after the turn (fake app-server reads them); ACP adapter sends image blocks only when the agent advertises them; agy refuses; e2e: a screenshot file sent with `fleet_send` from one host arrives byte for byte in the other host's harness, plus `fleet_ask`, `fleet_spawn`, a person's `send` and spawn, refusals, metadata-only events and records; real goose 1.54.0 passes images to the mock's Anthropic emulation (by `swyd send` and by a Codex agent's `fleet_send`). Web UI driven in headless Chromium (desktop and phone sizes) against a fake Codex host: attach with the file picker and by pasting, an SVG refused, send, thumbnails in the transcript and the inbox, the full-size view, no console errors or CSP violations |
-| `swyd dev vision-probe` | done | passes against the fake app-server, the fake ACP agent and real goose 1.54.0 through the mock provider; the mock reads the probe's PNG text chunk in both API emulations. Not yet run against a real vision model |
+| Images in messages and prompts | done | unit tests: type sniffing, limits, safe names, path confinement (outside the cwd, `..`, symlinked file, symlinked directory out, the node's key and directory inside the cwd, FIFOs), coordinator attachment store (retention, pinning, cap, digests), node queue files; Codex adapter writes private `localImage` files and removes them after the turn (fake app-server reads them); ACP adapter sends image blocks only when the agent advertises them; agy refuses; e2e: a screenshot file sent with `fleet_send` from one host arrives byte for byte in the other host's harness, plus `fleet_ask`, `fleet_spawn`, a person's `send` and spawn, refusals, metadata-only events and records; real goose 1.54.0 passes images to the mock's Anthropic emulation (by `swk send` and by a Codex agent's `fleet_send`). Web UI driven in headless Chromium (desktop and phone sizes) against a fake Codex host: attach with the file picker and by pasting, an SVG refused, send, thumbnails in the transcript and the inbox, the full-size view, no console errors or CSP violations |
+| `swk dev vision-probe` | done | passes against the fake app-server, the fake ACP agent and real goose 1.54.0 through the mock provider; the mock reads the probe's PNG text chunk in both API emulations. Not yet run against a real vision model |
 | Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
 | Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
-| Scoped API tokens | done | unit tests: every route declares a scope and an undeclared one needs admin (walks the route table), every route with read, operate and admin tokens, create/list/revoke by name or id, expiry, secrets never listed, persistence across a store restart, cookies carrying their scope (forged scope refused, pre-token cookies stay admin), cookies and pending links dying with their token, links capped at the minting token's scope, admin token unchanged; e2e: `swyd token create --cli-config` makes a working operate `cli.json`, the CLI spawns, sends and mints links with it but `token ls`, `hosts rm` and enrollment are refused, a read token streams but cannot act, revoking cuts the CLI off |
+| Scoped API tokens | done | unit tests: every route declares a scope and an undeclared one needs admin (walks the route table), every route with read, operate and admin tokens, create/list/revoke by name or id, expiry, secrets never listed, persistence across a store restart, cookies carrying their scope (forged scope refused, pre-token cookies stay admin), cookies and pending links dying with their token, links capped at the minting token's scope, admin token unchanged; e2e: `swk token create --cli-config` makes a working operate `cli.json`, the CLI spawns, sends and mints links with it but `token ls`, `hosts rm` and enrollment are refused, a read token streams but cannot act, revoking cuts the CLI off |
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
-| `swyd service` (user services) | done | unit tests per platform (systemd unit quoting, LaunchAgent plist with `plutil -lint`, logon-task XML and SID names, the Windows stop event); CI's Services job runs a coordinator and node through systemd user units, LaunchAgents and logon tasks on GitHub's Linux, macOS and Windows runners: install, run as the user, connect, restart, stop, start, uninstall |
+| `swk service` (user services) | done | unit tests per platform (systemd unit quoting, LaunchAgent plist with `plutil -lint`, logon-task XML and SID names, the Windows stop event); CI's Services job runs a coordinator and node through systemd user units, LaunchAgents and logon tasks on GitHub's Linux, macOS and Windows runners: install, run as the user, connect, restart, stop, start, uninstall |
 | Status file (`status.json`) | done | unit tests; a real coordinator and node run with `--log-file` reported running and connected, and the file went away on SIGTERM |
-| Linux tray (`swyd-tray`, StatusNotifierItem) | done, little real use | D-Bus codec round trips and talks to a real `dbus-daemon`; a fake StatusNotifierWatcher receives the registration, reads the item's properties, pixmaps, tooltip and menu layout, and clicks an item. Not yet looked at in a real panel |
-| Windows tray (`swyd-tray.exe`) | done, little real use | CI starts it on a Windows runner (it stays up; a second copy exits); not yet looked at on a real desktop |
+| Linux tray (`swk-tray`, StatusNotifierItem) | done, little real use | D-Bus codec round trips and talks to a real `dbus-daemon`; a fake StatusNotifierWatcher receives the registration, reads the item's properties, pixmaps, tooltip and menu layout, and clicks an item. Not yet looked at in a real panel |
+| Windows tray (`swk-tray.exe`) | done, little real use | CI starts it on a Windows runner (it stays up; a second copy exits); not yet looked at on a real desktop |
 | macOS menu-bar app | done, little real use | CI compiles it, packs and verifies the `.dmg`, and starts the app from /Applications; not yet looked at on a real desktop |
 | Packages | all built in CI | `.deb` (lintian-clean, installed, units verified), `.rpm` (no scriptlets), Arch PKGBUILDs, the Inno Setup installer (installed and uninstalled per user in CI) and the `.dmg`; winget manifests validated against the 1.6.0 schemas |
 
@@ -49,7 +49,7 @@ real-Codex test.
   would need an OS boundary, such as running the node as a separate user.
 
 - **Windows untested.** Job-object teardown, `codex.cmd` shim resolution,
-  the logon task `swyd service install` registers, its graceful stop
+  the logon task `swk service install` registers, its graceful stop
   through a named event, the tray and the installer are unverified. winbox should be
   the first real host.
 - **Codex daemon self-updates.** See m0-findings. If the node is later
@@ -66,7 +66,7 @@ real-Codex test.
   terminals or client file access.
 - **Images reach the harness, not necessarily the model.** Which real
   models and provider endpoints see images is unverified; run
-  `swyd dev vision-probe` per host. Real Codex has not yet been run with a
+  `swk dev vision-probe` per host. Real Codex has not yet been run with a
   `localImage` input (the fake app-server and the contract test cover the
   protocol shape). agy cannot take images.
 - **agy is untested against the real binary.** The parser follows the
@@ -100,20 +100,20 @@ real-Codex test.
 - **No push notifications.** The tab title and inbox badge count what
   needs you, but only while the page is open.
 - **Approval prompts in `attach` are print-only.** Answer them with
-  `swyd approve`.
-- **`swyd attach --until-idle`** relies on seeing the turn start in the
+  `swk approve`.
+- **`swk attach --until-idle`** relies on seeing the turn start in the
   replayed window. Use a larger `--tail` for very chatty turns.
 
 ## Recommended before real-world use
 
-1. Run `swyd dev run` on all four hosts, starting with winbox, and record
+1. Run `swk dev run` on all four hosts, starting with winbox, and record
    one agy stream (`--harness agy --record agy.jsonl`). Run one goose
    session per host with a real provider.
 2. Try a real model on two hosts with a prompt that needs the other host
-   ("ask buildbox/helper what `uname -m` says there"), and watch `swyd messages`.
+   ("ask buildbox/helper what `uname -m` says there"), and watch `swk messages`.
 3. Set `guards.max_daily_tokens` before letting agents spawn freely.
    Move the admin token off every workstation that runs agents and give
-   each one an `operate` or `read` token (`swyd token create`).
+   each one an `operate` or `read` token (`swk token create`).
 4. Open the web UI on the phone you will actually use, and install the CA
    or set up `tailscale serve`.
 5. For M4, decide whether the node should use Codex's shared app-server

@@ -1,4 +1,4 @@
-module github.com/jm2/switchyard
+module github.com/jm2/switchworks
 
 go 1.27
 

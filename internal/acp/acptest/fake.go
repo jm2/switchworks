@@ -18,7 +18,7 @@
 //   - "APPROVE": a shell tool call that asks permission first; reports the
 //     outcome ("approved <optionId>", "declined") or stops cancelled
 //   - "EDIT":    an edit tool call with a diff
-//   - "MCP":     a goose-style MCP tool call (swyd__fleet_list)
+//   - "MCP":     a goose-style MCP tool call (swk__fleet_list)
 //   - "THINK":   a thought chunk, then the reply
 //   - "PLAN":    a plan update, then the reply
 //   - "SLOW":    waits for session/cancel, then stops "cancelled"
@@ -48,24 +48,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/codex/codextest"
 )
 
 const (
-	envFlag  = "SWYD_FAKE_ACP"
-	envState = "SWYD_FAKE_ACP_STATE"
+	envFlag  = "SWK_FAKE_ACP"
+	envState = "SWK_FAKE_ACP_STATE"
 	// EnvNoLoad makes the fake advertise neither session/load nor resume.
-	EnvNoLoad = "SWYD_FAKE_ACP_NOLOAD"
+	EnvNoLoad = "SWK_FAKE_ACP_NOLOAD"
 	// EnvResumeOnly makes the fake offer session/resume instead of load.
-	EnvResumeOnly = "SWYD_FAKE_ACP_RESUMEONLY"
+	EnvResumeOnly = "SWK_FAKE_ACP_RESUMEONLY"
 	// EnvSlowNew delays session/new by this many milliseconds.
-	EnvSlowNew = "SWYD_FAKE_ACP_SLOWNEW"
+	EnvSlowNew = "SWK_FAKE_ACP_SLOWNEW"
 	// EnvPidFile makes the fake append its pid to this file at start.
-	EnvPidFile = "SWYD_FAKE_ACP_PIDFILE"
+	EnvPidFile = "SWK_FAKE_ACP_PIDFILE"
 	// EnvNoImages makes the fake advertise promptCapabilities.image false
 	// (and reject image blocks).
-	EnvNoImages = "SWYD_FAKE_ACP_NOIMAGES"
+	EnvNoImages = "SWK_FAKE_ACP_NOIMAGES"
 )
 
 // Env returns environment overrides that make a re-executed test binary act
@@ -499,10 +499,10 @@ func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byt
 		msg("edited")
 		finish("end_turn", "edited")
 	case strings.Contains(text, "FLEETPERM"):
-		meta := map[string]any{"goose": map[string]any{"toolCall": map[string]any{"toolName": "swyd__fleet_reply", "extensionName": "swyd"}}}
-		a.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tc-fp", "title": "swyd: fleet reply",
+		meta := map[string]any{"goose": map[string]any{"toolCall": map[string]any{"toolName": "swk__fleet_reply", "extensionName": "swk"}}}
+		a.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tc-fp", "title": "swk: fleet reply",
 			"rawInput": map[string]any{}, "_meta": meta})
-		outcome, opt := a.ask(sid, map[string]any{"toolCallId": "tc-fp", "title": "swyd: fleet reply", "_meta": meta}, cancel)
+		outcome, opt := a.ask(sid, map[string]any{"toolCallId": "tc-fp", "title": "swk: fleet reply", "_meta": meta}, cancel)
 		if outcome != "selected" || !strings.HasPrefix(opt, "allow") {
 			finish("cancelled", "")
 			return
@@ -511,9 +511,9 @@ func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byt
 		msg("fleet tool " + opt)
 		finish("end_turn", "fleet tool "+opt)
 	case strings.Contains(text, "MCP"):
-		a.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tc-mcp", "title": "swyd: fleet list",
+		a.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tc-mcp", "title": "swk: fleet list",
 			"rawInput": map[string]any{}, "_meta": map[string]any{"goose": map[string]any{
-				"toolCall": map[string]any{"toolName": "swyd__fleet_list", "extensionName": "swyd"}}}})
+				"toolCall": map[string]any{"toolName": "swk__fleet_list", "extensionName": "swk"}}}})
 		a.update(sid, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "tc-mcp", "status": "completed",
 			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "2 sessions"}}}})
 		msg("listed")

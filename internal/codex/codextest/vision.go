@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/attach"
+	"github.com/jm2/switchworks/internal/attach"
 )
 
 // How the fakes and the mock provider "see" images. None of them can read

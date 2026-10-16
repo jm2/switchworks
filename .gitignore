@@ -1,8 +1,8 @@
-/swyd
-/swyd.exe
+/swk
+/swk.exe
 /dist/
 *.test
 *.out
 /mock-codex-home/
-/swyd-tray
-/swyd-tray.exe
+/swk-tray
+/swk-tray.exe

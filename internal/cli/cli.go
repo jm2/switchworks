@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package cli implements the fleet commands of `swyd` (ls, spawn, attach,
+// Package cli implements the fleet commands of `swk` (ls, spawn, attach,
 // send, ...), all through the coordinator's HTTPS API.
 package cli
 
@@ -19,10 +19,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/render"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/render"
 )
 
 // Main dispatches a fleet command.
@@ -30,7 +30,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	cmd, rest := args[0], args[1:]
 	fn, ok := commands[cmd]
 	if !ok {
-		fmt.Fprintf(stderr, "unknown command %q (see `swyd help`)\n", cmd)
+		fmt.Fprintf(stderr, "unknown command %q (see `swk help`)\n", cmd)
 		return 2
 	}
 	// Fleet commands print agents' and models' text: keep it from
@@ -55,7 +55,7 @@ var commands = map[string]command{
 func client(stderr io.Writer) (*apiclient.Client, bool) {
 	cfg, err := apiclient.LoadConfig(paths.CLIConfig())
 	if err != nil {
-		fmt.Fprintf(stderr, "swyd: no CLI config (%v)\n  make one where the admin token is: swyd token create <name> --scope operate --cli-config > %s\n", err, paths.CLIConfig())
+		fmt.Fprintf(stderr, "swk: no CLI config (%v)\n  make one where the admin token is: swk token create <name> --scope operate --cli-config > %s\n", err, paths.CLIConfig())
 		return nil, false
 	}
 	c, err := apiclient.New(cfg)
@@ -71,7 +71,7 @@ func ctxTimeout() (context.Context, context.CancelFunc) {
 }
 
 func fail(stderr io.Writer, err error) int {
-	fmt.Fprintln(stderr, "swyd:", err)
+	fmt.Fprintln(stderr, "swk:", err)
 	return 1
 }
 
@@ -152,7 +152,7 @@ func orDash(s string) string {
 func cmdHosts(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "rm" || args[0] == "remove") {
 		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: swyd hosts rm <host>")
+			fmt.Fprintln(stderr, "usage: swk hosts rm <host>")
 			return 2
 		}
 		c, ok := client(stderr)
@@ -229,7 +229,7 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "session name (default: the cwd's base name)")
 	cwd := fs.String("cwd", "", "working directory on the target host (required)")
-	h := fs.String("harness", "codex", "harness: codex, agy, goose, or an ACP agent named in the node's node.json (see `swyd hosts`)")
+	h := fs.String("harness", "codex", "harness: codex, agy, goose, or an ACP agent named in the node's node.json (see `swk hosts`)")
 	modelName := fs.String("model", "", "model")
 	provider := fs.String("provider", "", "model provider (codex)")
 	approval := fs.String("approval", "", "codex approval policy: never, on-request, untrusted (default: node's)")
@@ -237,7 +237,7 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	doAttach := fs.Bool("attach", false, "attach after spawning")
 	images := addImageFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swyd spawn <host> --cwd DIR [--image FILE]... [flags] [prompt]")
+		fmt.Fprintln(stderr, "usage: swk spawn <host> --cwd DIR [--image FILE]... [flags] [prompt]")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -286,7 +286,7 @@ func cmdAttach(args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("v", false, "show every event")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) != 1 {
-		fmt.Fprintln(stderr, "usage: swyd attach [--tail N] [--until-idle] [-v] <session>")
+		fmt.Fprintln(stderr, "usage: swk attach [--tail N] [--until-idle] [-v] <session>")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -319,7 +319,7 @@ func attach(c *apiclient.Client, id string, after int64, untilIdle, verbose bool
 		case model.KindApprovalRequested:
 			var p model.ApprovalRequested
 			_ = json.Unmarshal(ev.Payload, &p)
-			fmt.Fprintf(stderr, "   answer with: swyd approve %s %s <decision>\n", id, p.ApprovalID)
+			fmt.Fprintf(stderr, "   answer with: swk approve %s %s <decision>\n", id, p.ApprovalID)
 		case model.KindTurnStarted:
 			sawTurn = true
 		case model.KindTurnCompleted:
@@ -361,7 +361,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	images := addImageFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd send [--steer|--interrupt] [--image FILE]... <session> <text>")
+		fmt.Fprintln(stderr, "usage: swk send [--steer|--interrupt] [--image FILE]... <session> <text>")
 		return 2
 	}
 	atts, err := readImages(*images)
@@ -379,7 +379,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	mode := model.ModeQueue
 	switch {
 	case *steer && *intr:
-		fmt.Fprintln(stderr, "swyd send: --steer and --interrupt are exclusive")
+		fmt.Fprintln(stderr, "swk send: --steer and --interrupt are exclusive")
 		return 2
 	case *steer:
 		mode = model.ModeSteer
@@ -406,7 +406,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 func simple(name string, fn func(context.Context, *apiclient.Client, string) error) command {
 	return func(args []string, stdout, stderr io.Writer) int {
 		if len(args) != 1 {
-			fmt.Fprintf(stderr, "usage: swyd %s <session>\n", name)
+			fmt.Fprintf(stderr, "usage: swk %s <session>\n", name)
 			return 2
 		}
 		c, ok := client(stderr)
@@ -432,7 +432,7 @@ var cmdStop = simple("stop", func(ctx context.Context, c *apiclient.Client, id s
 
 func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 3 {
-		fmt.Fprintln(stderr, "usage: swyd approve <session> <approval-id> <decision>\n  decisions: accept, acceptForSession, decline, cancel (as offered)")
+		fmt.Fprintln(stderr, "usage: swk approve <session> <approval-id> <decision>\n  decisions: accept, acceptForSession, decline, cancel (as offered)")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -458,7 +458,7 @@ func cmdEvents(args []string, stdout, stderr io.Writer) int {
 	after := fs.Int64("after", 0, "only events with seq above this")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) != 1 {
-		fmt.Fprintln(stderr, "usage: swyd events [--after N] <session>")
+		fmt.Fprintln(stderr, "usage: swk events [--after N] <session>")
 		return 2
 	}
 	c, ok := client(stderr)

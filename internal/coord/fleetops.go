@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/ulid"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/ulid"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // handleNodeReq runs a fleet operation on behalf of one of a node's
@@ -262,7 +262,7 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 		name = fmt.Sprintf("%s-%s", base, id[len(id)-6:])
 	}
 	if len(a.Images) > 0 {
-		return fleet.SpawnResult{}, errors.New("image paths cannot be read: the sending host runs an older swyd node; upgrade it")
+		return fleet.SpawnResult{}, errors.New("image paths cannot be read: the sending host runs an older swk node; upgrade it")
 	}
 	spec := model.SpawnSpec{Host: a.Host, Name: name, Harness: a.Harness, Cwd: a.Cwd, Prompt: a.Prompt,
 		Attachments: a.Attachments, Model: a.Model, Labels: a.Labels, Parent: from.sessionID()}

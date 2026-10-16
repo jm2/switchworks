@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/acp/acptest"
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/harness"
+	"github.com/jm2/switchworks/internal/acp/acptest"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/harness"
 )
 
 func TestMain(m *testing.M) {
@@ -193,14 +193,14 @@ func TestMockProviderSeesImages(t *testing.T) {
 	}
 }
 
-// With a real goose (SWYD_GOOSE_BIN or goose on PATH), the probe goes
+// With a real goose (SWK_GOOSE_BIN or goose on PATH), the probe goes
 // through goose's ACP image blocks to the mock's Anthropic emulation.
 func TestProbeRealGoose(t *testing.T) {
-	bin := os.Getenv("SWYD_GOOSE_BIN")
+	bin := os.Getenv("SWK_GOOSE_BIN")
 	if bin == "" {
 		var err error
 		if bin, err = exec.LookPath("goose"); err != nil {
-			t.Skip("goose not installed (set SWYD_GOOSE_BIN to run this test)")
+			t.Skip("goose not installed (set SWK_GOOSE_BIN to run this test)")
 		}
 	}
 	m, err := codextest.StartMockProvider()

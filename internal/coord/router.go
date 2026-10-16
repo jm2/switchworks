@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Guards bound what agents can do to each other and to the budget.
@@ -85,7 +85,7 @@ var (
 	ErrBudget    = errors.New("daily token budget reached; spawning is paused until tomorrow (UTC)")
 )
 
-// sender is who a message is from: a session, a person, or Switchyard.
+// sender is who a message is from: a session, a person, or Switchworks.
 type sender struct {
 	sess *model.Session
 	user string // "user:<name>"
@@ -296,7 +296,7 @@ func (s *Server) imagesRefusal(host, harness string, sess *model.Session) error 
 	case harness == "agy":
 		return errors.New("agy sessions cannot take images (agy's headless input is text only)")
 	case !contains(list, harness):
-		return fmt.Errorf("%s on %s cannot take images (its node does not offer images for it; an older swyd node never does)", harness, host)
+		return fmt.Errorf("%s on %s cannot take images (its node does not offer images for it; an older swk node never does)", harness, host)
 	case sess != nil && sess.NativeRef != nil && !sess.Caps.Images:
 		return fmt.Errorf("%s cannot take images: its agent does not advertise image prompts (ACP promptCapabilities.image)", sess.Path)
 	}
@@ -515,7 +515,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if len(args.Images) > 0 {
 		// Paths are read by the sender's node, which replaces them with
 		// attachments; an older node passes them on unread.
-		return nil, errors.New("image paths cannot be read: the sending host runs an older swyd node; upgrade it")
+		return nil, errors.New("image paths cannot be read: the sending host runs an older swk node; upgrade it")
 	}
 	if len(args.Attachments) > 0 {
 		for _, t := range targets {

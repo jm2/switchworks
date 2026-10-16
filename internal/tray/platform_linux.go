@@ -6,7 +6,7 @@ package tray
 
 import (
 	"errors"
-	"github.com/jm2/switchyard/internal/paths"
+	"github.com/jm2/switchworks/internal/paths"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +14,7 @@ import (
 )
 
 // AppID names the desktop file, the icon and the autostart entry.
-const AppID = "io.github.jm2.Switchyard"
+const AppID = "io.github.jm2.Switchworks"
 
 func init() {
 	openURL = func(u string) error {
@@ -85,18 +85,18 @@ func setAutostart(on bool) error {
 	if r, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = r
 	}
-	// A packaged tray is on PATH as swyd-tray; prefer the name so an
+	// A packaged tray is on PATH as swk-tray; prefer the name so an
 	// upgrade that moves the binary keeps working.
-	if p, err := exec.LookPath("swyd-tray"); err == nil {
+	if p, err := exec.LookPath("swk-tray"); err == nil {
 		if r, err := filepath.EvalSymlinks(p); err == nil && r == exe {
-			exe = "swyd-tray"
+			exe = "swk-tray"
 		}
 	}
 	if strings.ContainsFunc(exe, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return errors.New("the tray's path contains control characters; not writing an autostart entry")
 	}
-	text := "[Desktop Entry]\nType=Application\nName=Switchyard\n" +
-		"Comment=Switchyard node status in the system tray\n" +
+	text := "[Desktop Entry]\nType=Application\nName=Switchworks\n" +
+		"Comment=Switchworks node status in the system tray\n" +
 		"Exec=" + desktopQuote(exe) + "\nIcon=" + AppID + "\nTerminal=false\nNoDisplay=true\n" +
 		"X-GNOME-Autostart-enabled=true\n"
 	return paths.WriteFile(path, []byte(text), 0o644)

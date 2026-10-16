@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/harness"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/harness"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
 )
 
 // gooseNode is a host whose only working harness is a real goose pointed
@@ -87,13 +87,13 @@ func (g *gooseNode) run(t *testing.T) {
 // attached through session/new's mcpServers, and answers an ask routed to
 // it, so messaging works across harnesses.
 //
-// Runs when goose is on PATH or SWYD_GOOSE_BIN is set.
+// Runs when goose is on PATH or SWK_GOOSE_BIN is set.
 func TestRealGooseFleet(t *testing.T) {
-	bin := os.Getenv("SWYD_GOOSE_BIN")
+	bin := os.Getenv("SWK_GOOSE_BIN")
 	if bin == "" {
 		var err error
 		if bin, err = exec.LookPath("goose"); err != nil {
-			t.Skip("goose not installed (set SWYD_GOOSE_BIN to run this test)")
+			t.Skip("goose not installed (set SWK_GOOSE_BIN to run this test)")
 		}
 	}
 	mock, err := codextest.StartMockProvider()
@@ -166,7 +166,7 @@ func TestRealGooseFleet(t *testing.T) {
 	sawTool := false
 	wl.mu.Lock()
 	for _, e := range wl.evs {
-		if e.Kind == model.KindItemCompleted && containsAll(string(e.Payload), `"item_type":"mcpToolCall"`, `"tool":"fleet_ask"`, `"server":"swyd"`) {
+		if e.Kind == model.KindItemCompleted && containsAll(string(e.Payload), `"item_type":"mcpToolCall"`, `"tool":"fleet_ask"`, `"server":"swk"`) {
 			sawTool = true
 		}
 	}

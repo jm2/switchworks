@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/codex"
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/codex"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // Harness is this adapter's name.
@@ -223,7 +223,7 @@ func (a *Adapter) OnServerRequest(id json.RawMessage, method string, params json
 		return
 	}
 	a.cfg.Logf("codex: rejecting unsupported server request %s", method)
-	_ = c.ReplyError(id, jsonrpc.CodeMethodNotFound, "switchyard does not support "+method+" yet")
+	_ = c.ReplyError(id, jsonrpc.CodeMethodNotFound, "switchworks does not support "+method+" yet")
 }
 
 func (a *Adapter) register(h *handle) []note {
@@ -258,7 +258,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 		ModelProvider:  spec.Provider,
 		ApprovalPolicy: spec.ApprovalPolicy,
 		Sandbox:        spec.Sandbox,
-		ServiceName:    "switchyard",
+		ServiceName:    "switchworks",
 		Config:         mcpConfig(spec.MCP),
 	})
 	if err != nil {
@@ -571,7 +571,7 @@ func usage(b codex.TokenUsageBreakdown) model.Usage {
 // server to this thread only. Its tools are auto-approved
 // (default_tools_approval_mode = "approve"): Codex otherwise asks before
 // every MCP call, which fails outright under approval policy "never".
-// Switchyard applies its own guards to fleet operations.
+// Switchworks applies its own guards to fleet operations.
 func mcpConfig(m *adapter.MCPServer) map[string]any {
 	if m == nil {
 		return nil
@@ -617,7 +617,7 @@ func (h *handle) onApproval(c *codex.Client, id json.RawMessage, method string, 
 	case codex.RequestCommandApproval:
 		var p codex.CommandExecutionRequestApprovalParams
 		if err := json.Unmarshal(params, &p); err != nil {
-			_ = c.ReplyError(id, jsonrpc.CodeInvalidParams, "switchyard: bad approval params")
+			_ = c.ReplyError(id, jsonrpc.CodeInvalidParams, "switchworks: bad approval params")
 			return
 		}
 		req.Kind, req.TurnID, req.ItemID = "command", p.TurnID, p.ItemID
@@ -626,7 +626,7 @@ func (h *handle) onApproval(c *codex.Client, id json.RawMessage, method string, 
 	case codex.RequestFileChangeApproval:
 		var p codex.FileChangeRequestApprovalParams
 		if err := json.Unmarshal(params, &p); err != nil {
-			_ = c.ReplyError(id, jsonrpc.CodeInvalidParams, "switchyard: bad approval params")
+			_ = c.ReplyError(id, jsonrpc.CodeInvalidParams, "switchworks: bad approval params")
 			return
 		}
 		req.Kind, req.TurnID, req.ItemID, req.Reason = "file_change", p.TurnID, p.ItemID, deref(p.Reason)

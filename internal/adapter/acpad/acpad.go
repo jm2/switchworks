@@ -7,7 +7,7 @@
 // Each session runs its own agent process, so a crash or a stuck turn only
 // affects that session, and per-session environment (model provider keys)
 // stays separate. Turns are session/prompt calls; tool permission requests
-// become Switchyard approvals; Interrupt is session/cancel. After a node
+// become Switchworks approvals; Interrupt is session/cancel. After a node
 // restart or an agent crash the session is reopened with session/load
 // (history replay is discarded: the coordinator already has it) or, if the
 // agent only offers that, session/resume.
@@ -32,12 +32,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/acp"
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/acp"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // Goose is the built-in ACP agent's harness name.
@@ -50,7 +50,7 @@ type Config struct {
 	Args    []string          // e.g. ["acp"]
 	Env     map[string]string // environment overrides (provider keys, GOOSE_PROVIDER, ...)
 
-	// Modes maps a Switchyard approval policy (never, on-request,
+	// Modes maps a Switchworks approval policy (never, on-request,
 	// untrusted) to the agent's session mode id. Unset policies fall back
 	// to well-known mode names (see defaultModes).
 	Modes map[string]string
@@ -643,7 +643,7 @@ func mapStop(r string) (status, errText string) {
 	return "failed", "stop reason " + r
 }
 
-// usage turns the agent's report into a Switchyard usage event. The spec
+// usage turns the agent's report into a Switchworks usage event. The spec
 // says the figures are cumulative for the session; some agents report the
 // last request instead. A report that did not grow is taken as per-turn.
 func (h *handle) usage(turnID string, u *acp.Usage) {
@@ -789,7 +789,7 @@ func (h *handle) OnPermission(id json.RawMessage, req acp.RequestPermissionReque
 	if startItem {
 		h.emit(model.KindItemStarted, item)
 	}
-	// The fleet tools are approved automatically, as for Codex: Switchyard
+	// The fleet tools are approved automatically, as for Codex: Switchworks
 	// applies its own guards to fleet operations, and an agent waiting on
 	// a person to approve fleet_reply would stall agent-to-agent traffic.
 	if m := h.spec.MCP; m != nil && cl.itemType == "mcpToolCall" && cl.server == m.Name {

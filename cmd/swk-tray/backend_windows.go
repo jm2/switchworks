@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/jm2/switchyard/internal/tray"
-	"github.com/jm2/switchyard/internal/tray/wintray"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/tray"
+	"github.com/jm2/switchworks/internal/tray/wintray"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 var errAlreadyRunning = wintray.ErrAlreadyRunning
@@ -19,7 +19,7 @@ func newBackend() (tray.Backend, error) { return wintray.New(), nil }
 
 var procMessageBoxW = syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
 
-// reportFatal shows a message box: swyd-tray.exe is built as a GUI program
+// reportFatal shows a message box: swk-tray.exe is built as a GUI program
 // (no console window), so there is no stderr to read.
 func reportFatal(err error) {
 	const mbIconError = 0x10

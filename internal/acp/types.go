@@ -3,7 +3,7 @@
 // Package acp drives an Agent Client Protocol agent (Goose, Crush, opencode,
 // ...) over stdio JSON-RPC 2.0, as its client.
 //
-// Only the subset Switchyard uses is declared. Names and shapes follow the
+// Only the subset Switchworks uses is declared. Names and shapes follow the
 // ACP v1 schema (agentclientprotocol/agent-client-protocol, schema/v1),
 // checked against traffic recorded from goose 1.54.0. Fields the schema marks
 // unstable (PromptResponse.usage) are decoded when present and never relied
@@ -267,7 +267,7 @@ type SetConfigOptionResponse struct {
 
 // --- prompt turn ---
 
-// ContentBlock is a content block. Switchyard produces text, and image
+// ContentBlock is a content block. Switchworks produces text, and image
 // blocks for agents that advertise promptCapabilities.image.
 type ContentBlock struct {
 	Type     string `json:"type"`
@@ -339,7 +339,7 @@ type SessionNotification struct {
 	Update    json.RawMessage `json:"update"`
 }
 
-// Update is the union of the session/update payloads Switchyard reads.
+// Update is the union of the session/update payloads Switchworks reads.
 type Update struct {
 	SessionUpdate string `json:"sessionUpdate"`
 

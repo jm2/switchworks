@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/store"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/store"
 )
 
 // A spawn loop (an agent spawns a child, hears it finished, spawns another)

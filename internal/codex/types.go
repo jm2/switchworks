@@ -6,7 +6,7 @@ import "encoding/json"
 
 // SchemaVersion is the Codex version whose app-server JSON schema is committed
 // under schema/codex/<version>/ and checked by the contract test. These types
-// cover only the subset of the protocol Switchyard uses; unknown fields are
+// cover only the subset of the protocol Switchworks uses; unknown fields are
 // ignored on decode, and every field we send must exist in the schema
 // (enforced by TestContractAgainstSchema).
 const SchemaVersion = "0.160.0"
@@ -381,7 +381,7 @@ type FileChangeRequestApprovalParams struct {
 
 // ApprovalResponse answers both approval request kinds. Decision is one of
 // "accept", "acceptForSession", "decline", "cancel" (the object-valued
-// decisions are not used by Switchyard).
+// decisions are not used by Switchworks).
 type ApprovalResponse struct {
 	Decision string `json:"decision"`
 }

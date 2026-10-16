@@ -13,7 +13,7 @@ type platformState struct{}
 
 func setupCmd(cmd *exec.Cmd) {
 	// Own process group, so signals reach the whole tree and a terminal
-	// Ctrl-C aimed at swyd does not hit the harness directly.
+	// Ctrl-C aimed at swk does not hit the harness directly.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 

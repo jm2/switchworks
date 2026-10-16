@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Host is an enrolled workstation running `swyd node`.
+// Host is an enrolled workstation running `swk node`.
 type Host struct {
 	ID       string   `json:"id"`
 	OS       string   `json:"os"`

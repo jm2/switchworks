@@ -298,7 +298,7 @@ func TestContractAgainstSchema(t *testing.T) {
 }
 
 // TestInstalledCodexMatchesSchema reports drift between the Codex on PATH and
-// the committed schema. Set SWYD_STRICT_CODEX_VERSION=1 to make drift fatal.
+// the committed schema. Set SWK_STRICT_CODEX_VERSION=1 to make drift fatal.
 func TestInstalledCodexMatchesSchema(t *testing.T) {
 	path, err := exec.LookPath("codex")
 	if err != nil {
@@ -312,7 +312,7 @@ func TestInstalledCodexMatchesSchema(t *testing.T) {
 	if got != SchemaVersion {
 		msg := "installed codex " + got + " differs from committed schema " + SchemaVersion +
 			"; regenerate with: codex app-server generate-json-schema --out schema/codex/" + got
-		if os.Getenv("SWYD_STRICT_CODEX_VERSION") == "1" {
+		if os.Getenv("SWK_STRICT_CODEX_VERSION") == "1" {
 			t.Fatal(msg)
 		}
 		t.Log(msg)

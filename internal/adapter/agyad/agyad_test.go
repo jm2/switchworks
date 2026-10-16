@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // The fake agy emits exactly the events and fields documented at
@@ -25,9 +25,9 @@ import (
 // lines for init, step_update (text_delta, step_type, tool_info, state) and
 // result (status, response, conversation_id, usage, duration_seconds), and
 // reads {"event":"user","message":{"content":...}} lines in stream-input
-// mode. It logs each invocation to $SWYD_FAKE_AGY_LOG.
+// mode. It logs each invocation to $SWK_FAKE_AGY_LOG.
 func TestMain(m *testing.M) {
-	if os.Getenv("SWYD_FAKE_AGY") == "1" {
+	if os.Getenv("SWK_FAKE_AGY") == "1" {
 		fakeAgy()
 		os.Exit(0)
 	}
@@ -51,8 +51,8 @@ func fakeAgy() {
 			stream = args[i+1] == "stream-json"
 		}
 	}
-	if p := os.Getenv("SWYD_FAKE_AGY_LOG"); p != "" {
-		b, _ := json.Marshal(invocation{Argv: args, Token: os.Getenv("SWYD_TOKEN")})
+	if p := os.Getenv("SWK_FAKE_AGY_LOG"); p != "" {
+		b, _ := json.Marshal(invocation{Argv: args, Token: os.Getenv("SWK_TOKEN")})
 		f, _ := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		fmt.Fprintf(f, "%s\n", b)
 		f.Close()
@@ -109,7 +109,7 @@ func fakeAgy() {
 		case strings.Contains(prompt, "TOOL"):
 			tool("run_command", map[string]any{"CommandLine": "ls -1", "Cwd": "/w"}, "a\nb", "")
 			tool("write_to_file", map[string]any{"TargetFile": "/w/new.txt"}, "", "")
-			tool("swyd/fleet_list", map[string]any{}, "2 sessions", "")
+			tool("swk/fleet_list", map[string]any{}, "2 sessions", "")
 			tool("view_file", map[string]any{"AbsolutePath": "/w/a"}, "", "no such file")
 			text("tools done")
 			result("SUCCESS", "tools done", "")
@@ -224,7 +224,7 @@ func items(evs []adapter.Event, kind, itemType string) []model.Item {
 func newAdapter(t *testing.T, o Options) (*Adapter, string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "agy.log")
-	a := New(Config{Bin: os.Args[0], Env: map[string]string{"SWYD_FAKE_AGY": "1", "SWYD_FAKE_AGY_LOG": log},
+	a := New(Config{Bin: os.Args[0], Env: map[string]string{"SWK_FAKE_AGY": "1", "SWK_FAKE_AGY_LOG": log},
 		Options: o, Logf: t.Logf})
 	t.Cleanup(func() { a.Close() })
 	return a, log
@@ -355,7 +355,7 @@ func TestToolSteps(t *testing.T) {
 	if len(mcps) == 1 {
 		_ = json.Unmarshal(mcps[0].Raw, &mc)
 	}
-	if len(mcps) != 1 || mc.Server != "swyd" || mc.Tool != "fleet_list" || mc.Result.Content[0].Text != "2 sessions" {
+	if len(mcps) != 1 || mc.Server != "swk" || mc.Tool != "fleet_list" || mc.Result.Content[0].Text != "2 sessions" {
 		t.Fatalf("mcp %+v", mcps)
 	}
 	gen := items(evs, model.KindItemCompleted, "toolCall")
@@ -513,8 +513,8 @@ func TestFleetTools(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cwd, ".agents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mcp := &adapter.MCPServer{Name: "swyd", Command: os.Args[0], Args: []string{"mcp"},
-		Env: map[string]string{"SWYD_TOKEN": "secret-token", "SWYD_SESSION": "s1"}}
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"},
+		Env: map[string]string{"SWK_TOKEN": "secret-token", "SWK_SESSION": "s1"}}
 	col := &collector{}
 	h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, MCP: mcp}, col.sink)
 	if err != nil {
@@ -534,7 +534,7 @@ func TestFleetTools(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	s := doc.McpServers["swyd"]
+	s := doc.McpServers["swk"]
 	if s.Command != os.Args[0] || len(s.Args) != 1 || s.Args[0] != "mcp" || len(s.Env) != 0 || strings.Contains(string(b), "secret-token") {
 		t.Fatalf("mcp config %s", b)
 	}
@@ -546,10 +546,10 @@ func TestFleetTools(t *testing.T) {
 	var sdoc map[string]any
 	_ = json.Unmarshal(sb, &sdoc)
 	allow := sdoc["permissions"].(map[string]any)["allow"].([]any)
-	if sdoc["modelProvider"] != "gemini" || len(allow) != 2 || allow[0] != "command(git)" || allow[1] != "mcp(swyd/*)" {
+	if sdoc["modelProvider"] != "gemini" || len(allow) != 2 || allow[0] != "command(git)" || allow[1] != "mcp(swk/*)" {
 		t.Fatalf("settings %s", sb)
 	}
-	// The credentials reach agy (and so `swyd mcp`) through its environment.
+	// The credentials reach agy (and so `swk mcp`) through its environment.
 	col.turn(t, h, "hi", "completed")
 	inv := invocations(t, log)
 	if len(inv) != 1 || inv[0].Token != "secret-token" {
@@ -595,7 +595,7 @@ func TestFleetTools(t *testing.T) {
 func TestFleetToolsOffByDefault(t *testing.T) {
 	a, _ := newAdapter(t, Options{})
 	cwd := t.TempDir()
-	mcp := &adapter.MCPServer{Name: "swyd", Command: os.Args[0], Args: []string{"mcp"}}
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
 	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, MCP: mcp}, (&collector{}).sink); err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func fakeGitDir(t *testing.T, dir string) {
 }
 
 // The workspace is the agent's: its symlinks and .git files must not steer
-// Switchyard's writes elsewhere.
+// Switchworks's writes elsewhere.
 func TestFleetToolsWorkspaceTricks(t *testing.T) {
 	outside := t.TempDir()
 	cwd := t.TempDir()

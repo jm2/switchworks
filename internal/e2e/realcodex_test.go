@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
 )
 
 func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *codextest.MockProvider) *runningNode {
@@ -60,12 +60,12 @@ func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *co
 
 // TestRealCodexFleetAsk runs two real `codex app-server`s (against the mock
 // model provider) on two hosts. The model on one calls the fleet_ask tool
-// that Switchyard injected over MCP; the other answers with fleet_reply.
+// that Switchworks injected over MCP; the other answers with fleet_reply.
 //
-// Gated because it needs the codex binary: SWYD_CODEX_IT=1 go test ./...
+// Gated because it needs the codex binary: SWK_CODEX_IT=1 go test ./...
 func TestRealCodexFleetAsk(t *testing.T) {
-	if os.Getenv("SWYD_CODEX_IT") != "1" {
-		t.Skip("set SWYD_CODEX_IT=1 to run against the real codex binary")
+	if os.Getenv("SWK_CODEX_IT") != "1" {
+		t.Skip("set SWK_CODEX_IT=1 to run against the real codex binary")
 	}
 	bin, err := exec.LookPath("codex")
 	if err != nil {
@@ -118,7 +118,7 @@ func TestRealCodexFleetAsk(t *testing.T) {
 	sawTool := false
 	wl.mu.Lock()
 	for _, e := range wl.evs {
-		if e.Kind == model.KindItemCompleted && containsAll(string(e.Payload), `"item_type":"mcpToolCall"`, `"tool":"fleet_ask"`, `"server":"swyd"`) {
+		if e.Kind == model.KindItemCompleted && containsAll(string(e.Payload), `"item_type":"mcpToolCall"`, `"tool":"fleet_ask"`, `"server":"swk"`) {
 			sawTool = true
 		}
 	}

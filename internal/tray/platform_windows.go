@@ -6,7 +6,7 @@ package tray
 
 import (
 	"errors"
-	"github.com/jm2/switchyard/internal/winsys"
+	"github.com/jm2/switchworks/internal/winsys"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +27,7 @@ var (
 const (
 	swShowNormal                  = 1
 	runKey                        = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runValue                      = "Switchyard"
+	runValue                      = "Switchworks"
 	errFileNotFound syscall.Errno = 2
 )
 

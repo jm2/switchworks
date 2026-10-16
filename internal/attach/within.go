@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // ReadWithin reads an image file an agent names for the fleet tools.
@@ -58,7 +58,7 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 			rd = r
 		}
 		if within(rd, real) || within(filepath.Clean(d), filepath.Join(dir, rel)) {
-			return model.Attachment{}, fmt.Errorf("%s is inside Switchyard's own directory and cannot be attached", name)
+			return model.Attachment{}, fmt.Errorf("%s is inside Switchworks's own directory and cannot be attached", name)
 		}
 	}
 	return openConfined(realDir, rel, name, deny)
@@ -88,7 +88,7 @@ func openConfined(realDir, rel, name string, deny []string) (model.Attachment, e
 		}
 		return false
 	}
-	inOwn := fmt.Errorf("%s is inside Switchyard's own directory and cannot be attached", name)
+	inOwn := fmt.Errorf("%s is inside Switchworks's own directory and cannot be attached", name)
 	// The working directory itself, and every directory above it.
 	for d := realDir; ; d = filepath.Dir(d) {
 		if fi, err := os.Stat(d); err == nil && isDenied(fi) {
@@ -141,7 +141,7 @@ func openConfined(realDir, rel, name string, deny []string) (model.Attachment, e
 	case fi.Size() > MaxImageBytes:
 		return model.Attachment{}, fmt.Errorf("%s is %d bytes; the limit is %d (5 MiB)", name, fi.Size(), MaxImageBytes)
 	case hardLinked(fi):
-		// Another name for it may be anywhere, Switchyard's directories
+		// Another name for it may be anywhere, Switchworks's directories
 		// included.
 		return model.Attachment{}, fmt.Errorf("%s has other hard links; attach a copy", name)
 	}

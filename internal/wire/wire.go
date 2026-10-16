@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // ProtocolVersion is bumped on incompatible changes.
@@ -155,7 +155,7 @@ type DeliverResult struct {
 
 // Node -> coordinator requests, sent as TCmd with a NodeReq payload; the
 // coordinator answers with TResult. They carry fleet operations made by
-// agents through `swyd mcp`, on behalf of one of the node's sessions.
+// agents through `swk mcp`, on behalf of one of the node's sessions.
 const (
 	ReqList   = "fleet.list"
 	ReqSend   = "fleet.send"

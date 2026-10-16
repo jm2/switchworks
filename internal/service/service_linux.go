@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
-	"github.com/jm2/switchyard/internal/paths"
+	"github.com/jm2/switchworks/internal/paths"
 	"io"
 	"os"
 	"os/exec"
@@ -24,9 +24,9 @@ var units embed.FS
 
 // generatedMarker starts every unit file Install writes, so Uninstall removes
 // only its own files and never a packaged or hand-written unit.
-const generatedMarker = "# Written by `swyd service install`; `swyd service uninstall` removes it.\n"
+const generatedMarker = "# Written by `swk service install`; `swk service uninstall` removes it.\n"
 
-func unitName(role string) string { return "swyd-" + role + ".service" }
+func unitName(role string) string { return "swk-" + role + ".service" }
 
 func command(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
 
@@ -79,7 +79,7 @@ func unitText(role, exe string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return bytes.ReplaceAll(b, []byte("@SWYD@"), []byte(systemdQuote(exe))), nil
+	return bytes.ReplaceAll(b, []byte("@SWK@"), []byte(systemdQuote(exe))), nil
 }
 
 // systemdQuote quotes a path for ExecStart.

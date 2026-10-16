@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // A node with a genuine certificate for host "a" must not be able to write

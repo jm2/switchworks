@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/dbus"
-	"github.com/jm2/switchyard/internal/dbus/dbustest"
+	"github.com/jm2/switchworks/internal/dbus"
+	"github.com/jm2/switchworks/internal/dbus/dbustest"
 )
 
 func TestMarshalRoundTrip(t *testing.T) {
@@ -100,10 +100,10 @@ func TestBus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if n, err := server.RequestName(ctx, "dev.switchyard.Test"); err != nil || n != dbus.NamePrimaryOwner {
+	if n, err := server.RequestName(ctx, "dev.switchworks.Test"); err != nil || n != dbus.NamePrimaryOwner {
 		t.Fatalf("RequestName = %d, %v", n, err)
 	}
-	if n, err := client.RequestName(ctx, "dev.switchyard.Test"); err != nil || n != dbus.NameExists {
+	if n, err := client.RequestName(ctx, "dev.switchworks.Test"); err != nil || n != dbus.NameExists {
 		t.Fatalf("second RequestName = %d, %v", n, err)
 	}
 	server.Handle(func(m *dbus.Message) {
@@ -117,14 +117,14 @@ func TestBus(t *testing.T) {
 			_ = server.ReplyError(m, "org.freedesktop.DBus.Error.UnknownMethod", "no "+m.Member)
 		}
 	})
-	rep, err := client.Call(ctx, "dev.switchyard.Test", "/x", "dev.switchyard.Test", "Echo", "sa{sv}", "hi", map[string]dbus.Variant{"n": {Sig: "i", Value: int32(4)}})
+	rep, err := client.Call(ctx, "dev.switchworks.Test", "/x", "dev.switchworks.Test", "Echo", "sa{sv}", "hi", map[string]dbus.Variant{"n": {Sig: "i", Value: int32(4)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rep.Body[0] != "hi" || rep.Body[1].([]any)[0].(dbus.DictEntry).Value.(dbus.Variant).Value != int32(4) {
 		t.Fatalf("echo = %#v", rep.Body)
 	}
-	_, err = client.Call(ctx, "dev.switchyard.Test", "/x", "dev.switchyard.Test", "Nope", "")
+	_, err = client.Call(ctx, "dev.switchworks.Test", "/x", "dev.switchworks.Test", "Nope", "")
 	if e, ok := err.(*dbus.Error); !ok || e.Name != "org.freedesktop.DBus.Error.UnknownMethod" {
 		t.Fatalf("error reply = %v", err)
 	}
@@ -135,10 +135,10 @@ func TestBus(t *testing.T) {
 			got <- m
 		}
 	})
-	if err := client.AddMatch(ctx, "type='signal',interface='dev.switchyard.Test'"); err != nil {
+	if err := client.AddMatch(ctx, "type='signal',interface='dev.switchworks.Test'"); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.Emit("/x", "dev.switchyard.Test", "Changed", "u", uint32(5)); err != nil {
+	if err := server.Emit("/x", "dev.switchworks.Test", "Changed", "u", uint32(5)); err != nil {
 		t.Fatal(err)
 	}
 	select {

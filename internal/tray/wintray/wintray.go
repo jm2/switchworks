@@ -10,7 +10,7 @@ package wintray
 import (
 	"errors"
 	"fmt"
-	"github.com/jm2/switchyard/internal/winsys"
+	"github.com/jm2/switchworks/internal/winsys"
 	"os/user"
 	"runtime"
 	"strings"
@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/jm2/switchyard/internal/tray"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/tray"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 var (
@@ -101,9 +101,9 @@ const (
 // closes the tray through Restart Manager, not this mutex.)
 func MutexName() string {
 	if u, err := user.Current(); err == nil && u.Uid != "" {
-		return "SwitchyardTray-" + u.Uid
+		return "SwitchworksTray-" + u.Uid
 	}
-	return "SwitchyardTray"
+	return "SwitchworksTray"
 }
 
 // ErrAlreadyRunning is returned by Run when this session already has a tray.
@@ -225,7 +225,7 @@ func (b *Backend) Run(ready func()) error {
 	_, _, _ = procSetProcessDPIAware.Call()
 	current = b
 	inst, _, _ := procGetModuleHandleW.Call(0)
-	className := utf16("SwitchyardTrayWindow")
+	className := utf16("SwitchworksTrayWindow")
 	wc := wndClassEx{WndProc: wndProcCB, Instance: syscall.Handle(inst), ClassName: className}
 	wc.Size = uint32(unsafe.Sizeof(wc))
 	if r, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

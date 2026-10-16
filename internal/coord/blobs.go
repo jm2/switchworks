@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
+	"github.com/jm2/switchworks/internal/attach"
 )
 
 // blobStore keeps the bytes of image attachments, content-addressed by

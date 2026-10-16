@@ -10,16 +10,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/render"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/render"
 )
 
 func init() { commands["token"] = cmdToken }
 
 const tokenUsage = `usage:
-  swyd token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]
-  swyd token ls [--json]
-  swyd token rm <name-or-id>`
+  swk token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]
+  swk token ls [--json]
+  swk token rm <name-or-id>`
 
 func cmdToken(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -33,7 +33,7 @@ func cmdToken(args []string, stdout, stderr io.Writer) int {
 		return cmdTokenList(args[1:], stdout, stderr)
 	case "rm", "remove", "revoke":
 		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: swyd token rm <name-or-id>")
+			fmt.Fprintln(stderr, "usage: swk token rm <name-or-id>")
 			return 2
 		}
 		c, ok := client(stderr)
@@ -60,7 +60,7 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 	cliConfig := fs.Bool("cli-config", false, "print a complete cli.json with the new token, for another machine")
 	api := fs.String("api", "", "with --cli-config: the API URL that machine dials (default: this CLI's)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swyd token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]")
+		fmt.Fprintln(stderr, "usage: swk token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -73,11 +73,11 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *ttl < 0 || (*ttl > 0 && *ttl < time.Second) {
 		// The API counts whole seconds, where 0 means no expiry.
-		fmt.Fprintln(stderr, "swyd token create: --ttl must be 0 (no expiry) or at least 1s")
+		fmt.Fprintln(stderr, "swk token create: --ttl must be 0 (no expiry) or at least 1s")
 		return 2
 	}
 	if *api != "" && !*cliConfig {
-		fmt.Fprintln(stderr, "swyd token create: --api only applies with --cli-config")
+		fmt.Fprintln(stderr, "swk token create: --api only applies with --cli-config")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -106,11 +106,11 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "%s\n", b)
-		fmt.Fprintln(stderr, "This cli.json holds the token's secret: save it as ~/.config/swyd/cli.json (chmod 600) on that machine.")
+		fmt.Fprintln(stderr, "This cli.json holds the token's secret: save it as ~/.config/swk/cli.json (chmod 600) on that machine.")
 		return 0
 	}
 	fmt.Fprintln(stdout, t.Secret)
-	fmt.Fprintln(stderr, "The secret is shown only now. Revoke it with: swyd token rm "+t.Name)
+	fmt.Fprintln(stderr, "The secret is shown only now. Revoke it with: swk token rm "+t.Name)
 	return 0
 }
 
@@ -119,7 +119,7 @@ func cmdTokenList(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print JSON")
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: swyd token ls [--json]")
+		fmt.Fprintln(stderr, "usage: swk token ls [--json]")
 		return 2
 	}
 	c, ok := client(stderr)

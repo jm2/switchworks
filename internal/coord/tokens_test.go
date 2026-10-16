@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 var pathParam = regexp.MustCompile(`\{[^}]+\}`)
@@ -280,7 +280,7 @@ func cookieHeader(t *testing.T, r *http.Response) map[string]string {
 		t.Fatalf("sign-in: %d %s", r.StatusCode, b)
 	}
 	ck := r.Cookies()[0]
-	return map[string]string{"Cookie": ck.Name + "=" + ck.Value, "X-Swyd-CSRF": "1"}
+	return map[string]string{"Cookie": ck.Name + "=" + ck.Value, "X-Swk-CSRF": "1"}
 }
 
 func (e *webEnv) uiLink(t *testing.T, tok, sc string) (int, string, string) {

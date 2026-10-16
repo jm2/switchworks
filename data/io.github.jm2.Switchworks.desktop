@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Switchyard
+Name=Switchworks
 GenericName=Coding Agent Fleet
-Comment=Switchyard node status in the system tray
-Exec=swyd-tray
-Icon=io.github.jm2.Switchyard
+Comment=Switchworks node status in the system tray
+Exec=swk-tray
+Icon=io.github.jm2.Switchworks
 Terminal=false
 StartupNotify=false
 Categories=Development;

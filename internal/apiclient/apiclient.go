@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/pki"
 )
 
 // Config is the CLI's connection file (cli.json).
@@ -33,7 +33,7 @@ type Config struct {
 
 	// Dial, when set, is the address to connect to instead of API's host
 	// and port; the certificate is still checked against API's host name.
-	// $SWYD_DIAL sets it too: inside the coordinator's container, where
+	// $SWK_DIAL sets it too: inside the coordinator's container, where
 	// API's name may resolve to an address that does not lead back in.
 	Dial string `json:"-"`
 }
@@ -73,7 +73,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	dial := dialer.DialContext
-	if to := cmp.Or(cfg.Dial, os.Getenv("SWYD_DIAL")); to != "" {
+	if to := cmp.Or(cfg.Dial, os.Getenv("SWK_DIAL")); to != "" {
 		dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, to)
 		}

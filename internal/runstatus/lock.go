@@ -31,7 +31,7 @@ func Lock(dir string) (*os.File, error) {
 			if s, err := Read(dir); err == nil && s.PID > 0 {
 				pid = fmt.Sprintf("process %d", s.PID)
 			}
-			return nil, fmt.Errorf("%s: %w (%s); stop it first (swyd service stop, or end that process)", dir, ErrLocked, pid)
+			return nil, fmt.Errorf("%s: %w (%s); stop it first (swk service stop, or end that process)", dir, ErrLocked, pid)
 		}
 		return nil, err
 	}

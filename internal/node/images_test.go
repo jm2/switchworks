@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func testPNG(t *testing.T, w int) []byte {
@@ -30,7 +30,7 @@ func testPNG(t *testing.T, w int) []byte {
 // directory only, and never from the node's own directory.
 func TestResolveImages(t *testing.T) {
 	cwd := t.TempDir()
-	nodeDir := filepath.Join(cwd, ".config", "swyd", "node") // a session working in $HOME
+	nodeDir := filepath.Join(cwd, ".config", "swk", "node") // a session working in $HOME
 	if err := os.MkdirAll(nodeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -63,14 +63,14 @@ func TestResolveImages(t *testing.T) {
 	}
 	keyPath, _ := json.Marshal(filepath.Join(nodeDir, "node.key"))
 	for body, want := range map[string]string{
-		`{"images":[` + string(keyPath) + `]}`:       "Switchyard's own directory",
-		`{"images":[".config/swyd/node/state.png"]}`: "Switchyard's own directory",
-		`{"images":["../shot.png"]}`:                 "outside",
-		`{"images":"shot.png"}`:                      "list of file paths",
-		`{"images":["a","b","c","d","e"]}`:           "at most 4",
-		`{"attachments":[{"data":"AAAA"}]}`:          "by file path",
-		`{"Attachments":[{"data":"AAAA"}]}`:          "by file path",
-		`{"IMAGES":["shot.png"]}`:                    `spell it "images"`,
+		`{"images":[` + string(keyPath) + `]}`:      "Switchworks's own directory",
+		`{"images":[".config/swk/node/state.png"]}`: "Switchworks's own directory",
+		`{"images":["../shot.png"]}`:                "outside",
+		`{"images":"shot.png"}`:                     "list of file paths",
+		`{"images":["a","b","c","d","e"]}`:          "at most 4",
+		`{"attachments":[{"data":"AAAA"}]}`:         "by file path",
+		`{"Attachments":[{"data":"AAAA"}]}`:         "by file path",
+		`{"IMAGES":["shot.png"]}`:                   `spell it "images"`,
 	} {
 		if _, err := n.resolveImages(s, []byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", body, err, want)

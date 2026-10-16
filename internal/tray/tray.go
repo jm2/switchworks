@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package tray is the platform-neutral part of swyd-tray: it reads the
+// Package tray is the platform-neutral part of swk-tray: it reads the
 // node's and coordinator's state through package service, turns it into a
 // menu, and runs the menu's actions. A Backend draws the icon and menu with
 // the platform's own tray API (StatusNotifierItem on Linux, Shell_NotifyIcon
 // on Windows). The macOS menu-bar app is a separate Swift program that reads
-// the same state from `swyd service status --json`.
+// the same state from `swk service status --json`.
 //
 // The tray only reads local files and runs service-manager commands as the
 // user; it opens no ports and never reads tokens.
@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/service"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/service"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Icon is the tray icon's state.
@@ -71,7 +71,7 @@ var (
 // Poll is how often the tray re-reads the state.
 const Poll = 5 * time.Second
 
-// App connects a Backend to Switchyard's state.
+// App connects a Backend to Switchworks's state.
 type App struct {
 	b       Backend
 	refresh chan struct{}
@@ -194,7 +194,7 @@ func iconFor(o service.Overview) Icon {
 func roleItems(a *App, in service.Info, title string, busy bool) []Item {
 	r := in.Role
 	if !in.Configured {
-		hint := "Enroll with: swyd node enroll <token>"
+		hint := "Enroll with: swk node enroll <token>"
 		if r == service.Coordinator {
 			return nil
 		}

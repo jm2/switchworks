@@ -3,14 +3,14 @@
 
 // The sign-in page follows the theme chosen in the app (dark by default).
 try {
-  const t = localStorage.getItem('swyd-theme');
+  const t = localStorage.getItem('swk-theme');
   if (t === 'light' || t === 'system') document.documentElement.dataset.theme = t;
 } catch (e) { /* storage unavailable */ }
 
 async function signIn(body) {
   const r = await fetch('/ui/login', {
     method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json', 'X-Swyd-CSRF': '1'},
+    headers: {'Content-Type': 'application/json', 'X-Swk-CSRF': '1'},
     body: JSON.stringify(body),
   });
   if (r.ok) {

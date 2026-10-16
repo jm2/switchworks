@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/coord"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/coord"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
 )
 
 // enrollHost enrolls a new host and starts its node.
@@ -78,7 +78,7 @@ func countAgent(w *watcher, pred func(model.Event) bool) int {
 }
 
 // TestFleetMessaging drives agent-to-agent traffic across two hosts: the
-// fake app-server calls the real `swyd mcp` (this test binary) through the
+// fake app-server calls the real `swk mcp` (this test binary) through the
 // MCP config the node injects, which calls the node's local API, which
 // calls the coordinator's router.
 func TestFleetMessaging(t *testing.T) {
@@ -160,7 +160,7 @@ func TestFleetMessaging(t *testing.T) {
 	i = wl.waitFor(t, "person's answer", i, agentSaidAll("kind=reply", "from=user:cli", "yes, ship it"))
 
 	// A person asks an agent and waits for the answer.
-	// The helper answers through a fresh `swyd mcp` process, which can be
+	// The helper answers through a fresh `swk mcp` process, which can be
 	// slow under the race detector on a busy CI runner.
 	wait := 60
 	ar, err := c.Ask(ctx, apiclient.PostMessage{To: "helper", Text: "your name?", WaitSeconds: &wait})

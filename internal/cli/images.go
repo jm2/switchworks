@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	attachpkg "github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/model"
+	attachpkg "github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // imageFlag collects repeated --image FILE flags.

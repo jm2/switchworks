@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // API access. Every authenticated request carries a grant: a scope, and the
@@ -225,7 +225,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ulid.Valid(strings.ToUpper(body.Name)) {
-		// `swyd token rm` takes a name or an id: a name shaped like an id
+		// `swk token rm` takes a name or an id: a name shaped like an id
 		// could revoke the wrong token.
 		writeErr(w, 400, errors.New("a token name cannot look like a token id"))
 		return

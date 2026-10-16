@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/runstatus"
+	"github.com/jm2/switchworks/internal/runstatus"
 )
 
 func TestStatusFromFiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("SWYD_HOME", home)
-	t.Setenv("SWYD_CLI_CONFIG", filepath.Join(home, "cli.json"))
+	t.Setenv("SWK_HOME", home)
+	t.Setenv("SWK_CLI_CONFIG", filepath.Join(home, "cli.json"))
 
 	o := Status()
 	if o.Node.Configured || o.Coordinator.Configured || o.Node.Running || o.WebUI != "" {

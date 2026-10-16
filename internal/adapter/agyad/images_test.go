@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // agy's headless stream-json input documents text blocks only, so images

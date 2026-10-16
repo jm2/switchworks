@@ -6,4 +6,4 @@ Subsets (Latin, weight axis only, WOFF2) of:
 - **JetBrains Mono**, copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono), [OFL 1.1](OFL-JetBrainsMono.txt)
 
 Both are licensed under the SIL Open Font License 1.1, which is separate from
-Switchyard's GPL. They are embedded so the UI loads nothing from the internet.
+Switchworks's GPL. They are embedded so the UI loads nothing from the internet.

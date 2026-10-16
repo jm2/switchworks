@@ -29,10 +29,10 @@
 // reports it; session.registered is emitted again then.
 //
 // Fleet tools (Options.FleetTools, opt-in): agy has no per-run MCP flag, so
-// the node adds a "swyd" entry to the workspace's .agents/mcp_config.json
-// (command and args only; the per-session credentials reach `swyd mcp`
+// the node adds a "swk" entry to the workspace's .agents/mcp_config.json
+// (command and args only; the per-session credentials reach `swk mcp`
 // through the agy process environment) and, unless the session already
-// skips permissions, an "mcp(swyd/*)" allow rule to agy's settings.json.
+// skips permissions, an "mcp(swk/*)" allow rule to agy's settings.json.
 package agyad
 
 import (
@@ -47,11 +47,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // Harness is this adapter's name.
@@ -230,7 +230,7 @@ func (h *handle) env() map[string]string {
 	for k, v := range h.spec.Env {
 		env[k] = v
 	}
-	// agy starts `swyd mcp` from the workspace MCP config; the session's
+	// agy starts `swk mcp` from the workspace MCP config; the session's
 	// credentials reach it through agy's own environment.
 	if h.spec.MCP != nil && h.a.cfg.Options.FleetTools {
 		for k, v := range h.spec.MCP.Env {

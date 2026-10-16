@@ -19,7 +19,7 @@
 //   - "APPROVE": requests command approval and reports the decision
 //   - "SLOW":    stays in progress until turn/interrupt or turn/steer
 //   - "CRASH":   exits the process mid-turn
-//   - "CALL <tool> <json>", or a Switchyard ask: calls MCP tools (mcp.go)
+//   - "CALL <tool> <json>", or a Switchworks ask: calls MCP tools (mcp.go)
 //   - otherwise: replies "echo: <prompt>" in three deltas
 package codextest
 
@@ -37,8 +37,8 @@ import (
 	"time"
 )
 
-const envFlag = "SWYD_FAKE_APPSERVER"
-const envState = "SWYD_FAKE_STATE"
+const envFlag = "SWK_FAKE_APPSERVER"
+const envState = "SWK_FAKE_STATE"
 
 // Env returns environment overrides that make a re-executed test binary act
 // as the fake app-server, persisting thread ids under stateDir so that

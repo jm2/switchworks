@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package pki is Switchyard's small private CA: it issues the coordinator's
+// Package pki is Switchworks's small private CA: it issues the coordinator's
 // server certificate and each node's client certificate, and defines the
 // one-time enrollment token that carries the CA fingerprint so a new node can
 // trust the coordinator before it has the CA.
@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // File names inside a coordinator directory.
@@ -341,7 +341,7 @@ type Token struct {
 	Host        string `json:"h"` // host id the token enrolls
 }
 
-const tokenPrefix = "swyd1."
+const tokenPrefix = "swk1."
 
 // Encode renders the token as a single copy-pasteable string.
 func (t Token) Encode() string {
@@ -354,7 +354,7 @@ func DecodeToken(s string) (Token, error) {
 	var t Token
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, tokenPrefix) {
-		return t, errors.New("not a swyd enrollment token")
+		return t, errors.New("not a swk enrollment token")
 	}
 	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, tokenPrefix))
 	if err != nil {

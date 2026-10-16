@@ -1,5 +1,11 @@
 # Decisions and departures from the design doc
 
+**The name.** The project was called Switchyard (`swyd`) until just before
+v0.1.0. NVIDIA's NeMo Switchyard, a model router that launches Codex and
+Claude Code under a `switchyard` command, sits in the same space, and JBoss
+SwitchYard is an older integration framework, so it became Switchworks
+(`swk`). Nothing had been released, so there is no migration.
+
 **Standard library only.** The build environment could not reach the Go
 module proxy, so the module has zero third-party dependencies. That also fits
 the lean, static-binary goal. Two design choices changed because of it:
@@ -15,7 +21,7 @@ the lean, static-binary goal. Two design choices changed because of it:
   toolchain. `ProtocolVersion` is in the hello so it can evolve.
 
 **Codex types are hand-written, not generated.** The schema bundle is 5.5 MB
-of `oneOf` unions that generators handle poorly. Switchyard declares only the
+of `oneOf` unions that generators handle poorly. Switchworks declares only the
 subset it uses, and a contract test checks every method, notification,
 field and enum value against the committed schema. Upgrading Codex means:
 regenerate the schema into a new directory, bump `codex.SchemaVersion`, and
@@ -29,7 +35,7 @@ See codex-app-server-notes.md for the option of using Codex's own shared daemon 
 to be idle, then becomes a new turn. `steer` goes into the running turn and
 falls back to `queue` when there is none. Messages from
 people are passed through verbatim; messages from anything else get a
-one-line `[switchyard msg=… from=… kind=…]` header.
+one-line `[switchworks msg=… from=… kind=…]` header.
 
 **Events are numbered by the node, deduplicated by the coordinator.** The
 coordinator stores an event only if its seq is above the session's last
@@ -43,16 +49,16 @@ agy" below). Each prompt is a `{"event":"user",...}` line on the stdin of an
 that agy documents that schema. The original one-process-per-turn mode
 (prompt on stdin, then stdin closed) remains as `agy.per_turn`.
 
-**Enrollment.** `swyd coordinator enroll-token <host>` mints a one-time,
+**Enrollment.** `swk coordinator enroll-token <host>` mints a one-time,
 expiring token. The token carries the coordinator's API address and the CA's
-SHA-256 fingerprint, so `swyd node enroll` can trust the coordinator before
+SHA-256 fingerprint, so `swk node enroll` can trust the coordinator before
 it has the CA. The node's certificate CN is its host id; the coordinator
 ignores whatever subject the CSR requested.
 
 **Admin access.** `init` makes one admin bearer token, stored hashed in
 `coordinator.json` and in plain text in the 0600 `cli.json`. Agents can read
 any `cli.json` on their machine, so the owner's other machines get named
-API tokens instead (`swyd token create`), each with one of three scopes:
+API tokens instead (`swk token create`), each with one of three scopes:
 `read`, `operate` and `admin`. Still one owner, so tokens limit what a
 credential can do, not who it is. Tokens live in the coordinator store as a
 SHA-256 hash, like enrollment tokens (they are 256-bit random, so a slow
@@ -83,12 +89,12 @@ limits, one traffic log, and no node-to-node trust.
 
 **Tools over per-thread MCP, not a config file.** Codex accepts
 `config.mcp_servers` on `thread/start` and `thread/resume`, so the node
-injects `swyd mcp` per session with that session's credentials in its env.
+injects `swk mcp` per session with that session's credentials in its env.
 Nothing touches `~/.codex/config.toml`, and a session cannot use another's
 identity. `default_tools_approval_mode = "approve"` is required for the
 tools to run under the `never` approval policy.
 
-**`swyd mcp` is a thin shim.** It speaks MCP on stdio and forwards each call
+**`swk mcp` is a thin shim.** It speaks MCP on stdio and forwards each call
 to the node's loopback API, which forwards it to the coordinator on the
 existing mTLS link. No new listener is exposed off the host, and the shim
 holds no state.
@@ -133,14 +139,14 @@ prompts. The coordinator keeps that activity in memory and rebuilds it from
 the tail of each log at startup, so it is not a second source of state.
 
 **Cookie sign-in next to the bearer token.** Phones should not need the
-token pasted, so `swyd ui-link` mints one-time links (code in the URL
+token pasted, so `swk ui-link` mints one-time links (code in the URL
 fragment), with the scope of the token that minted them. The cookie is HMAC-signed, `HttpOnly`, `SameSite=Strict`, and
 cookie-authenticated writes need a custom header. That is the CSRF defense,
 with no token plumbing in the pages.
 
 **Certificates: install the CA or front it with Tailscale.** The private CA
 stays the default. `http_listen` plus `tailscale serve` gives a publicly
-trusted certificate without Switchyard handling ACME.
+trusted certificate without Switchworks handling ACME.
 
 **Approvals live by the composer.** On a phone the action you need is at
 the bottom, within reach, and the transcript only notes that an approval
@@ -187,8 +193,8 @@ single-shot mode. Usage is cumulative per process, so the baseline resets
 when a process starts.
 
 **agy fleet tools are opt-in and write files.** agy has no per-run MCP
-option. The node merges a credential-free `swyd` entry into the
+option. The node merges a credential-free `swk` entry into the
 workspace's `.agents/mcp_config.json` (never touching other entries or an
-unparsable file) and an `mcp(swyd/*)` allow rule into agy's settings. It is
-off by default because it changes files outside Switchyard's own
+unparsable file) and an `mcp(swk/*)` allow rule into agy's settings. It is
+off by default because it changes files outside Switchworks's own
 directories.

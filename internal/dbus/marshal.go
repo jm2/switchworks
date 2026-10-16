@@ -2,7 +2,7 @@
 
 // Package dbus is a small D-Bus client: enough of the wire protocol to
 // connect to the session bus, call methods, export objects and emit signals.
-// The Linux tray uses it to publish a StatusNotifierItem, so Switchyard keeps
+// The Linux tray uses it to publish a StatusNotifierItem, so Switchworks keeps
 // to the Go standard library.
 //
 // Values are plain Go values. Encoding takes a signature and accepts:

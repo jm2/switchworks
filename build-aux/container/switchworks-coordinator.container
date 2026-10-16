@@ -1,39 +1,39 @@
-# Switchyard coordinator as a rootless Podman Quadlet.
+# Switchworks coordinator as a rootless Podman Quadlet.
 #
 # Install it for the user that runs the coordinator (ideally an account of
 # its own, with no agents):
 #
 #   mkdir -p ~/.config/containers/systemd
-#   cp switchyard-coordinator.container ~/.config/containers/systemd/
+#   cp switchworks-coordinator.container ~/.config/containers/systemd/
 #   systemctl --user daemon-reload
 #
 # Then once, to create the CA and admin token in the volume (list every name
 # and address nodes will dial; the first is the one they use):
 #
-#   podman run --rm -v swyd-coordinator:/data ghcr.io/jm2/switchyard-coordinator:latest \
+#   podman run --rm -v swk-coordinator:/data ghcr.io/jm2/switchworks-coordinator:latest \
 #     coordinator init --host coord.lan,10.0.0.5
 #
 # and start it, keeping it running while you are logged out:
 #
-#   systemctl --user start switchyard-coordinator
+#   systemctl --user start switchworks-coordinator
 #   loginctl enable-linger "$USER"
 #
 # The CLI works inside it (enrollment tokens, scoped tokens, the admin
 # cli.json):
 #
-#   podman exec switchyard-coordinator swyd coordinator enroll-token devbox
-#   podman exec switchyard-coordinator swyd token create devbox --scope operate --cli-config
+#   podman exec switchworks-coordinator swk coordinator enroll-token devbox
+#   podman exec switchworks-coordinator swk token create devbox --scope operate --cli-config
 
 [Unit]
-Description=Switchyard coordinator (container)
+Description=Switchworks coordinator (container)
 Wants=network-online.target
 After=network-online.target
 
 [Container]
-ContainerName=switchyard-coordinator
+ContainerName=switchworks-coordinator
 # Pin a version (or a digest) for production; :latest follows releases.
-Image=ghcr.io/jm2/switchyard-coordinator:latest
-Volume=swyd-coordinator:/data:Z
+Image=ghcr.io/jm2/switchworks-coordinator:latest
+Volume=swk-coordinator:/data:Z
 PublishPort=7480:7480
 PublishPort=7481:7481
 # pasta keeps clients' real addresses, which the per-address connection and
@@ -43,7 +43,7 @@ NoNewPrivileges=true
 DropCapability=all
 ReadOnly=true
 # Exec form: the image has no shell for the string form to run in.
-HealthCmd=["/usr/bin/swyd","coordinator","health"]
+HealthCmd=["/usr/bin/swk","coordinator","health"]
 HealthInterval=30s
 HealthOnFailure=kill
 # Follow releases with `podman auto-update` (and its timer), if you like.

@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/codex"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/codex"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // Images reach Codex as localImage inputs: each image is written to a
@@ -71,14 +71,14 @@ func writePrivate(p string, data []byte) error {
 }
 
 // scratchDir returns the session's directory for image files, creating a
-// private temporary one when the node gave none (swyd dev run).
+// private temporary one when the node gave none (swk dev run).
 func (h *handle) scratchDir() (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.scratch != "" {
 		return h.scratch, os.MkdirAll(h.scratch, 0o700)
 	}
-	d, err := os.MkdirTemp("", "swyd-codex-images-")
+	d, err := os.MkdirTemp("", "swk-codex-images-")
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +136,7 @@ func (h *handle) cleanImages() {
 }
 
 // userItem rewrites a userMessage item's content for the event log:
-// localImage paths Switchyard wrote become the image's metadata, and data:
+// localImage paths Switchworks wrote become the image's metadata, and data:
 // URLs are dropped, so neither scratch paths nor image bytes are stored.
 func (h *handle) userItem(raw json.RawMessage) json.RawMessage {
 	var item map[string]any
@@ -163,7 +163,7 @@ func (h *handle) userItem(raw json.RawMessage) json.RawMessage {
 			}
 		case "image":
 			if u, _ := m["url"].(string); strings.HasPrefix(u, "data:") {
-				m["url"] = "data:(omitted by Switchyard)"
+				m["url"] = "data:(omitted by Switchworks)"
 				changed = true
 			}
 		}

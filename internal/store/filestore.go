@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // FileStore keeps metadata in a JSON snapshot (state.json, rewritten

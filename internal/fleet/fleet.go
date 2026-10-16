@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package fleet defines the fleet operations agents call through `swyd mcp`
+// Package fleet defines the fleet operations agents call through `swk mcp`
 // (and people through the CLI): their arguments and results. The node
 // forwards them to the coordinator, which implements them.
 package fleet
@@ -8,7 +8,7 @@ package fleet
 import (
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // Limits shared by the shim and the coordinator.
@@ -89,7 +89,7 @@ type AskArgs struct {
 	// HoldSeconds, with WaitSeconds 0, says the caller will collect the
 	// reply with fleet_inbox(ticket) within this long; a reply arriving
 	// sooner is held for it instead of being delivered as a new turn.
-	// (swyd mcp uses this to wait in a separate, retriable call.)
+	// (swk mcp uses this to wait in a separate, retriable call.)
 	HoldSeconds int `json:"hold_seconds,omitempty"`
 	// Images and Attachments: as in SendArgs.
 	Images      []string           `json:"images,omitempty"`

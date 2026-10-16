@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Server is a running coordinator.
@@ -688,7 +688,7 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		return model.Session{}, fmt.Errorf("host %q: %w", spec.Host, ErrOffline)
 	}
 	if spec.CwdRoot != "" && !contains(n.hello.Features, wire.FeatureCwdRoot) {
-		return model.Session{}, fmt.Errorf("host %q runs an older swyd that cannot confine sessions spawned by agents; upgrade it", spec.Host)
+		return model.Session{}, fmt.Errorf("host %q runs an older swk that cannot confine sessions spawned by agents; upgrade it", spec.Host)
 	}
 	if !contains(n.hello.Adapters, spec.Harness) {
 		return model.Session{}, fmt.Errorf("host %q has no %s harness (available: %v)", spec.Host, spec.Harness, n.hello.Adapters)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package node is `swyd node`: it runs harness sessions on one workstation,
+// Package node is `swk node`: it runs harness sessions on one workstation,
 // numbers and spools their events, keeps a link to the coordinator, and
 // executes the coordinator's commands.
 //
@@ -29,16 +29,16 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/adapter/agyad"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/harness"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/ulid"
-	"github.com/jm2/switchyard/internal/version"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/adapter/agyad"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/harness"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/ulid"
+	"github.com/jm2/switchworks/internal/version"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Config is node.json.
@@ -73,7 +73,7 @@ type Config struct {
 	// agents per session; agy through its workspace config, opt-in).
 	MCP struct {
 		Disabled bool     `json:"disabled,omitempty"`
-		Command  string   `json:"command,omitempty"` // default: this swyd binary
+		Command  string   `json:"command,omitempty"` // default: this swk binary
 		Args     []string `json:"args,omitempty"`    // default: ["mcp"]
 	} `json:"mcp"`
 }
@@ -164,7 +164,7 @@ type Node struct {
 	closing chan struct{}
 	wg      sync.WaitGroup
 
-	status *runstatus.Reporter // status.json for `swyd service status` and the tray
+	status *runstatus.Reporter // status.json for `swk service status` and the tray
 }
 
 // New loads node state from dir and resumes live sessions.
@@ -442,7 +442,7 @@ func boundedPayload(kind string, payload any) json.RawMessage {
 				c--
 			}
 			t := d
-			t.Diff = d.Diff[:c] + fmt.Sprintf("\n… (diff truncated by Switchyard: %d bytes in all)\n", full)
+			t.Diff = d.Diff[:c] + fmt.Sprintf("\n… (diff truncated by Switchworks: %d bytes in all)\n", full)
 			if tb := model.Marshal(t); len(tb) <= maxEventPayload {
 				return tb
 			}
@@ -685,7 +685,7 @@ func (s *session) handle() (adapter.Handle, error) {
 	return s.h, nil
 }
 
-// quoteHeaders marks lines in a relayed message that look like Switchyard's
+// quoteHeaders marks lines in a relayed message that look like Switchworks's
 // own header, so one agent cannot pass off text as coming from a person or
 // another sender. Carriage returns count as line breaks, and leading spaces,
 // invisible characters and case are ignored when matching.
@@ -989,7 +989,7 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 func (n *Node) Close() error {
 	close(n.closing)
 	// Report "stopped" now, not after the teardown below: the process is
-	// going away either way, and `swyd service stop` waits on the process.
+	// going away either way, and `swk service stop` waits on the process.
 	n.status.Stop()
 	if n.local != nil {
 		n.local.close()

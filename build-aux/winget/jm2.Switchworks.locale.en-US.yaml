@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# Template: build-aux/winget/render.sh fills in @VERSION@.
+PackageIdentifier: jm2.Switchworks
+PackageVersion: "@VERSION@"
+PackageLocale: en-US
+Publisher: Switchworks Contributors
+PublisherUrl: https://github.com/jm2/switchworks
+PublisherSupportUrl: https://github.com/jm2/switchworks/issues
+PackageName: Switchworks
+PackageUrl: https://github.com/jm2/switchworks
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/jm2/switchworks/blob/main/LICENSE
+ShortDescription: Control plane for coding agents across your machines.
+Description: |-
+  Switchworks shows every coding-agent session (Codex, Goose and other ACP agents) on every
+  host in one place, from a browser, a phone or the swk command line, and lets agents on
+  different machines message each other. This package installs swk and the Switchworks
+  tray icon for the current user; the node runs at sign-in as you, never as a service.
+Moniker: switchworks
+Tags:
+  - agents
+  - codex
+  - goose
+  - developer-tools
+  - cli
+ReleaseNotesUrl: https://github.com/jm2/switchworks/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package devrun implements `swyd dev run`: drive one harness session
+// Package devrun implements `swk dev run`: drive one harness session
 // directly from the terminal, without a node or coordinator. It is the
 // first smoke test on each host, and with --record it captures the raw protocol
 // stream for building fixtures.
@@ -21,14 +21,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/adapter/agyad"
-	"github.com/jm2/switchyard/internal/harness"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/render"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/adapter/agyad"
+	"github.com/jm2/switchworks/internal/harness"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/render"
 )
 
-// Main runs `swyd dev run [flags] <prompt>` and returns the exit code.
+// Main runs `swk dev run [flags] <prompt>` and returns the exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -50,7 +50,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("v", false, "verbose: show every event")
 	logs := fs.Bool("logs", false, "show harness stderr")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: swyd dev run [flags] <prompt>\n\nRuns one turn directly against a harness and prints the stream.\n\n")
+		fmt.Fprintf(stderr, "usage: swk dev run [flags] <prompt>\n\nRuns one turn directly against a harness and prints the stream.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -84,7 +84,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
 		Logf: func(f string, a ...any) {
 			if *verbose {
-				fmt.Fprintf(stderr, "swyd: "+f+"\n", a...)
+				fmt.Fprintf(stderr, "swk: "+f+"\n", a...)
 			}
 		}}
 	if *codexHome != "" {
@@ -137,12 +137,12 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		case <-sigc:
 			interrupts++
 			if interrupts > 1 {
-				fmt.Fprintln(stderr, "\nswyd: second interrupt, exiting")
+				fmt.Fprintln(stderr, "\nswk: second interrupt, exiting")
 				return 130
 			}
-			fmt.Fprintln(stderr, "\nswyd: interrupting turn (Ctrl-C again to quit)")
+			fmt.Fprintln(stderr, "\nswk: interrupting turn (Ctrl-C again to quit)")
 			if err := sess.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
-				fmt.Fprintf(stderr, "swyd: interrupt: %v\n", err)
+				fmt.Fprintf(stderr, "swk: interrupt: %v\n", err)
 			}
 		case e := <-events:
 			payload, _ := json.Marshal(e.Payload)
@@ -223,7 +223,7 @@ func newApprover(h adapter.Handle, auto string, stderr io.Writer) *approver {
 func (a *approver) handle(ctx context.Context, req model.ApprovalRequested) {
 	decide := func(d string) {
 		if err := a.h.Resolve(ctx, req.ApprovalID, d); err != nil {
-			fmt.Fprintf(a.stderr, "swyd: resolve: %v\n", err)
+			fmt.Fprintf(a.stderr, "swk: resolve: %v\n", err)
 		}
 	}
 	if a.auto != "" {
@@ -246,7 +246,7 @@ func (a *approver) handle(ctx context.Context, req model.ApprovalRequested) {
 			fmt.Fprintf(a.stderr, "decision [%s]: ", strings.Join(simple, "/"))
 			line, err := a.in.ReadString('\n')
 			if err != nil {
-				fmt.Fprintln(a.stderr, "\nswyd: stdin closed; cancelling")
+				fmt.Fprintln(a.stderr, "\nswk: stdin closed; cancelling")
 				decide("cancel")
 				return
 			}

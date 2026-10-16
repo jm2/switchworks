@@ -4,7 +4,7 @@
 // so they can be read through the API without downloading the job log.
 // Test packages import it for its side effect:
 //
-//	import _ "github.com/jm2/switchyard/internal/ciannotate"
+//	import _ "github.com/jm2/switchworks/internal/ciannotate"
 //
 // It does nothing outside GitHub Actions. Under Actions it registers a
 // problem matcher (build-aux/ci/go-test-matcher.json) by printing the
@@ -19,7 +19,7 @@ import (
 	"path/filepath"
 )
 
-const doneEnv = "SWYD_CI_MATCHER"
+const doneEnv = "SWK_CI_MATCHER"
 
 func init() {
 	if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv(doneEnv) != "" {

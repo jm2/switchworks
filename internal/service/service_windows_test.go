@@ -12,8 +12,8 @@ import (
 )
 
 func TestTaskXML(t *testing.T) {
-	s := taskXML("node", "S-1-5-21-1-2-3-1001", `C:\Users\dev\AppData\Local\Programs\Switchyard\swydw.exe`,
-		`node run --log-file "C:\Users\dev\AppData\Roaming\swyd\node\logs\node.log"`, `C:\Users\dev`)
+	s := taskXML("node", "S-1-5-21-1-2-3-1001", `C:\Users\dev\AppData\Local\Programs\Switchworks\swkw.exe`,
+		`node run --log-file "C:\Users\dev\AppData\Roaming\swk\node\logs\node.log"`, `C:\Users\dev`)
 	// The declaration says UTF-16; parse the body to prove it is well formed.
 	body := s[strings.Index(s, "?>")+2:]
 	var task struct {
@@ -30,7 +30,7 @@ func TestTaskXML(t *testing.T) {
 	if task.Principal.LogonType != "InteractiveToken" || task.Principal.RunLevel != "LeastPrivilege" || task.Principal.UserID != "S-1-5-21-1-2-3-1001" {
 		t.Fatalf("principal = %+v", task.Principal)
 	}
-	if !strings.HasSuffix(task.Command, `swydw.exe`) {
+	if !strings.HasSuffix(task.Command, `swkw.exe`) {
 		t.Fatalf("command = %q", task.Command)
 	}
 	enc := utf16File(s)
@@ -48,7 +48,7 @@ func TestTaskXML(t *testing.T) {
 
 func TestUnitNameCarriesSID(t *testing.T) {
 	n := unitName(Node)
-	if !strings.HasPrefix(n, "Switchyard node (") || !strings.Contains(n, ", S-1-") {
+	if !strings.HasPrefix(n, "Switchworks node (") || !strings.Contains(n, ", S-1-") {
 		t.Fatalf("task name %q lacks the SID", n)
 	}
 	if legacyUnitName(Node) == n {
@@ -57,7 +57,7 @@ func TestUnitNameCarriesSID(t *testing.T) {
 }
 
 func TestCheckExecutableRejectsPercent(t *testing.T) {
-	if err := checkExecutable(`C:\Users\dev\100%\swyd.exe`); err == nil {
+	if err := checkExecutable(`C:\Users\dev\100%\swk.exe`); err == nil {
 		t.Fatal("a path with % was accepted")
 	}
 }

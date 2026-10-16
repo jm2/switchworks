@@ -18,7 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // Limits. Base64 makes a message's images about 13.4 MiB on the wire, well
@@ -30,7 +30,7 @@ const (
 	maxNameLen    = 100
 )
 
-// Allowed lists the image types Switchyard carries.
+// Allowed lists the image types Switchworks carries.
 var Allowed = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 // Sniff returns the image type of b from its magic number, or "" when b is

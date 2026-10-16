@@ -13,4 +13,4 @@ They are redistributed unmodified, as reference data for the protocol contract
 test in `internal/codex/contract_test.go`. Recorded protocol traffic in
 `internal/codex/testdata/` is Codex output too, and the same notice applies.
 
-The rest of Switchyard is licensed under GPL-3.0-or-later (see `/LICENSE`).
+The rest of Switchworks is licensed under GPL-3.0-or-later (see `/LICENSE`).

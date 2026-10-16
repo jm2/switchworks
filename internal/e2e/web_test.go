@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // TestFleetStreamActivity checks what the web UI's fleet view is built
