@@ -51,11 +51,11 @@ jobs:
         run: make cross VERSION="$GITHUB_REF_NAME"
       - name: Check the version is stamped into the binaries
         run: |
-          for b in dist/swyd-linux-amd64 dist/swyd-tray-linux-amd64; do
+          for b in dist/swk-linux-amd64 dist/swk-tray-linux-amd64; do
             out=$("$b" version)
             echo "$out"
             case "$out" in
-              "swyd $GITHUB_REF_NAME "*|"swyd-tray $GITHUB_REF_NAME "*) ;;
+              "swk $GITHUB_REF_NAME "*|"swk-tray $GITHUB_REF_NAME "*) ;;
               *) echo "::error::version was not stamped by -ldflags -X"; exit 1 ;;
             esac
           done
@@ -64,20 +64,20 @@ jobs:
           set -euo pipefail
           mkdir -p release
           for target in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
-            name="swyd-${GITHUB_REF_NAME}-${target}"
+            name="swk-${GITHUB_REF_NAME}-${target}"
             stage="stage/$name"
             mkdir -p "$stage"
             case "$target" in
               windows-*)
-                cp "dist/swyd-$target.exe" "$stage/swyd.exe"
-                cp "dist/swydw-$target.exe" "$stage/swydw.exe"
-                cp "dist/swyd-tray-$target.exe" "$stage/swyd-tray.exe"
+                cp "dist/swk-$target.exe" "$stage/swk.exe"
+                cp "dist/swkw-$target.exe" "$stage/swkw.exe"
+                cp "dist/swk-tray-$target.exe" "$stage/swk-tray.exe"
                 ;;
               linux-*)
-                cp "dist/swyd-$target" "$stage/swyd"
-                cp "dist/swyd-tray-$target" "$stage/swyd-tray"
+                cp "dist/swk-$target" "$stage/swk"
+                cp "dist/swk-tray-$target" "$stage/swk-tray"
                 ;;
-              *) cp "dist/swyd-$target" "$stage/swyd" ;;
+              *) cp "dist/swk-$target" "$stage/swk" ;;
             esac
             cp LICENSE README.md "$stage/"
             case "$target" in
@@ -86,22 +86,22 @@ jobs:
             esac
           done
       - name: Add the coordinator's Quadlet unit
-        run: cp build-aux/container/switchyard-coordinator.container release/
+        run: cp build-aux/container/switchworks-coordinator.container release/
       - name: Build .deb packages
         run: |
           set -euo pipefail
           for arch in amd64 arm64; do
             make deb ARCH="$arch" VERSION="$GITHUB_REF_NAME"
-            cp "dist/switchyard-$arch.deb" release/
+            cp "dist/switchworks-$arch.deb" release/
           done
       - name: Stage binaries for the installer and app jobs
         run: |
           set -euo pipefail
           mkdir -p bin/windows-amd64 bin/darwin-arm64
-          cp dist/swyd-windows-amd64.exe bin/windows-amd64/swyd.exe
-          cp dist/swydw-windows-amd64.exe bin/windows-amd64/swydw.exe
-          cp dist/swyd-tray-windows-amd64.exe bin/windows-amd64/swyd-tray.exe
-          cp dist/swyd-darwin-arm64 bin/darwin-arm64/swyd
+          cp dist/swk-windows-amd64.exe bin/windows-amd64/swk.exe
+          cp dist/swkw-windows-amd64.exe bin/windows-amd64/swkw.exe
+          cp dist/swk-tray-windows-amd64.exe bin/windows-amd64/swk-tray.exe
+          cp dist/swk-darwin-arm64 bin/darwin-arm64/swk
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-build
@@ -151,20 +151,20 @@ jobs:
           rpmver=${VERSION//-/\~}
           top="$PWD/rpmbuild"
           mkdir -p "$top/SOURCES" "$top/SPECS"
-          git archive --format=tar.gz --prefix="switchyard-$rpmver/" -o "$top/SOURCES/v$rpmver.tar.gz" HEAD
-          sed "s/^Version:.*/Version:        $rpmver/" build-aux/rpm/switchyard.spec > "$top/SPECS/switchyard.spec"
-          # swyd_tag stamps the binaries with the real tag (v0.2.0-rc.1, not v0.2.0~rc.1).
-          rpmbuild --define "_topdir $top" --define "swyd_tag $GITHUB_REF_NAME" -bb "$top/SPECS/switchyard.spec"
+          git archive --format=tar.gz --prefix="switchworks-$rpmver/" -o "$top/SOURCES/v$rpmver.tar.gz" HEAD
+          sed "s/^Version:.*/Version:        $rpmver/" build-aux/rpm/switchworks.spec > "$top/SPECS/switchworks.spec"
+          # swk_tag stamps the binaries with the real tag (v0.2.0-rc.1, not v0.2.0~rc.1).
+          rpmbuild --define "_topdir $top" --define "swk_tag $GITHUB_REF_NAME" -bb "$top/SPECS/switchworks.spec"
           mkdir -p out
-          cp "$top"/RPMS/*/switchyard-*.rpm "out/switchyard-$ARCH.rpm"
-          rpm -qip "out/switchyard-$ARCH.rpm"
-          rpm -qlp "out/switchyard-$ARCH.rpm"
+          cp "$top"/RPMS/*/switchworks-*.rpm "out/switchworks-$ARCH.rpm"
+          rpm -qip "out/switchworks-$ARCH.rpm"
+          rpm -qlp "out/switchworks-$ARCH.rpm"
           # No scriptlets: nothing is enabled or started at install.
-          test -z "$(rpm -qp --scripts "out/switchyard-$ARCH.rpm")"
+          test -z "$(rpm -qp --scripts "out/switchworks-$ARCH.rpm")"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm-${{ matrix.arch }}
-          path: out/switchyard-${{ matrix.arch }}.rpm
+          path: out/switchworks-${{ matrix.arch }}.rpm
           if-no-files-found: error
 
   arch:
@@ -187,22 +187,22 @@ jobs:
           set -euo pipefail
           # makepkg refuses to run as root.
           useradd -m builder
-          cp -r . /home/builder/switchyard
-          cp build-aux/arch/PKGBUILD /home/builder/switchyard/PKGBUILD
-          chown -R builder:builder /home/builder/switchyard
-          su builder -c "cd /home/builder/switchyard && SWYD_VERSION='$GITHUB_REF_NAME' makepkg -f --noconfirm"
-          pkg=$(su builder -c "cd /home/builder/switchyard && SWYD_VERSION='$GITHUB_REF_NAME' makepkg --packagelist")
+          cp -r . /home/builder/switchworks
+          cp build-aux/arch/PKGBUILD /home/builder/switchworks/PKGBUILD
+          chown -R builder:builder /home/builder/switchworks
+          su builder -c "cd /home/builder/switchworks && SWK_VERSION='$GITHUB_REF_NAME' makepkg -f --noconfirm"
+          pkg=$(su builder -c "cd /home/builder/switchworks && SWK_VERSION='$GITHUB_REF_NAME' makepkg --packagelist")
           if [[ -z "$pkg" || "$pkg" == *$'\n'* || ! -f "$pkg" ]]; then
             echo "Expected exactly one built package; makepkg lists: $pkg" >&2
             exit 1
           fi
           mkdir -p out
-          cp "$pkg" out/switchyard-x86_64.pkg.tar.zst
-          bsdtar -tf out/switchyard-x86_64.pkg.tar.zst
+          cp "$pkg" out/switchworks-x86_64.pkg.tar.zst
+          bsdtar -tf out/switchworks-x86_64.pkg.tar.zst
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arch-x86_64
-          path: out/switchyard-x86_64.pkg.tar.zst
+          path: out/switchworks-x86_64.pkg.tar.zst
           if-no-files-found: error
 
   windows:
@@ -234,19 +234,19 @@ jobs:
           NUMERIC: ${{ needs.build.outputs.numeric }}
         run: |
           iscc /Qp "/DAppVersion=$env:VERSION" "/DAppNumericVersion=$env:NUMERIC" `
-            "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchyard.iss
+            "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install, check and uninstall it (per user, no elevation)
         shell: pwsh
         run: |
-          $setup = Start-Process out\switchyard-windows-x86_64-setup.exe -Wait -PassThru `
+          $setup = Start-Process out\switchworks-windows-x86_64-setup.exe -Wait -PassThru `
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
-          $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchyard'
-          foreach ($f in 'swyd.exe', 'swydw.exe', 'swyd-tray.exe') {
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchworks'
+          foreach ($f in 'swk.exe', 'swkw.exe', 'swk-tray.exe') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "$f was not installed in $app" }
           }
-          & (Join-Path $app 'swyd.exe') version
+          & (Join-Path $app 'swk.exe') version
           $un = Start-Process (Join-Path $app 'unins000.exe') -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
           if ($un.ExitCode -ne 0) { throw "uninstall exited $($un.ExitCode)" }
       - name: Render winget manifests
@@ -254,12 +254,12 @@ jobs:
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          sha=$(sha256sum out/switchyard-windows-x86_64-setup.exe | cut -d' ' -f1)
+          sha=$(sha256sum out/switchworks-windows-x86_64-setup.exe | cut -d' ' -f1)
           build-aux/winget/render.sh "$VERSION" "$sha" winget
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-x86_64
-          path: out/switchyard-windows-x86_64-setup.exe
+          path: out/switchworks-windows-x86_64-setup.exe
           if-no-files-found: error
       # Not a release asset: submit these to microsoft/winget-pkgs by hand.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -283,14 +283,14 @@ jobs:
         with:
           name: bin-darwin-arm64
           path: dist/darwin-arm64
-      - name: Build Switchyard.app and the .dmg
+      - name: Build Switchworks.app and the .dmg
         run: |
-          chmod +x dist/darwin-arm64/swyd
-          bash build-aux/macos/build-dmg.sh "$GITHUB_REF_NAME" dist/darwin-arm64/swyd out
+          chmod +x dist/darwin-arm64/swk
+          bash build-aux/macos/build-dmg.sh "$GITHUB_REF_NAME" dist/darwin-arm64/swk out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-aarch64
-          path: out/switchyard-macos-aarch64.dmg
+          path: out/switchworks-macos-aarch64.dmg
           if-no-files-found: error
 
   checksums:
@@ -310,18 +310,18 @@ jobs:
         run: |
           set -euo pipefail
           expected=(
-            "swyd-${GITHUB_REF_NAME}-linux-amd64.tar.gz"
-            "swyd-${GITHUB_REF_NAME}-linux-arm64.tar.gz"
-            "swyd-${GITHUB_REF_NAME}-darwin-arm64.tar.gz"
-            "swyd-${GITHUB_REF_NAME}-windows-amd64.zip"
-            switchyard-amd64.deb
-            switchyard-arm64.deb
-            switchyard-x86_64.rpm
-            switchyard-aarch64.rpm
-            switchyard-x86_64.pkg.tar.zst
-            switchyard-windows-x86_64-setup.exe
-            switchyard-macos-aarch64.dmg
-            switchyard-coordinator.container
+            "swk-${GITHUB_REF_NAME}-linux-amd64.tar.gz"
+            "swk-${GITHUB_REF_NAME}-linux-arm64.tar.gz"
+            "swk-${GITHUB_REF_NAME}-darwin-arm64.tar.gz"
+            "swk-${GITHUB_REF_NAME}-windows-amd64.zip"
+            switchworks-amd64.deb
+            switchworks-arm64.deb
+            switchworks-x86_64.rpm
+            switchworks-aarch64.rpm
+            switchworks-x86_64.pkg.tar.zst
+            switchworks-windows-x86_64-setup.exe
+            switchworks-macos-aarch64.dmg
+            switchworks-coordinator.container
           )
           mkdir release
           for f in "${expected[@]}"; do
@@ -367,8 +367,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           for arch in amd64 arm64; do
-            tar -xzf "artifacts/swyd-${GITHUB_REF_NAME}-linux-$arch.tar.gz" -C artifacts
-            cp "artifacts/swyd-${GITHUB_REF_NAME}-linux-$arch/swyd" "dist/swyd-linux-$arch"
+            tar -xzf "artifacts/swk-${GITHUB_REF_NAME}-linux-$arch.tar.gz" -C artifacts
+            cp "artifacts/swk-${GITHUB_REF_NAME}-linux-$arch/swk" "dist/swk-linux-$arch"
           done
       - name: Build and push
         id: push
@@ -377,11 +377,11 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/switchyard-coordinator"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/switchworks-coordinator"
           tags=(-t "$image:$VERSION")
           case "$GITHUB_REF_NAME" in *-*) ;; *) tags+=(-t "$image:latest") ;; esac
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx create --use --name swyd >/dev/null
+          docker buildx create --use --name swk >/dev/null
           docker buildx build --platform linux/amd64,linux/arm64 \
             -f build-aux/container/Containerfile --build-arg VERSION="$VERSION" \
             "${tags[@]}" --provenance=false --push --metadata-file meta.json .
