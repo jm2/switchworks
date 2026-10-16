@@ -42,7 +42,8 @@ Network=pasta
 NoNewPrivileges=true
 DropCapability=all
 ReadOnly=true
-HealthCmd=/usr/bin/swyd coordinator health
+# Exec form: the image has no shell for the string form to run in.
+HealthCmd=["/usr/bin/swyd","coordinator","health"]
 HealthInterval=30s
 HealthOnFailure=kill
 # Follow releases with `podman auto-update` (and its timer), if you like.
