@@ -8,12 +8,12 @@
 # tasks), checks they run as this user and connect, restarts and stops
 # them, and uninstalls them.
 #
-#   build-aux/ci/service-smoke.sh <path to swyd>
+#   build-aux/ci/service-smoke.sh <path to swk>
 #
 # Failures are printed as GitHub Actions error annotations.
 set -euo pipefail
 
-swyd=$1
+swk=$1
 user=$(id -un)
 host=ci-smoke
 
@@ -29,17 +29,17 @@ dump_logs() {
   local token
   token=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
   echo "::stop-commands::$token"
-  "$swyd" service status || true
+  "$swk" service status || true
   case $(uname -s) in
     Linux)
-      for u in swyd-coordinator swyd-node; do
+      for u in swk-coordinator swk-node; do
         echo "--- journal: $u"
         journalctl --user -u "$u" --no-pager -n 40
       done ;;
   esac
   local dirs=() d
-  for d in "$("$swyd" service status --json node | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')" \
-           "$("$swyd" service status --json coordinator | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')"; do
+  for d in "$("$swk" service status --json node | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')" \
+           "$("$swk" service status --json coordinator | sed -n 's/.*"log_dir": "\(.*\)".*/\1/p')"; do
     d=${d//\\\\/\\}
     [ -d "$d" ] && dirs+=("$d")
   done
@@ -72,9 +72,9 @@ wait_for() {
   fail "timed out after ${secs}s waiting for: $what"
 }
 
-status_has() { "$swyd" service status --json "$1" | tr -d ' \r\n' | grep -q "$2"; }
+status_has() { "$swk" service status --json "$1" | tr -d ' \r\n' | grep -q "$2"; }
 
-pid_of() { "$swyd" service status --json "$1" | tr -d ' \r\n' | sed -n 's/.*"pid":\([0-9]*\).*/\1/p'; }
+pid_of() { "$swk" service status --json "$1" | tr -d ' \r\n' | sed -n 's/.*"pid":\([0-9]*\).*/\1/p'; }
 
 # The process must run as this user: never root, SYSTEM or elevated.
 check_owner() {
@@ -104,32 +104,32 @@ if [ "$(uname -s)" = Linux ]; then
   wait_for 30 "systemctl --user" systemctl --user is-system-running --wait
 fi
 
-"$swyd" version
-"$swyd" coordinator init --host 127.0.0.1 || fail "coordinator init"
-"$swyd" service install coordinator || fail "service install coordinator"
+"$swk" version
+"$swk" coordinator init --host 127.0.0.1 || fail "coordinator init"
+"$swk" service install coordinator || fail "service install coordinator"
 # "running" can come from the service manager before the process has
 # written its status file; wait for the file (it carries the pid).
 wait_for 60 "the coordinator to run" status_has coordinator '"pid":[1-9]'
 check_owner coordinator
 
-token=$("$swyd" coordinator enroll-token "$host") || fail "enroll-token"
-"$swyd" node enroll "$token" || fail "node enroll"
-"$swyd" service install node || fail "service install node"
+token=$("$swk" coordinator enroll-token "$host") || fail "enroll-token"
+"$swk" node enroll "$token" || fail "node enroll"
+"$swk" service install node || fail "service install node"
 wait_for 90 "the node to connect" status_has node '"connected":true'
 check_owner node
-wait_for 30 "the coordinator to list the host as online" sh -c "\"$swyd\" hosts | grep -E '^$host +online'"
+wait_for 30 "the coordinator to list the host as online" sh -c "\"$swk\" hosts | grep -E '^$host +online'"
 
-"$swyd" service restart node || fail "service restart node"
+"$swk" service restart node || fail "service restart node"
 wait_for 90 "the node to reconnect after a restart" status_has node '"connected":true'
 
-"$swyd" service stop node || fail "service stop node"
-wait_for 30 "the node to stop" sh -c "! \"$swyd\" service status --json node | tr -d ' \r\n' | grep -q '\"running\":true'"
-"$swyd" service start node || fail "service start node"
+"$swk" service stop node || fail "service stop node"
+wait_for 30 "the node to stop" sh -c "! \"$swk\" service status --json node | tr -d ' \r\n' | grep -q '\"running\":true'"
+"$swk" service start node || fail "service start node"
 wait_for 90 "the node to connect after a start" status_has node '"connected":true'
 
-"$swyd" service uninstall node || fail "service uninstall node"
-"$swyd" service uninstall coordinator || fail "service uninstall coordinator"
+"$swk" service uninstall node || fail "service uninstall node"
+"$swk" service uninstall coordinator || fail "service uninstall coordinator"
 status_has node '"installed":false' || fail "the node service is still installed"
 status_has coordinator '"installed":false' || fail "the coordinator service is still installed"
-wait_for 30 "both to stop" sh -c "! \"$swyd\" service status --json | tr -d ' \r\n' | grep -q '\"running\":true'"
+wait_for 30 "both to stop" sh -c "! \"$swk\" service status --json | tr -d ' \r\n' | grep -q '\"running\":true'"
 echo "service smoke test passed"

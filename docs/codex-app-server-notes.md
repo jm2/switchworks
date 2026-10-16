@@ -1,4 +1,4 @@
-# Codex app-server: the subset Switchyard uses
+# Codex app-server: the subset Switchworks uses
 
 Source of truth: `schema/codex/0.160.0/`, generated with
 `codex app-server generate-json-schema --experimental`, plus recorded
@@ -15,7 +15,7 @@ is not used.
 
 ## Handshake
 
-1. `initialize` `{clientInfo: {name: "switchyard", title, version}, capabilities: {experimentalApi: true}}`
+1. `initialize` `{clientInfo: {name: "switchworks", title, version}, capabilities: {experimentalApi: true}}`
    returns `{userAgent, codexHome, platformFamily, platformOs}`.
 2. Notification `initialized` (no params).
 
@@ -34,7 +34,7 @@ is not used.
 
 ## Notifications mapped to events
 
-| Codex | Switchyard event |
+| Codex | Switchworks event |
 | --- | --- |
 | `thread/status/changed` (`idle`, `active[activeFlags]`, `systemError`, `notLoaded`) | `session.status` (`waitingOnApproval` becomes `waiting_approval`) |
 | `thread/closed` | `session.status` gone |
@@ -56,7 +56,7 @@ Both are answered with `{decision}`, one of `accept`, `acceptForSession`,
 All other server requests (`item/tool/requestUserInput`,
 `mcpServer/elicitation/request`, `item/permissions/requestApproval`,
 `item/tool/call`, auth refresh, attestation, the legacy v1 approvals) are
-rejected with `-32601`, so the turn never hangs waiting on Switchyard.
+rejected with `-32601`, so the turn never hangs waiting on Switchworks.
 
 ## Experimental surface in use
 
@@ -75,7 +75,7 @@ Observed with Codex 0.160.0 on Linux; the raw traffic is in
 - **Approval prompts declare their decisions.** With the experimental API,
   `item/commandExecution/requestApproval` carries `availableDecisions`. A
   plain command may offer `accept`, `acceptWithExecpolicyAmendment` and
-  `cancel` with no `decline`. Switchyard shows that list and rejects other
+  `cancel` with no `decline`. Switchworks shows that list and rejects other
   decisions. The schema must be generated with `--experimental` to include
   this field.
 - Requests with no parameters must still send `"params": {}`.
@@ -84,7 +84,7 @@ Observed with Codex 0.160.0 on Linux; the raw traffic is in
   client must not treat the response's `inProgress` turn as active without
   checking.
 - Every notification carries a top-level `emittedAtMs`.
-- `thread/queue/*` methods exist (a server-side message queue); Switchyard
+- `thread/queue/*` methods exist (a server-side message queue); Switchworks
   keeps its own queue on the node.
 
 ## Codex's shared app-server daemon
@@ -101,7 +101,7 @@ long-lived daemon per `CODEX_HOME`:
 - the daemon keeps running after the TUI exits, and per-thread writer locks
   live in `$CODEX_HOME/thread-writer-locks/`.
 
-Switchyard runs its own private `codex app-server` per node instead. Pointing
+Switchworks runs its own private `codex app-server` per node instead. Pointing
 nodes at the shared daemon would let them observe sessions started in the
-TUI (and make Switchyard's sessions visible to `codex resume`), at the cost
+TUI (and make Switchworks's sessions visible to `codex resume`), at the cost
 of a self-updating daemon whose protocol can change under a running node.

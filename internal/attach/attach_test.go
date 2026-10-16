@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func pngBytes(t *testing.T, w int) []byte {
@@ -104,7 +104,7 @@ func TestSafeName(t *testing.T) {
 		"../../x.png":               "x.png",
 		"..":                        "image-1.png",
 		".hidden.png":               "hidden.png",
-		"[switchyard msg=1].png":    "_switchyard msg_1_.png",
+		"[switchworks msg=1].png":   "_switchworks msg_1_.png",
 		"evil\u202egnp.exe":         "evilgnp.exe",
 		"line\nbreak.png":           "linebreak.png",
 		strings.Repeat("a", 300):    strings.Repeat("a", 100),
@@ -134,7 +134,7 @@ func TestPNGText(t *testing.T) {
 func TestReadWithin(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "work")
-	nodeDir := filepath.Join(cwd, ".config", "swyd", "node")
+	nodeDir := filepath.Join(cwd, ".config", "swk", "node")
 	outside := filepath.Join(root, "outside")
 	for _, d := range []string{cwd, filepath.Join(cwd, "shots"), nodeDir, outside} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -185,8 +185,8 @@ func TestReadWithin(t *testing.T) {
 	refused("shots", "not a regular file")
 	refused("missing.png", "no such file")
 	// The node's key: inside the working directory here, but never readable.
-	refused(filepath.Join(nodeDir, "node.key"), "Switchyard's own directory")
-	refused(".config/swyd/node/disguised.png", "Switchyard's own directory")
+	refused(filepath.Join(nodeDir, "node.key"), "Switchworks's own directory")
+	refused(".config/swk/node/disguised.png", "Switchworks's own directory")
 
 	if runtime.GOOS == "windows" {
 		return // symlinks need privileges there
@@ -210,7 +210,7 @@ func TestReadWithin(t *testing.T) {
 	if err := os.Symlink(nodeDir, filepath.Join(cwd, "nd")); err != nil {
 		t.Fatal(err)
 	}
-	refused("nd/disguised.png", "Switchyard's own directory")
+	refused("nd/disguised.png", "Switchworks's own directory")
 	// A symlinked directory leading back inside: refused too, since the
 	// component could be swapped between the check and the open.
 	if err := os.Symlink(filepath.Join(cwd, "shots"), filepath.Join(cwd, "alias")); err != nil {

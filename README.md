@@ -1,22 +1,22 @@
-<img src="internal/web/assets/icon.svg" width="96" alt="Switchyard icon">
+<img src="internal/web/assets/icon.svg" width="96" alt="Switchworks icon">
 
-# Switchyard
+# Switchworks
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![CI](https://github.com/jm2/switchyard/actions/workflows/ci.yml/badge.svg)](https://github.com/jm2/switchyard/actions/workflows/ci.yml)
+[![CI](https://github.com/jm2/switchworks/actions/workflows/ci.yml/badge.svg)](https://github.com/jm2/switchworks/actions/workflows/ci.yml)
 
 A self-hosted **control plane for coding agents** spread across several of your machines,
 written in dependency-free **Go**.
 
-Switchyard shows every agent session on every host in one place, from a browser, your phone or
-the `swyd` command line. Start new sessions on any machine, answer their approval prompts, and
+Switchworks shows every agent session on every host in one place, from a browser, your phone or
+the `swk` command line. Start new sessions on any machine, answer their approval prompts, and
 message them while they work. Agents get fleet tools too, so one agent can ask another on a
-different machine for help. Switchyard manages harnesses; it is not one. The agent work is done
+different machine for help. Switchworks manages harnesses; it is not one. The agent work is done
 by the tools you already use, under your own sign-ins.
 
 ![A session waiting for approval](docs/img/web-ui.png)
 
-> **Pre-release.** Switchyard is tested on Linux; the macOS and Windows builds, and the
+> **Pre-release.** Switchworks is tested on Linux; the macOS and Windows builds, and the
 > packages for them, have had little real use. Per-area status and how each part was verified
 > are in [`docs/status.md`](docs/status.md).
 
@@ -44,18 +44,18 @@ by the tools you already use, under your own sign-ins.
 | Linux | ✅ |
 | macOS, Windows | 🚧 Built and packaged; little real use yet |
 | Packages: `.deb`, `.rpm`, Arch, Windows installer, macOS `.dmg` | 🚧 Built by the release workflow; little real use yet |
-| Runs as your user at login: `swyd service install` (systemd user unit, LaunchAgent, logon task) | ✅ Linux; 🚧 macOS, Windows |
+| Runs as your user at login: `swk service install` (systemd user unit, LaunchAgent, logon task) | ✅ Linux; 🚧 macOS, Windows |
 | Tray icon (Linux, Windows) and menu-bar app (macOS) | 🚧 Status, web UI, start/stop/restart, logs; little real use yet |
 | Push notifications | 🚧 Not yet; the tab title and inbox count show what needs you |
 | Event log retention | 🚧 Session logs are kept indefinitely |
-| Observing sessions started outside Switchyard | 🚧 Future release |
+| Observing sessions started outside Switchworks | 🚧 Future release |
 
 ---
 
 ## Architecture
 
 ```text
-   browser · phone · swyd CLI
+   browser · phone · swk CLI
                │  HTTPS + server-sent events (port 7480)
      ┌─────────┴─────────┐
      │    coordinator    │  one always-on machine:
@@ -74,7 +74,7 @@ by the tools you already use, under your own sign-ins.
   repositories and toolchains. Nodes dial the coordinator and open no inbound ports; a node that
   loses its connection keeps its sessions running and replays their events when it reconnects.
 - Each **harness** is driven over its own protocol: JSON-RPC on stdio for `codex app-server` and
-  ACP agents, and agy's `stream-json` output. `swyd mcp` gives each session its fleet tools.
+  ACP agents, and agy's `stream-json` output. `swk mcp` gives each session its fleet tools.
 - Sessions are addressed as `host/name`, for example `devbox/api-server`.
 
 Design decisions are recorded in [`docs/decisions.md`](docs/decisions.md).
@@ -84,14 +84,14 @@ Design decisions are recorded in [`docs/decisions.md`](docs/decisions.md).
 ## Installation
 
 Pre-built packages for Linux (`.deb`, `.rpm`, Arch), macOS (`.dmg`) and Windows (installer) are
-available on the [Releases](https://github.com/jm2/switchyard/releases) page, with plain `swyd`
+available on the [Releases](https://github.com/jm2/switchworks/releases) page, with plain `swk`
 archives for every platform. Download `SHA256SUMS.txt` with a package and check its SHA-256
-entry before installing; `gh attestation verify <file> --repo jm2/switchyard` also checks a
+entry before installing; `gh attestation verify <file> --repo jm2/switchworks` also checks a
 file's build provenance.
 
 **Everything runs as you, never as root or SYSTEM.** The packages install programs, systemd
 *user* units, the tray app and icons; they create no system service and no system user, and they
-start nothing. Each person turns on the node (or coordinator) for themselves with `swyd service
+start nothing. Each person turns on the node (or coordinator) for themselves with `swk service
 install`, which registers it with their own service manager: a systemd user unit on Linux, a
 LaunchAgent on macOS, a logon task in Task Scheduler on Windows. The node must run as you, so
 sessions get your sign-ins, repositories and toolchains.
@@ -106,109 +106,109 @@ sessions get your sign-ins, repositories and toolchains.
 
 ### Fedora (COPR)
 
-Switchyard will be available from the
-[jmsqrd/switchyard](https://copr.fedorainfracloud.org/coprs/jmsqrd/switchyard/) COPR repository:
+Switchworks will be available from the
+[jmsqrd/switchworks](https://copr.fedorainfracloud.org/coprs/jmsqrd/switchworks/) COPR repository:
 
 ```bash
-sudo dnf copr enable jmsqrd/switchyard
-sudo dnf install switchyard
+sudo dnf copr enable jmsqrd/switchworks
+sudo dnf install switchworks
 ```
 
 ### Arch Linux (AUR)
 
-[`switchyard-bin`](https://aur.archlinux.org/packages/switchyard-bin) will package the pre-built
+[`switchworks-bin`](https://aur.archlinux.org/packages/switchworks-bin) will package the pre-built
 release (x86_64 and aarch64):
 
 ```bash
-yay -S switchyard-bin
+yay -S switchworks-bin
 ```
 
 ### Windows (winget)
 
 ```powershell
-winget install jm2.Switchyard
+winget install jm2.Switchworks
 ```
 
 ### Linux
 
 | Distribution | Assets |
 | --- | --- |
-| Debian / Ubuntu | `switchyard-amd64.deb`, `switchyard-arm64.deb` |
-| Fedora / RPM-based | `switchyard-x86_64.rpm`, `switchyard-aarch64.rpm` |
-| Arch Linux | `switchyard-x86_64.pkg.tar.zst` |
+| Debian / Ubuntu | `switchworks-amd64.deb`, `switchworks-arm64.deb` |
+| Fedora / RPM-based | `switchworks-x86_64.rpm`, `switchworks-aarch64.rpm` |
+| Arch Linux | `switchworks-x86_64.pkg.tar.zst` |
 
 ```bash
-sudo apt install ./switchyard-amd64.deb
-sudo dnf install ./switchyard-x86_64.rpm
-sudo pacman -U ./switchyard-x86_64.pkg.tar.zst
+sudo apt install ./switchworks-amd64.deb
+sudo dnf install ./switchworks-x86_64.rpm
+sudo pacman -U ./switchworks-x86_64.pkg.tar.zst
 ```
 
-Each installs `swyd` and `swyd-tray` in `/usr/bin`, the `swyd-node` and `swyd-coordinator` user
-units in `/usr/lib/systemd/user`, and a **Switchyard** launcher for the tray icon. The binaries
+Each installs `swk` and `swk-tray` in `/usr/bin`, the `swk-node` and `swk-coordinator` user
+units in `/usr/lib/systemd/user`, and a **Switchworks** launcher for the tray icon. The binaries
 are static, so the packages have no dependencies.
 
 ### macOS
 
-Apple silicon, macOS 13 or later: `switchyard-macos-aarch64.dmg`. Mount it and drag
-**Switchyard** to Applications. The app is the menu-bar icon, and `swyd` is inside it; put it on
+Apple silicon, macOS 13 or later: `switchworks-macos-aarch64.dmg`. Mount it and drag
+**Switchworks** to Applications. The app is the menu-bar icon, and `swk` is inside it; put it on
 your `PATH` for the setup steps:
 
 ```bash
 mkdir -p ~/.local/bin
-ln -s /Applications/Switchyard.app/Contents/MacOS/swyd ~/.local/bin/swyd
+ln -s /Applications/Switchworks.app/Contents/MacOS/swk ~/.local/bin/swk
 ```
 
 > **macOS note:** The `.dmg` is ad-hoc signed but not notarized, so Gatekeeper will block it on
-> first launch. After dragging Switchyard to Applications, run:
+> first launch. After dragging Switchworks to Applications, run:
 >
 > ```bash
-> xattr -cr /Applications/Switchyard.app
+> xattr -cr /Applications/Switchworks.app
 > ```
 >
 > Then open normally. This is only needed once.
 
 ### Windows
 
-`switchyard-windows-x86_64-setup.exe` installs for your user only, without administrator
-rights, into `%LOCALAPPDATA%\Programs\Switchyard`: `swyd.exe` (added to your `PATH`),
-`swydw.exe` (the same program without a console window, which the node's logon task runs) and
-`swyd-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
-Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swyd`.
+`switchworks-windows-x86_64-setup.exe` installs for your user only, without administrator
+rights, into `%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
+`swkw.exe` (the same program without a console window, which the node's logon task runs) and
+`swk-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
+Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swk`.
 
 ### Podman (coordinator only)
 
-The coordinator also ships as a container image, `ghcr.io/jm2/switchyard-coordinator`
-(x86_64 and ARM64): `swyd` alone on an empty base, running as an unprivileged user, with its
+The coordinator also ships as a container image, `ghcr.io/jm2/switchworks-coordinator`
+(x86_64 and ARM64): `swk` alone on an empty base, running as an unprivileged user, with its
 state in a volume. Nodes stay user services on the workstations, since sessions need your
 sign-ins and toolchains. To run it rootless with Quadlet, as the account that should own it,
-download `switchyard-coordinator.container` from the release:
+download `switchworks-coordinator.container` from the release:
 
 ```bash
 mkdir -p ~/.config/containers/systemd
-cp switchyard-coordinator.container ~/.config/containers/systemd/
+cp switchworks-coordinator.container ~/.config/containers/systemd/
 systemctl --user daemon-reload
-podman run --rm -v swyd-coordinator:/data ghcr.io/jm2/switchyard-coordinator:latest \
+podman run --rm -v swk-coordinator:/data ghcr.io/jm2/switchworks-coordinator:latest \
   coordinator init --host coord.lan,10.0.0.5
-systemctl --user start switchyard-coordinator
+systemctl --user start switchworks-coordinator
 loginctl enable-linger "$USER"
 ```
 
 The CLI runs inside it for the coordinator's own commands, for example
-`podman exec switchyard-coordinator swyd coordinator enroll-token devbox`, and
-`podman exec switchyard-coordinator swyd coordinator cli-config` prints the admin `cli.json`
+`podman exec switchworks-coordinator swk coordinator enroll-token devbox`, and
+`podman exec switchworks-coordinator swk coordinator cli-config` prints the admin `cli.json`
 (keep it in your password manager). The unit publishes 7480 and 7481, uses `pasta` so the
 coordinator sees clients' real addresses, drops all capabilities, keeps the root filesystem
-read-only, and restarts the container when its healthcheck (`swyd coordinator health`) fails.
-Back up the `swyd-coordinator` volume: it holds the CA key.
+read-only, and restarts the container when its healthcheck (`swk coordinator health`) fails.
+Back up the `swk-coordinator` volume: it holds the CA key.
 
 A container under the same account as your agents is not a security boundary: they can reach
 its volume with `podman unshare`. Give it an account of its own on a machine where agents run.
 
 ### Archives
 
-`swyd-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows) holds just the binaries. Put `swyd`
-on each machine's `PATH`, for example `~/.local/bin/swyd` on Linux and macOS or
-`C:\tools\swyd.exe` on Windows.
+`swk-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows) holds just the binaries. Put `swk`
+on each machine's `PATH`, for example `~/.local/bin/swk` on Linux and macOS or
+`C:\tools\swk.exe` on Windows.
 
 ## Building from Source
 
@@ -218,19 +218,19 @@ on each machine's `PATH`, for example `~/.local/bin/swyd` on Linux and macOS or
 - `make` (optional; the targets are short `go build` commands)
 
 ```bash
-git clone https://github.com/jm2/switchyard
-cd switchyard
-make build tray                  # ./swyd, and ./swyd-tray (Linux and Windows)
+git clone https://github.com/jm2/switchworks
+cd switchworks
+make build tray                  # ./swk, and ./swk-tray (Linux and Windows)
 mkdir -p ~/.local/bin
-install -m 755 swyd ~/.local/bin/swyd
-install -m 755 swyd-tray ~/.local/bin/swyd-tray   # Linux only; macOS uses the Switchyard app
+install -m 755 swk ~/.local/bin/swk
+install -m 755 swk-tray ~/.local/bin/swk-tray   # Linux only; macOS uses the Switchworks app
 ```
 
 To build for your other machines from one place:
 
 ```bash
-make cross   # dist/swyd-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64.exe}, swyd-tray, swydw.exe
-make deb ARCH=amd64   # dist/switchyard-amd64.deb from those (needs dpkg-deb)
+make cross   # dist/swk-{linux-amd64,linux-arm64,darwin-arm64,windows-amd64.exe}, swk-tray, swkw.exe
+make deb ARCH=amd64   # dist/switchworks-amd64.deb from those (needs dpkg-deb)
 ```
 
 The packaging files are in [`build-aux/`](build-aux): the RPM spec (also used by COPR), the Arch
@@ -247,7 +247,7 @@ Pick a machine that is always on and that every workstation can reach. A
 small home server is ideal.
 
 ```bash
-swyd coordinator init --host coord.lan,10.0.0.5
+swk coordinator init --host coord.lan,10.0.0.5
 ```
 
 `--host` lists the names and addresses the server certificate covers. The
@@ -263,17 +263,17 @@ as a password manager, and keep it off every machine where agents run (see
 Run it as a service under your own user, so it starts at login:
 
 ```bash
-swyd service install coordinator
+swk service install coordinator
 ```
 
-or in a terminal: `swyd coordinator run`. On Linux, also run `loginctl enable-linger "$USER"`
-so it keeps running while you are logged out (`swyd service install` reminds you).
+or in a terminal: `swk coordinator run`. On Linux, also run `loginctl enable-linger "$USER"`
+so it keeps running while you are logged out (`swk service install` reminds you).
 
 It listens on port **7480** (web UI, API and CLI) and **7481** (nodes).
 Allow both through the firewall from your workstations only.
 
 > **Keep both ports on a private network or a tailnet, never the open
-> internet.** They are authenticated and encrypted, but Switchyard is not
+> internet.** They are authenticated and encrypted, but Switchworks is not
 > hardened for internet exposure. To reach the web UI from elsewhere, use a
 > VPN or `tailscale serve` (see [docs/web-ui.md](docs/web-ui.md)).
 
@@ -286,39 +286,39 @@ fingerprint, so there is nothing else to copy:
 
 ```bash
 # on the coordinator
-swyd coordinator enroll-token devbox
+swk coordinator enroll-token devbox
 # on the workstation: paste the token it printed (read from stdin, so it
 # never appears in the process list)
-swyd node enroll -
+swk node enroll -
 ```
 
 or in one step over SSH:
 
 ```bash
-ssh coord.lan swyd coordinator enroll-token devbox | swyd node enroll -
+ssh coord.lan swk coordinator enroll-token devbox | swk node enroll -
 ```
 
 The host name you give the token (`devbox`) is how the fleet names that
 machine. Then run the node as your user, at login and now:
 
 ```bash
-swyd service install            # the node; `swyd service status` shows how it is doing
+swk service install              # the node; `swk service status` shows how it is doing
 ```
 
-| OS | What `swyd service install` sets up |
+| OS | What `swk service install` sets up |
 | --- | --- |
-| Linux | The `swyd-node` systemd user unit: the packaged one, or one it writes to `~/.config/systemd/user`. Run `loginctl enable-linger "$USER"` to keep it running while you are logged out. Logs: `journalctl --user -u swyd-node` |
-| macOS | A LaunchAgent, `~/Library/LaunchAgents/dev.switchyard.node.plist`, with your login shell's `PATH` so your harnesses resolve (run the install again after changing it) |
-| Windows | A Task Scheduler logon task that runs `swydw.exe node run` in your session, with least privilege, so it can use your sign-ins |
+| Linux | The `swk-node` systemd user unit: the packaged one, or one it writes to `~/.config/systemd/user`. Run `loginctl enable-linger "$USER"` to keep it running while you are logged out. Logs: `journalctl --user -u swk-node` |
+| macOS | A LaunchAgent, `~/Library/LaunchAgents/dev.switchworks.node.plist`, with your login shell's `PATH` so your harnesses resolve (run the install again after changing it) |
+| Windows | A Task Scheduler logon task that runs `swkw.exe node run` in your session, with least privilege, so it can use your sign-ins |
 
-`swyd service start|stop|restart|status|uninstall` manage it; the tray icon does the same.
+`swk service start|stop|restart|status|uninstall` manage it; the tray icon does the same.
 Or run it in a terminal instead:
 
 ```bash
-swyd node run
+swk node run
 ```
 
-`swyd hosts` on the coordinator should now show the machine as online,
+`swk hosts` on the coordinator should now show the machine as online,
 with the harnesses it found.
 
 ### 3. The CLI on other machines
@@ -329,15 +329,15 @@ admin token (the coordinator, or wherever you keep it), make a complete
 `cli.json` for another one:
 
 ```bash
-swyd token create devbox --scope operate --cli-config > devbox-cli.json
-# copy it to devbox as ~/.config/swyd/cli.json (chmod 600)
+swk token create devbox --scope operate --cli-config > devbox-cli.json
+# copy it to devbox as ~/.config/swk/cli.json (chmod 600)
 ```
 
 | Scope | What it allows |
 | --- | --- |
-| `read` | Look only: hosts, sessions, transcripts, live streams, messages, usage. `swyd ui-link` (read-only links). |
+| `read` | Look only: hosts, sessions, transcripts, live streams, messages, usage. `swk ui-link` (read-only links). |
 | `operate` | `read`, plus day-to-day control: send, ask and reply, approve or decline, interrupt, stop, and spawn sessions. |
-| `admin` | Everything, including enrollment tokens, `swyd hosts rm` and managing tokens. The token `init` made is admin. |
+| `admin` | Everything, including enrollment tokens, `swk hosts rm` and managing tokens. The token `init` made is admin. |
 
 **Put only `read` or `operate` tokens on machines where agents run.**
 Harness sandboxes limit writes, not reads, so an agent there can read any
@@ -348,29 +348,29 @@ sessions you spawn run with the options you give them, outside the guards
 that confine agents' own spawns. Use `read` where that is too much.
 
 ```bash
-swyd token ls                     # name, scope, last use, expiry; never the secret
-swyd token rm devbox              # revoke it; browsers it signed in are signed out
-swyd token create phone --scope read --ttl 720h   # prints just the secret, once
+swk token ls                      # name, scope, last use, expiry; never the secret
+swk token rm devbox               # revoke it; browsers it signed in are signed out
+swk token create phone --scope read --ttl 720h    # prints just the secret, once
 ```
 
 Keep the admin token itself in a password manager or on one trusted
-machine without agents. `swyd coordinator cli-config` prints the admin
-`cli.json`; use it only there. `SWYD_CLI_CONFIG=/path/to/cli.json swyd ...`
+machine without agents. `swk coordinator cli-config` prints the admin
+`cli.json`; use it only there. `SWK_CLI_CONFIG=/path/to/cli.json swk ...`
 picks a config for one command.
 
 ### 4. The tray icon
 
-`swyd-tray` (Linux and Windows) and the Switchyard menu-bar app (macOS) show whether this
+`swk-tray` (Linux and Windows) and the Switchworks menu-bar app (macOS) show whether this
 machine's node is connected, and whether a coordinator runs here. Their menu opens the web UI,
 starts, stops or restarts the node and coordinator services (or sets them up), opens the logs
 and config folders, and can start the tray at login. They only read local status files and call
-`swyd service`; they open no ports.
+`swk service`; they open no ports.
 
-- **Linux**: start **Switchyard** from your applications menu, or run `swyd-tray`. It is a
+- **Linux**: start **Switchworks** from your applications menu, or run `swk-tray`. It is a
   StatusNotifierItem, which KDE Plasma, Xfce, Cinnamon, LXQt and others show natively; GNOME
   needs the AppIndicator extension (`gnome-shell-extension-appindicator`).
 - **Windows**: the installer starts it, and at sign-in if you keep that option.
-- **macOS**: open Switchyard from Applications; it has no Dock icon.
+- **macOS**: open Switchworks from Applications; it has no Dock icon.
 
 ### 5. The web UI
 
@@ -378,16 +378,16 @@ Open `https://coord.lan:7480/`. Because the certificate comes from the
 fleet's own CA, the browser warns at first. Either:
 
 - install the CA: open `https://coord.lan:7480/ca.crt`, check its SHA-256
-  fingerprint against the one `swyd coordinator init` printed, and trust it (on
+  fingerprint against the one `swk coordinator init` printed, and trust it (on
   iOS: Settings, General, About, Certificate Trust Settings), or
 - put the UI behind `tailscale serve` for a publicly trusted certificate
   (see [docs/web-ui.md](docs/web-ui.md)).
 
 Sign in with a token (a `read` or `operate` one for a browser you use
-day to day), or run `swyd ui-link` anywhere the CLI works and open the
+day to day), or run `swk ui-link` anywhere the CLI works and open the
 one-time link it prints. That is the easy way to sign in on a phone. The
 browser gets the scope of the token that signed it in, or of the token that
-made the link (`swyd ui-link --scope read` makes a read-only one).
+made the link (`swk ui-link --scope read` makes a read-only one).
 
 ---
 
@@ -399,20 +399,20 @@ In the web UI, describe a task in the box at the bottom of the home screen, pick
 harness and folder, and send. Or from the CLI:
 
 ```bash
-swyd spawn devbox --cwd ~/src/myapp --name myapp "run the tests and fix what fails"
-swyd attach devbox/myapp         # follow it live; Ctrl-C detaches
+swk spawn devbox --cwd ~/src/myapp --name myapp "run the tests and fix what fails"
+swk attach devbox/myapp          # follow it live; Ctrl-C detaches
 ```
 
 ### Everyday commands
 
 ```bash
-swyd ls                                   # every session on every host
-swyd send myapp "also update the changelog"          # next turn
-swyd send --steer myapp "skip the docs for now"      # into the running turn (Codex)
-swyd send --image shot.png myapp "does this look right?"   # with an image (up to 4)
-swyd approve myapp <approval-id> accept   # or answer in the web UI
-swyd interrupt myapp
-swyd stop myapp                           # history is kept
+swk ls                                    # every session on every host
+swk send myapp "also update the changelog"           # next turn
+swk send --steer myapp "skip the docs for now"       # into the running turn (Codex)
+swk send --image shot.png myapp "does this look right?"    # with an image (up to 4)
+swk approve myapp <approval-id> accept    # or answer in the web UI
+swk interrupt myapp
+swk stop myapp                            # history is kept
 ```
 
 A bare session name works when it is unique across the fleet.
@@ -422,10 +422,10 @@ Agents get fleet tools (`fleet_list`, `fleet_ask`, `fleet_send`,
 build passes" makes one agent ask another on a different machine. You can follow and join in:
 
 ```bash
-swyd messages                 # who said what to whom
-swyd inbox                    # questions agents asked you
-swyd reply <ask-id> "ship it"
-swyd ask helper "status?"     # ask an agent yourself and wait for the answer
+swk messages                  # who said what to whom
+swk inbox                     # questions agents asked you
+swk reply <ask-id> "ship it"
+swk ask helper "status?"      # ask an agent yourself and wait for the answer
 ```
 
 Guards in `coordinator.json` bound what agents can do to each other: hop
@@ -440,26 +440,26 @@ guards are not a sandbox, and an agent with a shell can read its node's
 credentials.
 
 Messages and first prompts can carry images (PNG, JPEG, WebP or GIF, up to
-4 per message, 5 MiB each): `--image` on `swyd send`, `msg`, `ask` and
+4 per message, 5 MiB each): `--image` on `swk send`, `msg`, `ask` and
 `spawn`, the attach button or a paste in the web UI, and an `images` list of
 file paths in `fleet_send`, `fleet_ask` and `fleet_spawn`, so one agent can
 hand a screenshot to a reviewer on another host. Agents can attach only
 regular files inside their own working directory. Codex and Goose take
 images; whether the model actually sees them depends on the model and the
-provider endpoint, which `swyd dev vision-probe` checks. See
+provider endpoint, which `swk dev vision-probe` checks. See
 [docs/messaging.md](docs/messaging.md#images).
 
-If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
-certificate and `swyd token rm <name>` its CLI token. Enrolling a host
+If a workstation is lost or compromised, `swk hosts rm <host>` revokes its
+certificate and `swk token rm <name>` its CLI token. Enrolling a host
 again also replaces its old certificate.
 
 ### Harnesses
 
 Each node offers the harnesses it finds on that machine. Configure them in
-the node's `node.json` (in `~/.config/swyd/node/` on Linux,
-`~/Library/Application Support/swyd/node/` on macOS,
-`%AppData%\swyd\node\` on Windows); restart the node after editing
-(`swyd service restart`).
+the node's `node.json` (in `~/.config/swk/node/` on Linux,
+`~/Library/Application Support/swk/node/` on macOS,
+`%AppData%\swk\node\` on Windows); restart the node after editing
+(`swk service restart`).
 
 - **Codex**: `codex` on `PATH` and signed in, or with providers configured
   in its `config.toml`. Codex only accepts providers that speak the OpenAI
@@ -481,19 +481,19 @@ and providers, fleet tools, and what each supports.
 
 ### Trying it without spending tokens
 
-`swyd dev mock-provider` serves a fake model that speaks both the OpenAI
+`swk dev mock-provider` serves a fake model that speaks both the OpenAI
 Responses API and the Anthropic Messages API, scripted by the prompt:
 
 ```bash
-swyd dev mock-provider --codex-home /tmp/mock-home &
-swyd dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
+swk dev mock-provider --codex-home /tmp/mock-home &
+swk dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 ```
 
-`swyd dev run` drives one turn of any harness directly, without a node or
+`swk dev run` drives one turn of any harness directly, without a node or
 coordinator: a quick check that a harness works on a machine. With
 `--record FILE` it captures the raw protocol stream.
 
-`swyd dev vision-probe [--harness goose] [--model M]` sends the harness an
+`swk dev vision-probe [--harness goose] [--model M]` sends the harness an
 image with a random code and reports PASS if the model reads it back: run
 it on each host with your real configuration to see which models can see
 images. Against the mock provider it checks the image path without a model.
@@ -508,22 +508,22 @@ make test-codex  # also the real-Codex integration test (needs codex on PATH; no
 make cross       # check that every release target still builds
 ```
 
-The real-Goose tests run whenever `goose` is on `PATH` (or `SWYD_GOOSE_BIN` is set), against the
+The real-Goose tests run whenever `goose` is on `PATH` (or `SWK_GOOSE_BIN` is set), against the
 built-in mock provider. The protocols are described in
 [`docs/codex-app-server-notes.md`](docs/codex-app-server-notes.md),
 [`docs/messaging.md`](docs/messaging.md), [`docs/harnesses.md`](docs/harnesses.md) and
 [`docs/web-ui.md`](docs/web-ui.md).
 
-Switchyard uses only the Go standard library, the tray included: the Linux tray speaks D-Bus
+Switchworks uses only the Go standard library, the tray included: the Linux tray speaks D-Bus
 through a small client in `internal/dbus`, and the Windows tray calls the Win32 API directly. The
 macOS menu-bar app is a short Swift program built with `swiftc`.
 
 ## Project Structure
 
 ```text
-cmd/swyd/                 # The swyd binary
-cmd/swyd-tray/            # Tray icon for Linux and Windows
-macos/Switchyard/         # macOS menu-bar app (Swift)
+cmd/swk/                 # The swk binary
+cmd/swk-tray/            # Tray icon for Linux and Windows
+macos/Switchworks/         # macOS menu-bar app (Swift)
 internal/
 ├── coord/                # Node listener, event store, message router, HTTPS API and SSE
 ├── node/                 # Sessions, spool, delivery queue, coordinator link, local API
@@ -535,17 +535,17 @@ internal/
 ├── codex/                # app-server JSON-RPC client, contract-tested against schema/codex
 ├── acp/                  # ACP client; acptest is a scripted fake agent
 ├── jsonrpc/              # Shared JSON-RPC 2.0 over stdio
-├── mcp/                  # swyd mcp: the fleet tools as a stdio MCP server
+├── mcp/                  # swk mcp: the fleet tools as a stdio MCP server
 ├── fleet/                # Fleet operations: arguments and results
 ├── attach/               # Image attachments: type sniffing, limits, confined file reads
 ├── web/                  # Web UI (embedded HTML, CSS, JS and fonts)
 ├── store/                # Storage interface and file-backed implementation
 ├── pki/                  # Private CA and enrollment tokens
 ├── wire/                 # Node ↔ coordinator protocol
-├── cli/, apiclient/, render/  # The swyd command line
-├── devrun/               # swyd dev run, vision-probe and mock-provider
-├── service/              # swyd service: systemd user units, LaunchAgents, logon tasks
-├── runstatus/            # status.json, which the tray and swyd service status read
+├── cli/, apiclient/, render/  # The swk command line
+├── devrun/               # swk dev run, vision-probe and mock-provider
+├── service/              # swk service: systemd user units, LaunchAgents, logon tasks
+├── runstatus/            # status.json, which the tray and swk service status read
 ├── tray/                 # Tray menu and actions; sni/ (Linux D-Bus), wintray/ (Win32)
 ├── dbus/                 # Minimal D-Bus client for the Linux tray
 └── e2e/                  # In-process multi-host fleet tests
@@ -557,7 +557,7 @@ docs/                     # Design notes, protocols and status
 
 ## Scope
 
-Switchyard is a control plane, not an agent or a model gateway. It does not edit code itself,
+Switchworks is a control plane, not an agent or a model gateway. It does not edit code itself,
 proxy model traffic, or store provider keys beyond what you put in a node's `node.json`. It is
 built for one person's (or one small team's) machines behind a private network, not as a
 multi-tenant service.
@@ -567,13 +567,13 @@ multi-tenant service.
 ## Security
 
 Report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md), not in a public
-issue. It also sets out what Switchyard assumes about your network and your agents.
+issue. It also sets out what Switchworks assumes about your network and your agents.
 
 ---
 
 ## License
 
-Switchyard is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+Switchworks is licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
 The web UI embeds the Onest and JetBrains Mono fonts, licensed under the SIL
 Open Font License 1.1; see `internal/web/assets/fonts`.

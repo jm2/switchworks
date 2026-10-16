@@ -21,23 +21,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // Browser sessions: the web UI signs in with the admin token or an API
 // token, or with a one-time login link minted by an authenticated client
-// (`swyd ui-link`), and gets a signed cookie carrying that credential's
+// (`swk ui-link`), and gets a signed cookie carrying that credential's
 // scope. Cookie-authenticated requests that change anything must also carry
-// X-Swyd-CSRF: 1, which a cross-site page cannot add without a CORS
+// X-Swk-CSRF: 1, which a cross-site page cannot add without a CORS
 // preflight that this server never answers.
 
 const (
-	cookieName    = "swyd_session"
+	cookieName    = "swk_session"
 	cookieTTL     = 30 * 24 * time.Hour
-	csrfHeader    = "X-Swyd-CSRF"
+	csrfHeader    = "X-Swk-CSRF"
 	uiKeyFile     = "ui.key"
 	uiRevokedFile = "ui-revoked.json"
 	loginLinkTT   = 15 * time.Minute

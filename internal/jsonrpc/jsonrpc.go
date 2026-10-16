@@ -152,7 +152,7 @@ func (c *Conn) readLoop(r io.Reader) {
 		line, err := readLine(br, maxLine)
 		if errors.Is(err, errLineTooLong) {
 			if c.tap != nil {
-				c.tap("in", []byte(`{"switchyard":"dropped an over-long line"}`))
+				c.tap("in", []byte(`{"switchworks":"dropped an over-long line"}`))
 			}
 			continue
 		}

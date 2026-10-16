@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func pngImage(t *testing.T, w, h int) []byte {
@@ -155,7 +155,7 @@ func TestFleetImages(t *testing.T) {
 		t.Fatal("bad attachment id accepted")
 	}
 
-	// A person sends an image (swyd send --image), and spawns with one.
+	// A person sends an image (swk send --image), and spawns with one.
 	other := pngImage(t, 10, 10)
 	k := wr.len()
 	if _, err := c.Send(ctx, reviewer.ID, "and this one?", "queue", "", model.Attachment{Name: "two.png", Data: other}); err != nil {

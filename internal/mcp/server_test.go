@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/jsonrpc"
 )
 
 type nop struct{}
@@ -46,7 +46,7 @@ func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.fail--
 	}
 	s.mu.Unlock()
-	if r.Header.Get("Authorization") != "Bearer tok" || r.Header.Get("X-Swyd-Session") != "sess1" {
+	if r.Header.Get("Authorization") != "Bearer tok" || r.Header.Get("X-Swk-Session") != "sess1" {
 		w.WriteHeader(401)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": "bad credential"})
 		return
@@ -125,7 +125,7 @@ func TestProtocol(t *testing.T) {
 		"clientInfo": map[string]any{"name": "test", "version": "0"}}, &init); err != nil {
 		t.Fatal(err)
 	}
-	if init.ProtocolVersion != "2025-06-18" || init.ServerInfo.Name != "swyd" || !strings.Contains(init.Instructions, "fleet_reply") {
+	if init.ProtocolVersion != "2025-06-18" || init.ServerInfo.Name != "swk" || !strings.Contains(init.Instructions, "fleet_reply") {
 		t.Fatalf("initialize: %+v", init)
 	}
 	_ = c.Notify("notifications/initialized", nil)

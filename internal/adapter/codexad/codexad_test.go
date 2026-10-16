@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func TestMain(m *testing.M) {

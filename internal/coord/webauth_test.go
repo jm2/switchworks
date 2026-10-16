@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 func TestCookies(t *testing.T) {
@@ -118,7 +118,7 @@ func (e *webEnv) do(t *testing.T, method, path, body string, hdr map[string]stri
 	t.Helper()
 	req, _ := http.NewRequest(method, e.http.URL+path, strings.NewReader(body))
 	if strings.HasPrefix(path, "/ui/") {
-		req.Header.Set("X-Swyd-CSRF", "1") // as login.js and app.js send it
+		req.Header.Set("X-Swk-CSRF", "1") // as login.js and app.js send it
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -175,7 +175,7 @@ func TestWebSignIn(t *testing.T) {
 	if r := e.do(t, "POST", "/v1/messages", msg, cookie); r.StatusCode != 403 {
 		t.Fatalf("cookie write without CSRF header: %d", r.StatusCode)
 	}
-	withCSRF := map[string]string{"Cookie": cookie["Cookie"], "X-Swyd-CSRF": "1"}
+	withCSRF := map[string]string{"Cookie": cookie["Cookie"], "X-Swk-CSRF": "1"}
 	if r := e.do(t, "POST", "/v1/messages", msg, withCSRF); r.StatusCode != 202 {
 		b, _ := io.ReadAll(r.Body)
 		t.Fatalf("cookie write with CSRF header: %d %s", r.StatusCode, b)

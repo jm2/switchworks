@@ -69,11 +69,11 @@ func TestFresh(t *testing.T) {
 }
 
 func TestStopNameStable(t *testing.T) {
-	a, b := stopName(filepath.Join("home", "dev", "swyd", "node")), stopName(filepath.Join("home", "dev", "swyd", "node")+string(filepath.Separator))
+	a, b := stopName(filepath.Join("home", "dev", "swk", "node")), stopName(filepath.Join("home", "dev", "swk", "node")+string(filepath.Separator))
 	if a != b {
 		t.Fatalf("stop names differ for the same dir: %q %q", a, b)
 	}
-	if a == stopName(filepath.Join("home", "dev", "swyd", "coordinator")) {
+	if a == stopName(filepath.Join("home", "dev", "swk", "coordinator")) {
 		t.Fatal("node and coordinator share a stop name")
 	}
 }

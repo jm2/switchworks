@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/acp/acptest"
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/acp/acptest"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func TestMain(m *testing.M) {
@@ -254,7 +254,7 @@ func TestBusy(t *testing.T) {
 func TestConfigureModeModelProviderAndMCP(t *testing.T) {
 	a, state := testAdapter(t, nil)
 	h, r := start(t, a, adapter.StartSpec{Model: "mock-large", Provider: "deepseek", ApprovalPolicy: "never",
-		MCP: &adapter.MCPServer{Name: "swyd", Command: os.Args[0], Args: []string{"mcp"}, Env: map[string]string{"SWYD_TOKEN": "t1"}}})
+		MCP: &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}, Env: map[string]string{"SWK_TOKEN": "t1"}}})
 	reg := r.waitFor(t, "registered", kind(model.KindSessionRegistered)).Payload.(model.SessionRegistered)
 	if reg.Model != "mock-large" || reg.Provider != "deepseek" {
 		t.Fatalf("registered %+v", reg)
@@ -275,7 +275,7 @@ func TestConfigureModeModelProviderAndMCP(t *testing.T) {
 	if err := json.Unmarshal(s.McpServers, &mcps); err != nil || len(mcps) != 1 {
 		t.Fatalf("mcp servers %s: %v", s.McpServers, err)
 	}
-	if mcps[0].Name != "swyd" || mcps[0].Args[0] != "mcp" || mcps[0].Env[0].Name != "SWYD_TOKEN" || mcps[0].Env[0].Value != "t1" {
+	if mcps[0].Name != "swk" || mcps[0].Args[0] != "mcp" || mcps[0].Env[0].Name != "SWK_TOKEN" || mcps[0].Env[0].Value != "t1" {
 		t.Fatalf("mcp %+v", mcps[0])
 	}
 
@@ -443,7 +443,7 @@ func TestToolItems(t *testing.T) {
 		Result               struct{ Content []struct{ Text string } }
 	}
 	_ = json.Unmarshal(mc[0].Raw, &m)
-	if m.Server != "swyd" || m.Tool != "fleet_list" || m.Status != "completed" || m.Result.Content[0].Text != "2 sessions" {
+	if m.Server != "swk" || m.Tool != "fleet_list" || m.Status != "completed" || m.Result.Content[0].Text != "2 sessions" {
 		t.Fatalf("mcp item %s", mc[0].Raw)
 	}
 	if th := items(evs, model.KindItemCompleted, "reasoning"); len(th) != 1 || th[0].Text != "hmm" {
@@ -613,7 +613,7 @@ func TestUnifiedDiff(t *testing.T) {
 func TestFleetToolsAutoApproved(t *testing.T) {
 	a, _ := testAdapter(t, nil)
 	h, r := start(t, a, adapter.StartSpec{ApprovalPolicy: "untrusted",
-		MCP: &adapter.MCPServer{Name: "swyd", Command: os.Args[0], Args: []string{"mcp"}}})
+		MCP: &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}})
 	if tc := r.turn(t, h, "FLEETPERM"); tc.Status != "completed" {
 		t.Fatalf("turn %+v", tc)
 	}

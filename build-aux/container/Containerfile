@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The Switchyard coordinator as an OCI image, for Podman (rootless, run by
+# The Switchworks coordinator as an OCI image, for Podman (rootless, run by
 # Quadlet) or Docker. Only the coordinator: a node runs harnesses with your
 # sign-ins and toolchains, so it stays a user service on the workstation.
 #
 # Built from the release binaries, which are static, so the image is
-# `swyd` and nothing else: no shell, no package manager.
+# `swk` and nothing else: no shell, no package manager.
 #
-#   make cross                 # or put dist/swyd-linux-<arch> there yourself
-#   podman build -f build-aux/container/Containerfile -t switchyard-coordinator .
+#   make cross                 # or put dist/swk-linux-<arch> there yourself
+#   podman build -f build-aux/container/Containerfile -t switchworks-coordinator .
 #
 # With buildx or `podman build --platform linux/amd64,linux/arm64` the same
 # file builds both architectures; it runs nothing at build time, so no
@@ -18,25 +18,25 @@ FROM scratch
 ARG TARGETARCH
 ARG VERSION=dev
 
-LABEL org.opencontainers.image.title="Switchyard coordinator" \
+LABEL org.opencontainers.image.title="Switchworks coordinator" \
       org.opencontainers.image.description="Control plane for coding agents across your machines" \
-      org.opencontainers.image.source="https://github.com/jm2/switchyard" \
+      org.opencontainers.image.source="https://github.com/jm2/switchworks" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.version="${VERSION}"
 
 COPY build-aux/container/rootfs/ /
 COPY --chown=65532:65532 build-aux/container/data/ /data/
-COPY --chmod=0755 dist/swyd-linux-${TARGETARCH} /usr/bin/swyd
+COPY --chmod=0755 dist/swk-linux-${TARGETARCH} /usr/bin/swk
 
 # Everything lives in /data: the CA and its key, coordinator.json, the
 # admin cli.json, the store. Keep it on a named volume and back it up.
-ENV SWYD_HOME=/data \
+ENV SWK_HOME=/data \
     HOME=/data \
-    SWYD_DIAL=127.0.0.1:7480
+    SWK_DIAL=127.0.0.1:7480
 VOLUME ["/data"]
 EXPOSE 7480/tcp 7481/tcp
 USER 65532:65532
 WORKDIR /data
 
-ENTRYPOINT ["/usr/bin/swyd"]
+ENTRYPOINT ["/usr/bin/swk"]
 CMD ["coordinator", "run"]

@@ -13,8 +13,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/proc"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/proc"
 )
 
 // workspaceMCP is agy's per-workspace MCP config, relative to the cwd.
@@ -203,7 +203,7 @@ func addAllowRule(path, rule string) error {
 }
 
 // gitExclude lists rel in the enclosing repository's .git/info/exclude so a
-// file Switchyard created does not show up in git status.
+// file Switchworks created does not show up in git status.
 func gitExclude(cwd, rel string) error {
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
@@ -299,7 +299,7 @@ func writeAtomic(path string, b []byte) error {
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".swyd-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".swk-*")
 	if err != nil {
 		return err
 	}
@@ -327,7 +327,7 @@ func writeAtomicIn(root *os.Root, rel string, b []byte) error {
 	}
 	var rnd [8]byte
 	_, _ = rand.Read(rnd[:])
-	tmp := filepath.Join(filepath.Dir(rel), ".swyd-"+hex.EncodeToString(rnd[:]))
+	tmp := filepath.Join(filepath.Dir(rel), ".swk-"+hex.EncodeToString(rnd[:]))
 	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err

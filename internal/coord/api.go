@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/version"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/version"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Handler returns the HTTPS API.
@@ -604,7 +604,7 @@ func (s *Server) handleEnrollToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]string{"token": tok.Encode(), "expires": time.Now().Add(ttl).Format(time.RFC3339)})
 }
 
-// EnrollRequest is posted by `swyd node enroll`.
+// EnrollRequest is posted by `swk node enroll`.
 type EnrollRequest struct {
 	Secret string `json:"secret"`
 	CSR    string `json:"csr"`

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/fleet"
+	"github.com/jm2/switchworks/internal/fleet"
 )
 
 // The image arguments: paths are passed on to the node (which reads and

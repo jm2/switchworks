@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Switchyard's macOS menu-bar app. It has no Dock icon (LSUIElement) and no
-// logic of its own: it runs the swyd binary bundled beside it
-// (Contents/MacOS/swyd) to read the state (`swyd service status --json`)
+// Switchworks's macOS menu-bar app. It has no Dock icon (LSUIElement) and no
+// logic of its own: it runs the swk binary bundled beside it
+// (Contents/MacOS/swk) to read the state (`swk service status --json`)
 // and to install, start, stop and restart the per-user LaunchAgents. Nothing
 // runs as root.
 //
@@ -11,7 +11,7 @@
 import AppKit
 import ServiceManagement
 
-// MARK: - `swyd service status --json`
+// MARK: - `swk service status --json`
 
 struct RunStatus: Decodable {
     let host: String?
@@ -89,10 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastError: String?
     private var busy: String?
     private var timer: Timer?
-    private let worker = DispatchQueue(label: "io.github.jm2.Switchyard.swyd")
+    private let worker = DispatchQueue(label: "io.github.jm2.Switchworks.swk")
 
-    private var swydURL: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swyd")
+    private var swkURL: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swk")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -112,11 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    // MARK: Running swyd
+    // MARK: Running swk
 
-    private func runSwyd(_ args: [String]) -> CommandResult {
+    private func runSwk(_ args: [String]) -> CommandResult {
         let process = Process()
-        process.executableURL = swydURL
+        process.executableURL = swkURL
         process.arguments = args
         let out = Pipe()
         let err = Pipe()
@@ -145,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refresh() {
         worker.async {
-            let result = self.runSwyd(["service", "status", "--json"])
+            let result = self.runSwk(["service", "status", "--json"])
             var decoded: Overview?
             var problem: String?
             if result.status == 0 {
@@ -154,10 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 do {
                     decoded = try decoder.decode(Overview.self, from: Data(result.output.utf8))
                 } catch {
-                    problem = "Unreadable status from swyd: \(error.localizedDescription)"
+                    problem = "Unreadable status from swk: \(error.localizedDescription)"
                 }
             } else {
-                problem = result.error.isEmpty ? "swyd failed (\(result.status))" : result.error
+                problem = result.error.isEmpty ? "swk failed (\(result.status))" : result.error
             }
             DispatchQueue.main.async {
                 self.overview = decoded
@@ -167,18 +167,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Runs `swyd args` off the main thread, then refreshes; shows an alert
+    /// Runs `swk args` off the main thread, then refreshes; shows an alert
     /// if it fails.
     private func runAction(_ label: String, _ args: [String]) {
         guard busy == nil else { return }
         busy = label
         rebuildMenu()
         worker.async {
-            let result = self.runSwyd(args)
+            let result = self.runSwk(args)
             DispatchQueue.main.async {
                 self.busy = nil
                 if result.status != 0 {
-                    self.showAlert("Switchyard could not finish \(label)",
+                    self.showAlert("Switchworks could not finish \(label)",
                                    result.error.isEmpty ? result.output : result.error)
                 }
                 self.refresh()
@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .warn: symbol = "exclamationmark.triangle"
         case .idle: symbol = "circle.dashed"
         }
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Switchyard") {
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Switchworks") {
             image.isTemplate = true
             button.image = image
             button.title = ""
@@ -245,11 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let role = info.role
         let idle = busy == nil
         if !info.configured {
-            return role == "node" ? [infoItem("Enroll with: swyd node enroll <token>")] : []
+            return role == "node" ? [infoItem("Enroll with: swk node enroll <token>")] : []
         }
         if !info.installed {
             if !installedInApplications() {
-                return [infoItem("Move Switchyard to Applications to run the \(title) at login")]
+                return [infoItem("Move Switchworks to Applications to run the \(title) at login")]
             }
             return [ActionItem("Run \(title) at login", enabled: idle) { [weak self] in
                 self?.runAction("setting up the \(role) service", ["service", "install", role])
@@ -278,9 +278,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         guard let o = overview else {
             setIcon(.warn)
-            menu.addItem(infoItem(lastError.map { "Switchyard: \($0)" } ?? "Switchyard: reading status…"))
+            menu.addItem(infoItem(lastError.map { "Switchworks: \($0)" } ?? "Switchworks: reading status…"))
             menu.addItem(.separator())
-            menu.addItem(ActionItem("Quit Switchyard") { NSApp.terminate(nil) })
+            menu.addItem(ActionItem("Quit Switchworks") { NSApp.terminate(nil) })
             return
         }
         setIcon(iconState(o))
@@ -314,8 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
-        menu.addItem(infoItem("Switchyard \(o.version)"))
-        menu.addItem(ActionItem("Quit Switchyard") { NSApp.terminate(nil) })
+        menu.addItem(infoItem("Switchworks \(o.version)"))
+        menu.addItem(ActionItem("Quit Switchworks") { NSApp.terminate(nil) })
     }
 
     /// Login items and services must point at a copy that stays put: not
@@ -335,14 +335,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try SMAppService.mainApp.register()
             }
         } catch {
-            showAlert("Switchyard could not change its login item", error.localizedDescription)
+            showAlert("Switchworks could not change its login item", error.localizedDescription)
         }
         rebuildMenu()
     }
 }
 
 // One menu-bar icon per user session.
-let bundleID = Bundle.main.bundleIdentifier ?? "io.github.jm2.Switchyard"
+let bundleID = Bundle.main.bundleIdentifier ?? "io.github.jm2.Switchworks"
 if NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count > 1 {
     exit(0)
 }

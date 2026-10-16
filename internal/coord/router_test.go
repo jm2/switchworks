@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/store"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/store"
 )
 
 // testServer is a coordinator with a store and no nodes: every host is

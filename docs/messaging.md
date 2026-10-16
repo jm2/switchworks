@@ -1,6 +1,6 @@
 # Messaging
 
-Agents talk to each other, and to people, through tools that Switchyard
+Agents talk to each other, and to people, through tools that Switchworks
 gives every managed Codex session over MCP. The coordinator routes every
 message, so it works the same within one host and across hosts.
 
@@ -10,16 +10,16 @@ When a node starts or resumes a Codex thread it passes, in `thread/start` /
 `thread/resume`, a per-thread MCP server:
 
 ```json
-{"config": {"mcp_servers": {"swyd": {
-  "command": "/usr/local/bin/swyd", "args": ["mcp"],
-  "env": {"SWYD_NODE_URL": "http://127.0.0.1:41234", "SWYD_SESSION": "<id>",
-          "SWYD_SESSION_PATH": "devbox/lead", "SWYD_TOKEN": "<hmac>"},
+{"config": {"mcp_servers": {"swk": {
+  "command": "/usr/local/bin/swk", "args": ["mcp"],
+  "env": {"SWK_NODE_URL": "http://127.0.0.1:41234", "SWK_SESSION": "<id>",
+          "SWK_SESSION_PATH": "devbox/lead", "SWK_TOKEN": "<hmac>"},
   "startup_timeout_sec": 30, "tool_timeout_sec": 1860,
   "default_tools_approval_mode": "approve"}}}}
 ```
 
-Nothing is written to the user's `config.toml`. Codex starts `swyd mcp` with
-only `HOME`, `PATH` and that `env`. `swyd mcp` forwards each tool call to the
+Nothing is written to the user's `config.toml`. Codex starts `swk mcp` with
+only `HOME`, `PATH` and that `env`. `swk mcp` forwards each tool call to the
 node's local API (loopback only), authenticated with
 `HMAC(node secret, session id)`, so one session's tools act only as that
 session. The node forwards the call to the coordinator over its existing
@@ -30,7 +30,7 @@ boundary against an agent with a shell: see [Trust model](#trust-model).)
 MCP calls under the `never` approval policy ("requires approval, but
 approval policy is never").
 
-The model sees the tools in the `mcp__swyd` namespace.
+The model sees the tools in the `mcp__swk` namespace.
 
 ## Tools
 
@@ -53,8 +53,8 @@ The model sees the tools in the `mcp__swyd` namespace.
 - `@key=value[,key=value]`: sessions with those labels. `host` and `harness`
   work as keys too. Without `broadcast`, the best match wins (idle and online
   first, then by path).
-- `user:<name>`: a person. They read it in the web UI's Inbox or with `swyd inbox`, and answer asks
-  there or with `swyd reply`.
+- `user:<name>`: a person. They read it in the web UI's Inbox or with `swk inbox`, and answer asks
+  there or with `swk reply`.
 
 ## What the receiving agent sees
 
@@ -62,14 +62,14 @@ A routed message becomes a turn (or, with `steer`, part of the running turn)
 that starts with a header:
 
 ```
-[switchyard msg=01M40… from=devbox/lead kind=ask]
+[switchworks msg=01M40… from=devbox/lead kind=ask]
 (devbox/lead is waiting for an answer: reply with the fleet_reply tool, message_id=01M40….)
 what is 6x7?
 ```
 
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
 notice), `system` (delivery failures and expiry). Plain messages from people
-(`swyd send`) are passed through without a header. A line in a relayed
+(`swk send`) are passed through without a header. A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so an agent
 cannot pass its text off as a person's.
 
@@ -81,15 +81,15 @@ A message with images says so under its header, and the images are part
 of the same turn's input:
 
 ```
-[switchyard msg=01M41… from=devbox/game kind=notify]
+[switchworks msg=01M41… from=devbox/game kind=notify]
 (1 image attached, in this turn's input: level1.png (image/png, 412 KiB).)
 does level 1 render?
 ```
 
 ## Images
 
-Messages (`fleet_send`, `fleet_ask`, `swyd send`/`msg`/`ask`, the web UI)
-and first prompts (`fleet_spawn`, `swyd spawn`, the web UI) can carry
+Messages (`fleet_send`, `fleet_ask`, `swk send`/`msg`/`ask`, the web UI)
+and first prompts (`fleet_spawn`, `swk spawn`, the web UI) can carry
 images, for example a game agent's screenshots for a reviewer agent on
 another host.
 
@@ -114,11 +114,11 @@ undeliverable images before storing the message:
 
 Whether the *model* sees the image is a separate question: a model without
 vision, or a provider endpoint that drops images, gets the text only. Use
-`swyd dev vision-probe` ([harnesses.md](harnesses.md#images-and-the-vision-probe)).
+`swk dev vision-probe` ([harnesses.md](harnesses.md#images-and-the-vision-probe)).
 
 **Agents attach files by path.** The `images` argument is a list of file
 paths on the sender's host, relative to the session's working directory
-or absolute. `swyd mcp` runs as your user, outside any sandbox the agent
+or absolute. `swk mcp` runs as your user, outside any sandbox the agent
 has, so if it read whatever path an agent named, a sandboxed agent could
 send itself (or another agent) files it cannot read: the node's key,
 other sessions' tokens, `cli.json`. So the sender's node reads the file
@@ -134,14 +134,14 @@ itself, and only:
 - a regular file: not a symlink (even to a file inside), device, pipe or
   directory, and with no other hard links (on Unix), since another name
   for it could be anywhere;
-- never under Switchyard's own directories (the node's directory, the
+- never under Switchworks's own directories (the node's directory, the
   config directory with `cli.json`), even when the working directory
   contains them (a session working in your home directory); directories
   are compared by identity, so another spelling of the name (case on
   macOS) does not get past it;
 - an allowed image type by its bytes, within the size limits.
 
-Agents cannot pass image data directly: `swyd mcp` and the node's local API
+Agents cannot pass image data directly: `swk mcp` and the node's local API
 refuse an `attachments` argument (in any letter case). Paths never reach
 the coordinator.
 
@@ -187,7 +187,7 @@ carry metadata only.
 
 ## Asks
 
-`fleet_ask` in `swyd mcp` is two calls: it sends the ask with `wait_seconds:
+`fleet_ask` in `swk mcp` is two calls: it sends the ask with `wait_seconds:
 0` and a hold window, gets a ticket at once, then waits for the answer with
 `fleet_inbox(ticket)`. The wait is retried if the node's link to the
 coordinator drops, so a coordinator restart does not lose the answer.
@@ -196,7 +196,7 @@ While the hold window is open, a reply that arrives before the asker starts
 waiting is **held** for it rather than also being delivered as a new turn.
 After the window, an unanswered ask's reply arrives as a `kind=reply` turn.
 
-A person can ask an agent (`swyd ask <address> <question>`) and an agent
+A person can ask an agent (`swk ask <address> <question>`) and an agent
 can ask a person (`fleet_ask` to `user:<name>`).
 
 ## Completion notices
@@ -258,14 +258,14 @@ start.
 
 ## Trust model
 
-- **People** hold the admin token, a scoped API token (`swyd token
+- **People** hold the admin token, a scoped API token (`swk token
   create`, in a `cli.json`) or a web sign-in. The admin token can do
   anything; an API token, and a browser it signed in, only what its scope
   allows: `read` looks, `operate` also sends, asks, replies, approves,
   interrupts, stops and spawns, `admin` also enrolls and removes hosts and
   manages tokens. A person's spawn is not confined by the guards below.
 - **Nodes** hold a certificate for one host. A node can only report on and
-  run sessions of its own host. `swyd hosts rm <host>` revokes a host's
+  run sessions of its own host. `swk hosts rm <host>` revokes a host's
   certificate, and enrolling a host again replaces it.
 - **Agents** act through the fleet tools, within the guards above.
 
@@ -281,11 +281,11 @@ node and its agents as a separate user. In particular:
 - Do not put the admin token on a machine where agents run: an agent that
   reads it, sandboxed or not, can get it to one that can use it, and the
   admin token controls the fleet. Give those machines a `read` or
-  `operate` token instead (`swyd token create devbox --scope operate
+  `operate` token instead (`swk token create devbox --scope operate
   --cli-config`). An agent that reads that can still do what the token
   allows, including spawning unconfined sessions with `operate`, but it
   cannot enroll a host of its own, remove hosts or mint tokens, and
-  `swyd token rm devbox` cuts it off without touching the other machines.
+  `swk token rm devbox` cuts it off without touching the other machines.
 - The coordinator's directory holds the CA key and the admin `cli.json`:
   do not run agents as the coordinator's user on its machine. Running the
   coordinator in a rootless Podman container under that same user does not
@@ -296,25 +296,25 @@ node and its agents as a separate user. In particular:
   for agents that read untrusted input (web pages, issues, other people's
   code), since messages and spawns are how a manipulated agent would reach
   the rest of the fleet.
-- If a workstation may be compromised, `swyd hosts rm` it.
+- If a workstation may be compromised, `swk hosts rm` it.
 
 The fleet tools themselves do not widen what an agent can read: the files
 an agent attaches as images are confined to its working directory and
-never come from Switchyard's own directories ([Images](#images)). Images
+never come from Switchworks's own directories ([Images](#images)). Images
 an agent receives are model input like any message text, and a crafted
 image can carry instructions the same way text can.
 
 ## CLI
 
 ```sh
-swyd msg buildbox/helper "the build is green"        # by address
-swyd msg --broadcast @role=reviewer "please look at PR 42"
-swyd msg --image shot.png --image diff.png reviewer "these two frames"
-swyd ask lead "are you done with the parser?"    # waits for fleet_reply
-swyd inbox                                       # messages and open questions for people
-swyd reply <ask-id> "yes, go ahead"
-swyd messages [session]                          # traffic log
-swyd usage                                       # tokens by host, model, day
+swk msg buildbox/helper "the build is green"         # by address
+swk msg --broadcast @role=reviewer "please look at PR 42"
+swk msg --image shot.png --image diff.png reviewer "these two frames"
+swk ask lead "are you done with the parser?"     # waits for fleet_reply
+swk inbox                                        # messages and open questions for people
+swk reply <ask-id> "yes, go ahead"
+swk messages [session]                           # traffic log
+swk usage                                        # tokens by host, model, day
 ```
 
 ## HTTP API

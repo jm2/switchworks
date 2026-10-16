@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/ulid"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // turnState tracks one turn's steps.

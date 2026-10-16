@@ -17,12 +17,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/paths"
+	"github.com/jm2/switchworks/internal/paths"
 )
 
 const managerName = "launchd"
 
-func unitName(role string) string { return "dev.switchyard." + role }
+func unitName(role string) string { return "dev.switchworks." + role }
 
 func command(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
 
@@ -80,7 +80,7 @@ func launchPATH() string {
 	if sh := os.Getenv("SHELL"); sh != "" && filepath.IsAbs(sh) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		// A marker separates PATH from anything the profile prints.
-		const mark = "__SWYD_PATH__="
+		const mark = "__SWK_PATH__="
 		out, err := exec.CommandContext(ctx, sh, "-l", "-c", `printf '\n`+mark+`%s\n' "$PATH"`).Output()
 		cancel()
 		if i := strings.LastIndex(string(out), mark); err == nil && i >= 0 {
@@ -101,7 +101,7 @@ func xmlText(s string) string {
 func plistText(role, exe, path, logFile string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Written by ` + "`swyd service install " + role + "`" + `; ` + "`swyd service uninstall " + role + "`" + ` removes it.
+<!-- Written by ` + "`swk service install " + role + "`" + `; ` + "`swk service uninstall " + role + "`" + ` removes it.
      A LaunchAgent runs as you, in your login session. Re-run the install to
      pick up a new PATH. -->
 <plist version="1.0">

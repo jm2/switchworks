@@ -10,20 +10,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // gooseEnv points a real goose at the mock provider's Anthropic Messages
 // endpoint, with goose's config and sessions kept in a temporary HOME.
 func gooseEnv(t *testing.T) (string, map[string]string) {
 	t.Helper()
-	bin := os.Getenv("SWYD_GOOSE_BIN")
+	bin := os.Getenv("SWK_GOOSE_BIN")
 	if bin == "" {
 		var err error
 		if bin, err = exec.LookPath("goose"); err != nil {
-			t.Skip("goose not installed (set SWYD_GOOSE_BIN to run this test)")
+			t.Skip("goose not installed (set SWK_GOOSE_BIN to run this test)")
 		}
 	}
 	mock, err := codextest.StartMockProvider()
@@ -70,11 +70,11 @@ func TestRealGoose(t *testing.T) {
 
 	// A shell command under "untrusted" (goose's approve mode) asks first.
 	n := len(r.all())
-	if err := h.Deliver(context.Background(), adapter.Input{Text: "RUN: echo switchyard > out.txt && cat out.txt"}, adapter.DeliverQueue); err != nil {
+	if err := h.Deliver(context.Background(), adapter.Input{Text: "RUN: echo switchworks > out.txt && cat out.txt"}, adapter.DeliverQueue); err != nil {
 		t.Fatal(err)
 	}
 	ar := r.waitFor(t, "approval", kind(model.KindApprovalRequested)).Payload.(model.ApprovalRequested)
-	if ar.Kind != "command" || ar.Command != "echo switchyard > out.txt && cat out.txt" {
+	if ar.Kind != "command" || ar.Command != "echo switchworks > out.txt && cat out.txt" {
 		t.Fatalf("approval %+v", ar)
 	}
 	if err := h.Resolve(context.Background(), ar.ApprovalID, "accept"); err != nil {
@@ -92,10 +92,10 @@ func TestRealGoose(t *testing.T) {
 		ExitCode                 *int
 	}
 	_ = json.Unmarshal(cmds[0].Raw, &raw)
-	if raw.Status != "completed" || strings.TrimSpace(raw.AggregatedOutput) != "switchyard" || raw.ExitCode == nil || *raw.ExitCode != 0 {
+	if raw.Status != "completed" || strings.TrimSpace(raw.AggregatedOutput) != "switchworks" || raw.ExitCode == nil || *raw.ExitCode != 0 {
 		t.Fatalf("command item %s", cmds[0].Raw)
 	}
-	if b, err := os.ReadFile(cwd + "/out.txt"); err != nil || strings.TrimSpace(string(b)) != "switchyard" {
+	if b, err := os.ReadFile(cwd + "/out.txt"); err != nil || strings.TrimSpace(string(b)) != "switchworks" {
 		t.Fatalf("out.txt: %q %v", b, err)
 	}
 	var usage *model.UsageEvent

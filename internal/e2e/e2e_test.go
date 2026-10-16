@@ -18,13 +18,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/coord"
-	"github.com/jm2/switchyard/internal/mcp"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
-	"github.com/jm2/switchyard/internal/store"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/coord"
+	"github.com/jm2/switchworks/internal/mcp"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
+	"github.com/jm2/switchworks/internal/store"
 )
 
 func TestMain(m *testing.M) {

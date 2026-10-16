@@ -21,10 +21,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/harness"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/harness"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // The vision probe checks whether a harness and model can see images: it
@@ -236,7 +236,7 @@ func drainFor(events chan adapter.Event, d time.Duration, fn func(adapter.Event)
 	}
 }
 
-// VisionMain runs `swyd dev vision-probe`.
+// VisionMain runs `swk dev vision-probe`.
 func VisionMain(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev vision-probe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -254,7 +254,7 @@ func VisionMain(args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("v", false, "verbose")
 	logs := fs.Bool("logs", false, "show harness stderr")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: swyd dev vision-probe [flags]\n\nSends an image with a random code to a harness and checks that the model reads it back.\nIt runs the harness directly with your own configuration and keys, like `swyd dev run`.\n\n")
+		fmt.Fprintf(stderr, "usage: swk dev vision-probe [flags]\n\nSends an image with a random code to a harness and checks that the model reads it back.\nIt runs the harness directly with your own configuration and keys, like `swk dev run`.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -266,7 +266,7 @@ func VisionMain(args []string, stdout, stderr io.Writer) int {
 	}
 	logf := func(f string, a ...any) {
 		if *verbose {
-			fmt.Fprintf(stderr, "swyd: "+f+"\n", a...)
+			fmt.Fprintf(stderr, "swk: "+f+"\n", a...)
 		}
 	}
 	harnessStderr := io.Discard
@@ -289,7 +289,7 @@ func VisionMain(args []string, stdout, stderr io.Writer) int {
 	}
 	dir := *cwd
 	if dir == "" {
-		d, err := os.MkdirTemp("", "swyd-vision-probe-")
+		d, err := os.MkdirTemp("", "swk-vision-probe-")
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1

@@ -12,20 +12,20 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/codex/codextest"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/codex/codextest"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // TestRealCodex drives the real `codex app-server` against a local mock
 // model provider: a full turn with streaming and usage, an approval round
 // trip for a shell command, and resume across app-server processes.
 //
-// Gated because it needs the codex binary: SWYD_CODEX_IT=1 go test ./...
-// Set SWYD_CODEX_RECORD=<file> to save the raw protocol traffic.
+// Gated because it needs the codex binary: SWK_CODEX_IT=1 go test ./...
+// Set SWK_CODEX_RECORD=<file> to save the raw protocol traffic.
 func TestRealCodex(t *testing.T) {
-	if os.Getenv("SWYD_CODEX_IT") != "1" {
-		t.Skip("set SWYD_CODEX_IT=1 to run against the real codex binary")
+	if os.Getenv("SWK_CODEX_IT") != "1" {
+		t.Skip("set SWK_CODEX_IT=1 to run against the real codex binary")
 	}
 	bin, err := exec.LookPath("codex")
 	if err != nil {
@@ -51,7 +51,7 @@ func TestRealCodex(t *testing.T) {
 			tapMu.Unlock()
 		}}
 	defer func() {
-		if path := os.Getenv("SWYD_CODEX_RECORD"); path != "" {
+		if path := os.Getenv("SWK_CODEX_RECORD"); path != "" {
 			tapMu.Lock()
 			_ = os.WriteFile(path, tapBuf.Bytes(), 0o644)
 			tapMu.Unlock()

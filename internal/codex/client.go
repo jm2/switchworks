@@ -10,9 +10,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Handler receives server-initiated traffic. Calls arrive sequentially, in

@@ -2,7 +2,7 @@
 
 The coordinator serves a web UI on its API port: `https://<coordinator>:7480/`.
 It is built for a phone first and works on a desktop browser too. It is plain
-HTML, CSS and JavaScript embedded in the `swyd` binary: no build step, no
+HTML, CSS and JavaScript embedded in the `swk` binary: no build step, no
 framework, and nothing loaded from anywhere else.
 
 ![A session waiting for approval, on a desktop](img/web-ui.png)
@@ -58,7 +58,7 @@ warn about it at first. There are two ways to fix that:
 1. **Install the CA.** Open `https://<coordinator>:7480/ca.crt` and install
    it as a trusted certificate (iOS: Settings → General → About →
    Certificate Trust Settings after installing the profile). The server
-   certificate covers the names you passed to `swyd coordinator init --host`.
+   certificate covers the names you passed to `swk coordinator init --host`.
 2. **Use `tailscale serve`** for a real certificate on your tailnet name:
 
    ```json
@@ -78,15 +78,15 @@ warn about it at first. There are two ways to fix that:
 
 ## Signing in
 
-- **With a token**: paste an API token (`swyd token create phone --scope
+- **With a token**: paste an API token (`swk token create phone --scope
   operate` prints one) or the admin token into the login page.
-- **With a one-time link** (easier on a phone): run `swyd ui-link` anywhere
+- **With a one-time link** (easier on a phone): run `swk ui-link` anywhere
   the CLI works and open the link it prints. A link signs one browser in,
   once, within 15 minutes. The code is in the URL fragment, so it never
   reaches server logs or a `Referer`.
 
 The browser gets the scope of the credential that signed it in: the
-token's, or for a link, the scope of the token that minted it (`swyd
+token's, or for a link, the scope of the token that minted it (`swk
 ui-link --scope read` asks for less; a link never gets more). A browser
 with `read` scope sees everything live, but sending, approving, stopping
 or spawning is refused with a message naming the scope it needs. See the
@@ -94,10 +94,10 @@ scope table in the [README](../README.md#3-the-cli-on-other-machines).
 
 The browser gets a 30-day session cookie, or shorter if its token expires
 sooner. Signing out from the top bar revokes that cookie on the server too,
-so a copy of it stops working. `swyd token rm <name>` signs out every
+so a copy of it stops working. `swk token rm <name>` signs out every
 browser that token signed in, directly or through a link, and voids its
 unused links. Pages and streams already open end within seconds of a
-sign-out or `swyd token rm`, and within 15 seconds of an expiry. Each
+sign-out or `swk token rm`, and within 15 seconds of an expiry. Each
 token may have 20 unused links at a time (a new one replaces the oldest)
 and sign in 20 times a minute. To sign every browser out, delete `ui.key` in the
 coordinator directory and restart the coordinator.
@@ -112,7 +112,7 @@ coordinator directory and restart the coordinator.
   Open streams check again every 15 seconds, and at once after a sign-out
   or revocation.
 - A cookie-authenticated request that changes anything must also send
-  `X-Swyd-CSRF: 1`. A cross-site page cannot add that header without a CORS
+  `X-Swk-CSRF: 1`. A cross-site page cannot add that header without a CORS
   preflight, and the server never answers one.
 - The pages are served with a strict CSP (`script-src 'self'`, no inline
   scripts or styles), `X-Frame-Options: DENY` and `Referrer-Policy:
@@ -128,7 +128,7 @@ coordinator directory and restart the coordinator.
 - Failed token sign-ins are limited to 10 a minute per client. One-time
   links are not limited (they cannot be guessed), so a flood of bad tokens
   cannot keep you from signing in with a link.
-- Sign-in and sign-out also require `X-Swyd-CSRF: 1`. Over HTTPS the server
+- Sign-in and sign-out also require `X-Swk-CSRF: 1`. Over HTTPS the server
   sends `Strict-Transport-Security`; browsers ignore it until they trust
   the fleet CA, so it cannot lock anyone out.
 - Bearer tokens and cookies go through the same check: every API route

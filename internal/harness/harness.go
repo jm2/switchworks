@@ -10,12 +10,12 @@ import (
 	"os/exec"
 	"sort"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/adapter/acpad"
-	"github.com/jm2/switchyard/internal/adapter/agyad"
-	"github.com/jm2/switchyard/internal/adapter/codexad"
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/adapter/acpad"
+	"github.com/jm2/switchworks/internal/adapter/agyad"
+	"github.com/jm2/switchworks/internal/adapter/codexad"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // ACPAgent configures one ACP agent harness (node.json "acp" entries).

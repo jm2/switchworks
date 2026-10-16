@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/store"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Config is coordinator.json.
@@ -92,10 +92,10 @@ func Init(dir string, hosts []string, apiPort, nodePort int) (string, error) {
 	return token, nil
 }
 
-// Main implements `swyd coordinator ...`.
+// Main implements `swk coordinator ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: swyd coordinator init|run|enroll-token|cli-config|health [flags]")
+		fmt.Fprintln(stderr, "usage: swk coordinator init|run|enroll-token|cli-config|health [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -165,13 +165,13 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 		// To check the CA a phone or browser downloads from /ca.crt.
 		fmt.Fprintf(stdout, "  CA SHA-256 fingerprint (check it when installing ca.crt):\n    %s\n", colonHex(pki.Fingerprint(ca.Cert)))
 	}
-	fmt.Fprintf(stdout, "\nNext: swyd coordinator run, then on each workstation:\n  ssh <this host> swyd coordinator enroll-token <host> | swyd node enroll -\n")
+	fmt.Fprintf(stdout, "\nNext: swk coordinator run, then on each workstation:\n  ssh <this host> swk coordinator enroll-token <host> | swk node enroll -\n")
 	fmt.Fprint(stdout, `
 The admin token controls the whole fleet. Keep a copy somewhere safe (a
 password manager) and never put it on a machine where agents run: they can
 read any file you can. For the CLI on those machines, make a scoped token:
-  swyd token create <machine> --scope operate --cli-config > cli.json
-and install that file as ~/.config/swyd/cli.json there (or --scope read).
+  swk token create <machine> --scope operate --cli-config > cli.json
+and install that file as ~/.config/swk/cli.json there (or --scope read).
 `)
 	fmt.Fprintf(stdout, `If agents will run on this machine too, they can read %s
 (its CA key and admin cli.json) unless the coordinator runs as another user.
@@ -215,7 +215,7 @@ func mainRun(args []string, stderr io.Writer) int {
 	logger := log.New(stderr, "coordinator: ", log.LstdFlags)
 	cfg, err := LoadConfig(*dir)
 	if err != nil {
-		logger.Printf("load config (run `swyd coordinator init` first): %v", err)
+		logger.Printf("load config (run `swk coordinator init` first): %v", err)
 		return 1
 	}
 	lock, err := runstatus.Lock(*dir)
@@ -296,7 +296,7 @@ func mainEnrollToken(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: swyd coordinator enroll-token [--ttl 1h] <host>")
+		fmt.Fprintln(stderr, "usage: swk coordinator enroll-token [--ttl 1h] <host>")
 		return 2
 	}
 	cfgPath := filepath.Join(*dir, "cli.json")

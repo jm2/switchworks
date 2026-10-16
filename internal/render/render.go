@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Package render prints a session's event stream to a terminal. It is shared
-// by `swyd dev run` (events straight from an adapter) and `swyd attach`
+// by `swk dev run` (events straight from an adapter) and `swk attach`
 // (events streamed from the coordinator).
 package render
 
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // Renderer writes human-readable output for events.
@@ -104,9 +104,9 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 				if c.Type != "text" {
 					continue
 				}
-				// A routed message: "[switchyard msg=... from=... kind=...]\n..."
-				if hdr, body, ok := strings.Cut(c.Text, "\n"); ok && strings.HasPrefix(hdr, "[switchyard ") && strings.HasSuffix(hdr, "]") {
-					r.line("✉ %s", strings.TrimSuffix(strings.TrimPrefix(hdr, "[switchyard "), "]"))
+				// A routed message: "[switchworks msg=... from=... kind=...]\n..."
+				if hdr, body, ok := strings.Cut(c.Text, "\n"); ok && strings.HasPrefix(hdr, "[switchworks ") && strings.HasSuffix(hdr, "]") {
+					r.line("✉ %s", strings.TrimSuffix(strings.TrimPrefix(hdr, "[switchworks "), "]"))
 					for _, l := range strings.Split(body, "\n") {
 						r.line("  %s", l)
 					}

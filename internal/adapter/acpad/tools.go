@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/acp"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/acp"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // toolState accumulates one tool call across tool_call and
@@ -141,8 +141,8 @@ func (t *toolState) classify() classified {
 	name := t.toolName()
 	low := strings.ToLower(name)
 
-	// MCP tools: harnesses prefix them with their server ("swyd__fleet_list",
-	// "mcp__swyd__fleet_list").
+	// MCP tools: harnesses prefix them with their server ("swk__fleet_list",
+	// "mcp__swk__fleet_list").
 	if strings.Contains(name, "__") {
 		n := strings.TrimPrefix(name, "mcp__")
 		server, tool, _ := strings.Cut(n, "__")

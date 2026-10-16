@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/store"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/store"
 )
 
 // activity is what the fleet views show about a session beyond its record:

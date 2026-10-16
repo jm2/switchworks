@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/jm2/switchyard/internal/runstatus"
+	"github.com/jm2/switchworks/internal/runstatus"
 )
 
 const managerName = "task-scheduler"
@@ -56,9 +56,9 @@ func unitName(role string) string {
 		}
 	}
 	if sid == "" {
-		return "Switchyard " + role + " (" + name + ")"
+		return "Switchworks " + role + " (" + name + ")"
 	}
-	return "Switchyard " + role + " (" + name + ", " + sid + ")"
+	return "Switchworks " + role + " (" + name + ", " + sid + ")"
 }
 
 func query(role string) (state, error) {
@@ -84,7 +84,7 @@ func taskXML(role, sid, exe, args, workDir string) string {
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Switchyard ` + role + ` for this user. Written by swyd service install; swyd service uninstall removes it.</Description>
+    <Description>Switchworks ` + role + ` for this user. Written by swk service install; swk service uninstall removes it.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -145,10 +145,10 @@ func utf16File(s string) []byte {
 	return b
 }
 
-// backgroundExe picks swydw.exe, the windowless build of swyd, beside exe:
+// backgroundExe picks swkw.exe, the windowless build of swk, beside exe:
 // a console program started at logon would open a console window.
 func backgroundExe(exe string) (string, bool) {
-	w := filepath.Join(filepath.Dir(exe), "swydw.exe")
+	w := filepath.Join(filepath.Dir(exe), "swkw.exe")
 	if fi, err := os.Stat(w); err == nil && !fi.IsDir() {
 		return w, true
 	}
@@ -162,7 +162,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	}
 	bg, ok := backgroundExe(exe)
 	if !ok {
-		fmt.Fprintf(out, "Note: swydw.exe is not next to %s, so the task runs swyd.exe in a console window.\n", exe)
+		fmt.Fprintf(out, "Note: swkw.exe is not next to %s, so the task runs swk.exe in a console window.\n", exe)
 	}
 	logFile := filepath.Join(LogDir(role), role+".log")
 	args := syscall.EscapeArg(role) + " run --log-file " + syscall.EscapeArg(logFile)
@@ -170,7 +170,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp("", "swyd-task-*.xml")
+	f, err := os.CreateTemp("", "swk-task-*.xml")
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func legacyUnitName(role string) string {
 			name = name[i+1:]
 		}
 	}
-	return "Switchyard " + role + " (" + name + ")"
+	return "Switchworks " + role + " (" + name + ")"
 }
 
 // removeLegacy deletes a task under the old name, if it is this user's:

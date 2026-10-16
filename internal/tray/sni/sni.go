@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/dbus"
-	"github.com/jm2/switchyard/internal/tray"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/dbus"
+	"github.com/jm2/switchworks/internal/tray"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	watcherName  = "org.kde.StatusNotifierWatcher"
 	watcherPath  = dbus.ObjectPath("/StatusNotifierWatcher")
 	busName      = "org.freedesktop.DBus"
-	instanceName = "io.github.jm2.Switchyard.Tray"
+	instanceName = "io.github.jm2.Switchworks.Tray"
 
 	errUnknownMethod   = "org.freedesktop.DBus.Error.UnknownMethod"
 	errUnknownObject   = "org.freedesktop.DBus.Error.UnknownObject"
@@ -43,7 +43,7 @@ const (
 	errInvalidArgs     = "org.freedesktop.DBus.Error.InvalidArgs"
 )
 
-// ErrAlreadyRunning is returned by Run when another swyd-tray owns the bus
+// ErrAlreadyRunning is returned by Run when another swk-tray owns the bus
 // name for this session.
 var ErrAlreadyRunning = fmt.Errorf("another %s tray is already running in this session", version.Name)
 

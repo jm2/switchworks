@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package adapter defines the boundary between Switchyard and an agent
+// Package adapter defines the boundary between Switchworks and an agent
 // harness (Codex, Antigravity, later ACP agents). Each harness implements
 // Adapter; everything above it (node, coordinator, UI) only sees the
 // normalized events in package model.
@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 // Errors returned by handles.
@@ -119,7 +119,7 @@ type Handle interface {
 	Deliver(ctx context.Context, in Input, mode DeliveryMode) error
 	Interrupt(ctx context.Context) error
 	Resolve(ctx context.Context, approvalID, decision string) error
-	// Stop ends Switchyard's management of the session. The harness's own
+	// Stop ends Switchworks's management of the session. The harness's own
 	// history is kept.
 	Stop(ctx context.Context) error
 }

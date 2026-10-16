@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package mcp is `swyd mcp`: a stdio MCP server that gives an agent session
+// Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
 // fleet_inbox, fleet_spawn, fleet_status, fleet_stop). The harness starts it
-// inside the session with SWYD_NODE_URL, SWYD_SESSION and SWYD_TOKEN set by
+// inside the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by
 // the node; every call is forwarded to the node's local API and from there
 // to the coordinator.
 package mcp
@@ -21,11 +21,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Protocol versions this server speaks, newest first.
@@ -34,10 +34,10 @@ var protocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-
 // Environment variables (set by the node; duplicated here to avoid an
 // import cycle).
 const (
-	envNodeURL     = "SWYD_NODE_URL"
-	envSession     = "SWYD_SESSION"
-	envSessionPath = "SWYD_SESSION_PATH"
-	envToken       = "SWYD_TOKEN"
+	envNodeURL     = "SWK_NODE_URL"
+	envSession     = "SWK_SESSION"
+	envSessionPath = "SWK_SESSION_PATH"
+	envToken       = "SWK_TOKEN"
 )
 
 // NodeClient calls the node's local API for one session.
@@ -72,7 +72,7 @@ func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessa
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("X-Swyd-Session", c.Session)
+	req.Header.Set("X-Swk-Session", c.Session)
 	hc := c.HTTP
 	if hc == nil {
 		hc = &http.Client{Transport: &http.Transport{Proxy: nil}}
@@ -82,12 +82,12 @@ func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessa
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, &errTransient{msg: "cannot reach the swyd node: " + err.Error()}
+		return nil, &errTransient{msg: "cannot reach the swk node: " + err.Error()}
 	}
 	defer resp.Body.Close()
 	var lr localResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&lr); err != nil {
-		return nil, fmt.Errorf("bad response from the swyd node (HTTP %d): %w", resp.StatusCode, err)
+		return nil, fmt.Errorf("bad response from the swk node (HTTP %d): %w", resp.StatusCode, err)
 	}
 	if lr.Transient {
 		return nil, &errTransient{msg: lr.Error}
@@ -121,12 +121,12 @@ func str(desc string) map[string]any { return map[string]any{"type": "string", "
 var imagesProp = map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 	"description": "Image files to attach (screenshots, diagrams): paths of PNG, JPEG, WebP or GIF files inside your working directory (relative to it, or absolute), at most 4, 5 MiB each and 10 MiB in all. Symlinks and files outside your working directory are refused. The recipient's harness must take images (Codex does; agy does not)."}
 
-const addressHelp = `Addresses: "host/name" (a session path), a fleet-unique session name, "parent" (the session that spawned you), "@key=value" (sessions with that label; host and harness also work as keys), or "user:<name>" (a person, who reads it in the Switchyard UI or CLI).`
+const addressHelp = `Addresses: "host/name" (a session path), a fleet-unique session name, "parent" (the session that spawned you), "@key=value" (sessions with that label; host and harness also work as keys), or "user:<name>" (a person, who reads it in the Switchworks UI or CLI).`
 
 // Tools are the fleet tools.
 var Tools = []Tool{
 	{Name: "fleet_list", Title: "List fleet sessions", Annotations: map[string]bool{"readOnlyHint": true},
-		Description: "List the agent sessions in the Switchyard fleet, across all hosts, with their status. Use a session's path (host/name) to address it in other fleet tools.",
+		Description: "List the agent sessions in the Switchworks fleet, across all hosts, with their status. Use a session's path (host/name) to address it in other fleet tools.",
 		InputSchema: obj(map[string]any{
 			"host":  str("Only sessions on this host."),
 			"label": str(`Only sessions with this label, as "key=value".`),
@@ -152,7 +152,7 @@ var Tools = []Tool{
 			"images":       imagesProp,
 		}, "to", "text")},
 	{Name: "fleet_reply", Title: "Answer a question",
-		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchyard msg=<id> ... kind=ask"; pass that id as message_id.`,
+		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id.`,
 		InputSchema: obj(map[string]any{
 			"message_id": str("The id of the ask you are answering."),
 			"text":       str("Your answer."),
@@ -184,7 +184,7 @@ var Tools = []Tool{
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
 }
 
-const instructions = `You are one agent session in a Switchyard fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as turns that start with "[switchyard msg=... from=... kind=...]". When kind=ask, answer with fleet_reply using that msg id.`
+const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as turns that start with "[switchworks msg=... from=... kind=...]". When kind=ask, answer with fleet_reply using that msg id.`
 
 // Server serves MCP on one connection.
 type Server struct {
@@ -217,12 +217,12 @@ func Serve(r io.Reader, w io.Writer, node *NodeClient, logf func(string, ...any)
 	return nil
 }
 
-// Main implements `swyd mcp`.
+// Main implements `swk mcp`.
 func Main(stdin io.Reader, stdout, stderr io.Writer) int {
 	node := &NodeClient{URL: os.Getenv(envNodeURL), Session: os.Getenv(envSession), Token: os.Getenv(envToken)}
-	logf := func(f string, a ...any) { fmt.Fprintf(stderr, "swyd mcp: "+f+"\n", a...) }
+	logf := func(f string, a ...any) { fmt.Fprintf(stderr, "swk mcp: "+f+"\n", a...) }
 	if node.URL == "" || node.Session == "" || node.Token == "" {
-		logf("missing %s/%s/%s: swyd mcp is started by a swyd node inside a managed session", envNodeURL, envSession, envToken)
+		logf("missing %s/%s/%s: swk mcp is started by a swk node inside a managed session", envNodeURL, envSession, envToken)
 	}
 	if err := Serve(stdin, stdout, node, logf); err != nil {
 		logf("%v", err)

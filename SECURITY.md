@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Switchyard is pre-release. Security fixes land on `main` and are included in the next tagged
+Switchworks is pre-release. Security fixes land on `main` and are included in the next tagged
 release. Report vulnerabilities in `main` and the latest release.
 
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting for
-[jm2/switchyard](https://github.com/jm2/switchyard/security/advisories/new). Do not open a
+[jm2/switchworks](https://github.com/jm2/switchworks/security/advisories/new). Do not open a
 public issue or pull request for a security problem. If the reporting form is unavailable, open
 an issue that says only that you have a security report and how you can be reached privately,
 with no detail of the problem.
@@ -19,7 +19,7 @@ redact host names and paths you would rather not share.
 
 ## Deployment assumptions
 
-Switchyard is built for one owner (or a small team) and their own machines, on a private network
+Switchworks is built for one owner (or a small team) and their own machines, on a private network
 or tailnet:
 
 - Ports 7480 (API and web UI) and 7481 (nodes) belong on a private network or a tailnet, never
@@ -31,7 +31,7 @@ or tailnet:
   See the trust model in [`docs/messaging.md`](docs/messaging.md#trust-model).
 - The admin token is kept off every machine where agents run (in a password manager, or on
   one trusted machine). Machines with agents carry at most a `read` or `operate` API token
-  (`swyd token create`), which cannot enroll or remove hosts or manage tokens, and can be
+  (`swk token create`), which cannot enroll or remove hosts or manage tokens, and can be
   revoked on its own. An `operate` token can still spawn sessions with any options on any
   host, which is as much as a person at that CLI can do.
 - The coordinator's directory (CA key, `coordinator.json`, the admin `cli.json`) is readable
@@ -52,10 +52,10 @@ or tailnet:
 - The fleet tools: whether an agent can escape the guards in `coordinator.json` (spawn
   confinement, hop limits, rate limits, steer/stop/read rules) or pose as a person or another
   session.
-- The node's local API used by `swyd mcp`, and files the node writes into workspaces (agy's
+- The node's local API used by `swk mcp`, and files the node writes into workspaces (agy's
   `.agents/mcp_config.json`, `.git/info/exclude`).
 - Image attachments: whether an agent can make its node read a file outside its working
-  directory, or under Switchyard's own directories, through the fleet tools' `images`; whether a
+  directory, or under Switchworks's own directories, through the fleet tools' `images`; whether a
   non-image (or an image of a type other than PNG, JPEG, WebP and GIF) gets through; and the
   coordinator's attachment store and `GET /v1/attachments`. See
   [`docs/messaging.md`](docs/messaging.md#images).
@@ -79,4 +79,4 @@ or tailnet:
 - A fix, or an agreed plan, before any public disclosure; please allow time for it to land.
 - Credit in the release notes if you want it.
 
-Switchyard is a volunteer project, so these timelines are best effort.
+Switchworks is a volunteer project, so these timelines are best effort.

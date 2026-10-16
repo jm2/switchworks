@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/wire"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Run keeps a link to the coordinator until ctx ends, reconnecting with

@@ -9,9 +9,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/jm2/switchyard/internal/jsonrpc"
-	"github.com/jm2/switchyard/internal/proc"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/proc"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Handler receives agent-initiated traffic, sequentially and in wire order,
@@ -58,15 +58,15 @@ func (ch connHandler) HandleRequest(id json.RawMessage, method string, params js
 	if method == MethodRequestPermission && ch.c.h != nil {
 		var r RequestPermissionRequest
 		if err := json.Unmarshal(params, &r); err != nil {
-			_ = ch.c.conn.ReplyError(id, jsonrpc.CodeInvalidParams, "switchyard: bad permission request")
+			_ = ch.c.conn.ReplyError(id, jsonrpc.CodeInvalidParams, "switchworks: bad permission request")
 			return
 		}
 		ch.c.h.OnPermission(id, r)
 		return
 	}
-	// Switchyard advertises no fs or terminal capability, so the agent does
+	// Switchworks advertises no fs or terminal capability, so the agent does
 	// its own file and shell work; anything else is unsupported.
-	_ = ch.c.conn.ReplyError(id, jsonrpc.CodeMethodNotFound, "switchyard does not support "+method)
+	_ = ch.c.conn.ReplyError(id, jsonrpc.CodeMethodNotFound, "switchworks does not support "+method)
 }
 
 // Start launches the agent and completes the initialize handshake.
@@ -97,7 +97,7 @@ func Start(ctx context.Context, opts Options, h Handler) (*Client, error) {
 	}
 	if c.Info.ProtocolVersion != ProtocolVersion {
 		_ = p.Kill()
-		return nil, fmt.Errorf("%s speaks ACP version %d; switchyard speaks %d", opts.Bin, c.Info.ProtocolVersion, ProtocolVersion)
+		return nil, fmt.Errorf("%s speaks ACP version %d; switchworks speaks %d", opts.Bin, c.Info.ProtocolVersion, ProtocolVersion)
 	}
 	return c, nil
 }

@@ -12,7 +12,7 @@ entry with `wire_api = "responses"` and `requires_openai_auth = false` drives
 `thread/start` + `turn/start` end to end. Streaming deltas, tool calls,
 approvals and token usage (`thread/tokenUsage/updated`, including
 `cachedInputTokens`) all work. Exercised by `TestRealCodex` and
-`swyd dev mock-provider`.
+`swk dev mock-provider`.
 
 **`wire_api = "chat"` is gone.** Codex 0.160.0 refuses to load it: "`wire_api
 = "chat"` is no longer supported" (openai/codex discussion #7782). Any GLM,
@@ -43,7 +43,7 @@ Consequences:
    Go.
 2. Option worth deciding before M4: point the node's managed sessions at the
    same daemon instead of a private `codex app-server` child. Sessions
-   started by Switchyard would then appear in `codex resume` and vice
+   started by Switchworks would then appear in `codex resume` and vice
    versa, and Codex's writer locks would arbitrate the two-writers problem.
    The cost is that the daemon is Codex-managed and **self-updating**, so
    the protocol version can change under a running node. That makes the
@@ -52,7 +52,7 @@ Consequences:
 **Approval prompts declare their allowed decisions.** With the experimental
 API, `item/commandExecution/requestApproval` carries `availableDecisions`. For
 a plain command it offered `accept`, `acceptWithExecpolicyAmendment` and
-`cancel`, with **no `decline`**. Switchyard surfaces the list and rejects
+`cancel`, with **no `decline`**. Switchworks surfaces the list and rejects
 decisions that were not offered. The schema had to be generated with
 `--experimental` to include this field.
 
@@ -73,9 +73,9 @@ decisions that were not offered. The schema had to be generated with
 
 - **Windows 11**: whether `codex app-server` over stdio, the job-object
   teardown, and the daemon's Unix socket (AF_UNIX exists on Windows 10 1803+)
-  all behave. Run `swyd dev run` on winbox first.
+  all behave. Run `swk dev run` on winbox first.
 - **macOS and Fedora aarch64**: binaries cross-compile but were not run.
 - **Antigravity**: no `agy` binary or Google sign-in was available. The
   adapter follows the documented headless flags only. Record a real stream
-  with `swyd dev run --harness agy --record agy.jsonl "hello"` and send it
+  with `swk dev run --harness agy --record agy.jsonl "hello"` and send it
   back to pin the `step_update` schema.

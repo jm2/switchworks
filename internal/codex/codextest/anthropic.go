@@ -22,7 +22,7 @@ import (
 //   - a line "CALL <tool> <json args>": call the advertised tool named <tool>
 //     or ending in "__<tool>" / "_<tool>" (MCP tools are prefixed by the
 //     harness), then answer "tool <tool>: <output>"
-//   - a Switchyard ask: answer it with fleet_reply, as for Codex
+//   - a Switchworks ask: answer it with fleet_reply, as for Codex
 //   - anything else: "mock: <message>" in three deltas
 //   - with image blocks (base64 sources): as for the Responses API, the
 //     vision probe's code, or each image's type, size and SHA-256

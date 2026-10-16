@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 const (

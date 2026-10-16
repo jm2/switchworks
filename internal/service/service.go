@@ -3,12 +3,12 @@
 // Package service registers the node and coordinator with the user's own
 // service manager, and reports how they are doing:
 //
-//   - Linux: a systemd user unit (swyd-node.service, swyd-coordinator.service).
+//   - Linux: a systemd user unit (swk-node.service, swk-coordinator.service).
 //     A distribution package ships them in /usr/lib/systemd/user; otherwise
 //     Install writes one into ~/.config/systemd/user.
-//   - macOS: a LaunchAgent in ~/Library/LaunchAgents (dev.switchyard.node).
+//   - macOS: a LaunchAgent in ~/Library/LaunchAgents (dev.switchworks.node).
 //   - Windows: a Task Scheduler task that starts at logon in the user's
-//     session, with least privilege ("Switchyard node (<user>, <SID>)").
+//     session, with least privilege ("Switchworks node (<user>, <SID>)").
 //
 // Everything runs as the user who installs it: nothing here asks for root or
 // administrator rights, or creates a system service or a system user. The
@@ -29,9 +29,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 // Roles a service can have.
@@ -64,7 +64,7 @@ type Info struct {
 	Error   string            `json:"error,omitempty"` // the service manager could not be asked
 }
 
-// Overview is what `swyd service status --json` prints and the tray apps
+// Overview is what `swk service status --json` prints and the tray apps
 // read.
 type Overview struct {
 	Version     string `json:"version"`
@@ -199,7 +199,7 @@ func readJSON(path string, v any) error {
 }
 
 // Install registers role with the service manager, to start at login and
-// now (unless noStart). exe is the swyd binary the service runs; empty means
+// now (unless noStart). exe is the swk binary the service runs; empty means
 // this process's own executable.
 func Install(role, exe string, noStart bool, out io.Writer) error {
 	if err := checkRole(role); err != nil {
@@ -267,8 +267,8 @@ func Restart(role string) error {
 	return restart(role)
 }
 
-// Executable returns the swyd binary to register: this process's own when it
-// is swyd, otherwise the swyd beside it (as for the tray apps), otherwise the
+// Executable returns the swk binary to register: this process's own when it
+// is swk, otherwise the swk beside it (as for the tray apps), otherwise the
 // one on PATH.
 func Executable() (string, error) {
 	self, err := os.Executable()
@@ -301,7 +301,7 @@ func checkExecutable(exe string) error {
 		return fmt.Errorf("%q: control characters in the path", exe)
 	}
 	if runtime.GOOS == "darwin" && (strings.HasPrefix(exe, "/Volumes/") || strings.Contains(exe, "/AppTranslocation/")) {
-		return fmt.Errorf("%s runs from a disk image or a temporary copy; move Switchyard.app to Applications first", exe)
+		return fmt.Errorf("%s runs from a disk image or a temporary copy; move Switchworks.app to Applications first", exe)
 	}
 	if runtime.GOOS == "windows" && strings.Contains(exe, "%") {
 		return fmt.Errorf("%q: Task Scheduler would expand the %% in this path; install somewhere without one", exe)

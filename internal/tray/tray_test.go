@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/service"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/service"
 )
 
 type nopBackend struct{}

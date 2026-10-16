@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jm2/switchyard/internal/acp/acptest"
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/acp/acptest"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func testPNG(t *testing.T, w int) []byte {

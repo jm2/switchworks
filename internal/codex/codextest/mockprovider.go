@@ -23,9 +23,9 @@ import (
 //   - "RUN: <cmd>": the model calls exec_command with <cmd>; once Codex sends
 //     the function_call_output back, the model answers "Command finished."
 //   - a line "CALL <tool> <json args>": the model calls MCP tool <tool> of
-//     the swyd server (namespace mcp__swyd) and then answers
+//     the swk server (namespace mcp__swk) and then answers
 //     "tool <tool>: <output>"
-//   - a Switchyard ask ("[switchyard msg=<id> ... kind=ask"): the model
+//   - a Switchworks ask ("[switchworks msg=<id> ... kind=ask"): the model
 //     answers it with fleet_reply, text "answer: <last line>", then says
 //     "replied: <output>"
 //   - anything else: the model answers "mock: <message>" in three deltas
@@ -72,7 +72,7 @@ func (m *MockProvider) WriteCodexHome(dir string) (map[string]string, error) {
 model_provider = "mock"
 
 [model_providers.mock]
-name = "Switchyard mock"
+name = "Switchworks mock"
 base_url = %q
 wire_api = "responses"
 requires_openai_auth = false
@@ -212,13 +212,13 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 	case !sawOutput && askM != nil:
 		lines := strings.Split(strings.TrimSpace(lastUser), "\n")
 		args, _ := json.Marshal(map[string]string{"message_id": askM[1], "text": "answer: " + lines[len(lines)-1]})
-		call("mcp__swyd", "fleet_reply", string(args))
+		call("mcp__swk", "fleet_reply", string(args))
 	case !sawOutput && callM != nil:
 		args := strings.TrimSpace(callM[2])
 		if args == "" {
 			args = "{}"
 		}
-		call("mcp__swyd", callM[1], args)
+		call("mcp__swk", callM[1], args)
 	case !sawOutput && strings.HasPrefix(lastUser, "RUN: "):
 		args, _ := json.Marshal(map[string]any{"cmd": strings.TrimPrefix(lastUser, "RUN: ")})
 		item := map[string]any{"type": "function_call", "id": fmt.Sprintf("fc_%d", n), "call_id": fmt.Sprintf("call_%d", n),

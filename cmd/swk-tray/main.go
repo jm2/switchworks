@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Command swyd-tray shows the node's status in the system tray on Linux and
+// Command swk-tray shows the node's status in the system tray on Linux and
 // Windows, with a menu to open the web UI, start, stop or restart the user
 // services, open the logs and config folders, and start the tray at login.
-// It is a separate binary so that swyd itself stays a plain command-line
-// program; on macOS the Switchyard menu-bar app does the same job.
+// It is a separate binary so that swk itself stays a plain command-line
+// program; on macOS the Switchworks menu-bar app does the same job.
 package main
 
 import (
@@ -14,8 +14,8 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/jm2/switchyard/internal/tray"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/tray"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 func main() {

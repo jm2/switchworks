@@ -1,17 +1,17 @@
-# Switchyard coordinator, as a systemd *user* unit on the always-on machine.
+# Switchworks coordinator, as a systemd *user* unit on the always-on machine.
 #
-#   swyd coordinator init --host coord.lan,10.0.0.5
-#   swyd service install coordinator  # or, by hand:
-#   systemctl --user enable --now swyd-coordinator
+#   swk coordinator init --host coord.lan,10.0.0.5
+#   swk service install coordinator  # or, by hand:
+#   systemctl --user enable --now swk-coordinator
 #   loginctl enable-linger "$USER"    # keep it running without a login session
 [Unit]
-Description=Switchyard coordinator
-Documentation=https://github.com/jm2/switchyard
+Description=Switchworks coordinator
+Documentation=https://github.com/jm2/switchworks
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=@SWYD@ coordinator run
+ExecStart=@SWK@ coordinator run
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
@@ -24,9 +24,9 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
 # Filesystem confinement (ProtectSystem=strict, ProtectHome=read-only,
-# ReadWritePaths=%h/.config/swyd, PrivateTmp=yes) needs unprivileged user
+# ReadWritePaths=%h/.config/swk, PrivateTmp=yes) needs unprivileged user
 # namespaces in a user unit; add it in a drop-in
-# (systemctl --user edit swyd-coordinator) where your kernel allows them.
+# (systemctl --user edit swk-coordinator) where your kernel allows them.
 
 [Install]
 WantedBy=default.target

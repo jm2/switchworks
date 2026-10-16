@@ -14,7 +14,7 @@ import (
 // the API's name.
 func TestDialOverride(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"name":"Switchyard","version":"9.9.9"}`))
+		_, _ = w.Write([]byte(`{"name":"Switchworks","version":"9.9.9"}`))
 	}))
 	defer srv.Close()
 	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
@@ -33,10 +33,10 @@ func TestDialOverride(t *testing.T) {
 	if _, err := c.Health(context.Background()); err == nil {
 		t.Fatal("a certificate for another name was accepted")
 	}
-	// $SWYD_DIAL does the same.
-	t.Setenv("SWYD_DIAL", addr)
+	// $SWK_DIAL does the same.
+	t.Setenv("SWK_DIAL", addr)
 	c, _ = New(Config{API: "https://example.com:7480", CA: ca})
 	if _, err := c.Health(context.Background()); err != nil {
-		t.Fatalf("health through $SWYD_DIAL: %v", err)
+		t.Fatalf("health through $SWK_DIAL: %v", err)
 	}
 }

@@ -14,11 +14,11 @@ import (
 
 func TestPlistText(t *testing.T) {
 	for _, role := range Roles {
-		s := plistText(role, "/Applications/Switch & yard.app/Contents/MacOS/swyd", "/opt/homebrew/bin:/usr/bin",
-			"/Users/dev/Library/Application Support/swyd/node/logs/node.log")
+		s := plistText(role, "/Applications/Switch & yard.app/Contents/MacOS/swk", "/opt/homebrew/bin:/usr/bin",
+			"/Users/dev/Library/Application Support/swk/node/logs/node.log")
 		for _, want := range []string{
-			"<string>dev.switchyard." + role + "</string>",
-			"<string>/Applications/Switch &amp; yard.app/Contents/MacOS/swyd</string>",
+			"<string>dev.switchworks." + role + "</string>",
+			"<string>/Applications/Switch &amp; yard.app/Contents/MacOS/swk</string>",
 			"<string>--log-file</string>",
 			"<key>KeepAlive</key>",
 		} {
@@ -57,13 +57,13 @@ func TestLaunchPATH(t *testing.T) {
 }
 
 func TestCheckExecutableRejectsVolatile(t *testing.T) {
-	for _, p := range []string{"/Volumes/Switchyard/Switchyard.app/Contents/MacOS/swyd",
-		"/private/var/folders/x/AppTranslocation/ABC/d/Switchyard.app/Contents/MacOS/swyd"} {
+	for _, p := range []string{"/Volumes/Switchworks/Switchworks.app/Contents/MacOS/swk",
+		"/private/var/folders/x/AppTranslocation/ABC/d/Switchworks.app/Contents/MacOS/swk"} {
 		if err := checkExecutable(p); err == nil {
 			t.Errorf("checkExecutable(%q) accepted", p)
 		}
 	}
-	if err := checkExecutable("/Applications/Switchyard.app/Contents/MacOS/swyd"); err != nil {
+	if err := checkExecutable("/Applications/Switchworks.app/Contents/MacOS/swk"); err != nil {
 		t.Error(err)
 	}
 }

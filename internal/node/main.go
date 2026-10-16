@@ -20,11 +20,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/harness"
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/pki"
-	"github.com/jm2/switchyard/internal/runstatus"
-	"github.com/jm2/switchyard/internal/version"
+	"github.com/jm2/switchworks/internal/harness"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/runstatus"
+	"github.com/jm2/switchworks/internal/version"
 )
 
 const configFile = "node.json"
@@ -39,10 +39,10 @@ func LoadConfig(dir string) (Config, error) {
 	return c, json.Unmarshal(b, &c)
 }
 
-// Main implements `swyd node ...`.
+// Main implements `swk node ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: swyd node enroll <token> | swyd node run [flags]")
+		fmt.Fprintln(stderr, "usage: swk node enroll <token> | swk node run [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -145,9 +145,9 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	// The token can come from stdin ("-") or $SWYD_ENROLL_TOKEN instead of
+	// The token can come from stdin ("-") or $SWK_ENROLL_TOKEN instead of
 	// the command line, where other users of the machine could read it.
-	token := os.Getenv("SWYD_ENROLL_TOKEN")
+	token := os.Getenv("SWK_ENROLL_TOKEN")
 	switch {
 	case fs.NArg() == 1 && fs.Arg(0) == "-":
 		b, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
@@ -160,7 +160,7 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 		token = fs.Arg(0)
 	case fs.NArg() == 0 && token != "":
 	default:
-		fmt.Fprintln(stderr, "usage: swyd node enroll [--dir DIR] [--force] <token | - >  (or set SWYD_ENROLL_TOKEN)")
+		fmt.Fprintln(stderr, "usage: swk node enroll [--dir DIR] [--force] <token | - >  (or set SWK_ENROLL_TOKEN)")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -170,7 +170,7 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Enrolled %s with %s (event stream %s); config in %s\nNext: swyd service install node (or swyd node run in a terminal)\n",
+	fmt.Fprintf(stdout, "Enrolled %s with %s (event stream %s); config in %s\nNext: swk service install node (or swk node run in a terminal)\n",
 		cfg.Host, cfg.CoordinatorAPI, cfg.CoordinatorNode, *dir)
 	return 0
 }
@@ -213,7 +213,7 @@ func mainRun(args []string, stderr io.Writer) int {
 	logger := log.New(stderr, "node: ", log.LstdFlags)
 	cfg, err := LoadConfig(*dir)
 	if err != nil {
-		logger.Printf("load config (run `swyd node enroll <token>` first): %v", err)
+		logger.Printf("load config (run `swk node enroll <token>` first): %v", err)
 		return 1
 	}
 	lock, err := runstatus.Lock(*dir)

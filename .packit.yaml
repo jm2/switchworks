@@ -1,18 +1,18 @@
 # See the documentation for more information:
 # https://packit.dev/docs/configuration/
 
-specfile_path: build-aux/rpm/switchyard.spec
+specfile_path: build-aux/rpm/switchworks.spec
 
 files_to_sync:
-  - build-aux/rpm/switchyard.spec
+  - build-aux/rpm/switchworks.spec
   - .packit.yaml
 
-upstream_package_name: switchyard
+upstream_package_name: switchworks
 # Release tags are v-prefixed, but RPM versions must be bare: rpmvercmp ranks
 # every "v"-prefixed version below any bare one.
 upstream_tag_template: "v{version}"
-downstream_package_name: switchyard
-upstream_project_url: https://github.com/jm2/switchyard
+downstream_package_name: switchworks
+upstream_project_url: https://github.com/jm2/switchworks
 # The build downloads the Go toolchain go.mod names when Fedora's is older.
 enable_net: true
 
@@ -20,7 +20,7 @@ jobs:
   - job: copr_build
     trigger: release
     owner: jmsqrd
-    project: switchyard
+    project: switchworks
     targets:
       - fedora-44-x86_64
       - fedora-44-aarch64

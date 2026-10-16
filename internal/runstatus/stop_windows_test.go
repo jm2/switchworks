@@ -11,7 +11,7 @@ import (
 )
 
 // RequestStop ends the StopContext of the process running from the same
-// directory: how `swyd service stop` stops a node with no console.
+// directory: how `swk service stop` stops a node with no console.
 func TestStopEventRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := StopContext(context.Background(), dir)

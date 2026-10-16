@@ -1,21 +1,21 @@
-# Switchyard node, as a systemd *user* unit: it runs as you, so sessions get
+# Switchworks node, as a systemd *user* unit: it runs as you, so sessions get
 # your Codex/agy sign-ins, repositories and toolchains. Never install it as a
 # system unit.
 #
-#   swyd service install node        # or, by hand:
-#   systemctl --user enable --now swyd-node
+#   swk service install node        # or, by hand:
+#   systemctl --user enable --now swk-node
 #   loginctl enable-linger "$USER"   # keep it running without a login session
 [Unit]
-Description=Switchyard node
-Documentation=https://github.com/jm2/switchyard
+Description=Switchworks node
+Documentation=https://github.com/jm2/switchworks
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=@SWYD@ node run
+ExecStart=@SWK@ node run
 Restart=on-failure
 RestartSec=3
-# Leave harness processes to swyd's own teardown on stop.
+# Leave harness processes to swk's own teardown on stop.
 KillMode=mixed
 TimeoutStopSec=20
 

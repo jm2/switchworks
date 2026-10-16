@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fills in the winget manifest templates for a release, in the directory
-# layout winget-pkgs uses (manifests/j/jm2/Switchyard/<version>/):
+# layout winget-pkgs uses (manifests/j/jm2/Switchworks/<version>/):
 #
 #   build-aux/winget/render.sh <version> <installer sha256> <output dir> [release date]
 #
@@ -27,9 +27,9 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
   exit 2
 fi
 
-dir="$out/manifests/j/jm2/Switchyard/$version"
+dir="$out/manifests/j/jm2/Switchworks/$version"
 mkdir -p "$dir"
-for f in jm2.Switchyard.yaml jm2.Switchyard.installer.yaml jm2.Switchyard.locale.en-US.yaml; do
+for f in jm2.Switchworks.yaml jm2.Switchworks.installer.yaml jm2.Switchworks.locale.en-US.yaml; do
   sed -e "s/@VERSION@/$version/g" -e "s/@SHA256@/$sha/g" -e "s/@RELEASE_DATE@/$date/g" \
     -e '/^# yaml-language-server/!{/^#/d}' "$here/$f" > "$dir/$f"
 done

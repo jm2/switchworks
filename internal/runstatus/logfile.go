@@ -26,7 +26,7 @@ type Log struct {
 }
 
 // OpenLog opens path for a service that has no stderr worth writing to,
-// such as swydw.exe started by a logon task. Runtime crash reports go to the
+// such as swkw.exe started by a logon task. Runtime crash reports go to the
 // same file.
 func OpenLog(path string) (*Log, error) { return openLog(path, true) }
 

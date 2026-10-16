@@ -10,7 +10,7 @@ const (
 	MsgAsk    = "ask"    // expects a fleet_reply
 	MsgReply  = "reply"  // answers an ask (ReplyTo)
 	MsgDone   = "done"   // completion notice from a spawned session to its parent
-	MsgSystem = "system" // Switchyard's own notices (expiry, failure)
+	MsgSystem = "system" // Switchworks's own notices (expiry, failure)
 	// MsgBroadcast is only a request kind: it expands into one notify per
 	// matching session.
 	MsgBroadcast = "broadcast"
@@ -32,14 +32,14 @@ const (
 	ModeInterrupt = "interrupt"
 )
 
-// SystemSender is the From of Switchyard's own notices.
-const SystemSender = "swyd"
+// SystemSender is the From of Switchworks's own notices.
+const SystemSender = "swk"
 
 // Message is one routed message.
 type Message struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`
-	From        string `json:"from"`                   // session path, "user:<name>" or "swyd"
+	From        string `json:"from"`                   // session path, "user:<name>" or "swk"
 	FromSession string `json:"from_session,omitempty"` // sender session id
 	To          string `json:"to"`                     // the address as given
 	ToSession   string `json:"to_session,omitempty"`   // resolved target session id

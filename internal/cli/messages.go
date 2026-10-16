@@ -15,10 +15,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/render"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/render"
 )
 
 func init() {
@@ -36,7 +36,7 @@ func cmdUILink(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	scope := fs.String("scope", "", "limit the browser to read or operate (default: this CLI token's scope)")
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: swyd ui-link [--scope read|operate|admin]")
+		fmt.Fprintln(stderr, "usage: swk ui-link [--scope read|operate|admin]")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -80,7 +80,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")
 	images := addImageFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swyd msg [flags] [--image FILE]... <address> <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
+		fmt.Fprintln(stderr, "usage: swk msg [flags] [--image FILE]... <address> <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -119,7 +119,7 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	images := addImageFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd ask [--wait 10m] [--image FILE]... <address> <question>")
+		fmt.Fprintln(stderr, "usage: swk ask [--wait 10m] [--image FILE]... <address> <question>")
 		return 2
 	}
 	atts, err := readImages(*images)
@@ -150,7 +150,7 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	case fleet.AskFailed:
 		return fail(stderr, fmt.Errorf("ask %s: %s", res.MessageID, res.Error))
 	}
-	fmt.Fprintf(stdout, "no answer yet from %s; ticket %s (see `swyd inbox`)\n", orDash(res.Target), res.MessageID)
+	fmt.Fprintf(stdout, "no answer yet from %s; ticket %s (see `swk inbox`)\n", orDash(res.Target), res.MessageID)
 	return 0
 }
 
@@ -160,7 +160,7 @@ func cmdReply(args []string, stdout, stderr io.Writer) int {
 	from := fs.String("from", "", "sender (default user:cli)")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd reply <ask-id> <answer>")
+		fmt.Fprintln(stderr, "usage: swk reply <ask-id> <answer>")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -247,7 +247,7 @@ func cmdInbox(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if open > 0 {
-		fmt.Fprintf(stdout, "answer with: swyd reply <id> <answer>\n\n")
+		fmt.Fprintf(stdout, "answer with: swk reply <id> <answer>\n\n")
 	}
 	printMessages(stdout, msgs)
 	return 0
@@ -260,7 +260,7 @@ func cmdMessages(args []string, stdout, stderr io.Writer) int {
 	asJSON := fs.Bool("json", false, "print JSON")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) > 1 {
-		fmt.Fprintln(stderr, "usage: swyd messages [-n 50] [--json] [session]")
+		fmt.Fprintln(stderr, "usage: swk messages [-n 50] [--json] [session]")
 		return 2
 	}
 	c, ok := client(stderr)

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/dbus"
-	"github.com/jm2/switchyard/internal/dbus/dbustest"
-	"github.com/jm2/switchyard/internal/tray"
+	"github.com/jm2/switchworks/internal/dbus"
+	"github.com/jm2/switchworks/internal/dbus/dbustest"
+	"github.com/jm2/switchworks/internal/tray"
 )
 
 // TestItemAndMenu plays the panel's side: a fake StatusNotifierWatcher
@@ -75,7 +75,7 @@ func TestItemAndMenu(t *testing.T) {
 		de := e.(dbus.DictEntry)
 		props[de.Key.(string)] = de.Value.(dbus.Variant).Value
 	}
-	if props["Menu"] != menuPath || props["ItemIsMenu"] != true || props["Id"] != "switchyard" {
+	if props["Menu"] != menuPath || props["ItemIsMenu"] != true || props["Id"] != "switchworks" {
 		t.Fatalf("item properties = %v", props)
 	}
 	pix := props["IconPixmap"].([]any)

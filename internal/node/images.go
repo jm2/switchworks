@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jm2/switchyard/internal/adapter"
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/paths"
-	"github.com/jm2/switchyard/internal/proc"
+	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/paths"
+	"github.com/jm2/switchworks/internal/proc"
 )
 
 // Image attachments on the node:
@@ -168,7 +168,7 @@ func (n *Node) resolveImages(s *session, body []byte) ([]byte, error) {
 		}
 		atts := make([]model.Attachment, 0, len(files))
 		for _, p := range files {
-			// Never Switchyard's own files (node key, session secrets,
+			// Never Switchworks's own files (node key, session secrets,
 			// cli.json), even when they sit under the working directory.
 			a, err := attach.ReadWithin(cwd, p, []string{n.dir, paths.Base(), filepath.Dir(paths.CLIConfig())})
 			if err != nil {

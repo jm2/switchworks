@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jm2/switchyard/internal/jsonrpc"
+	"github.com/jm2/switchworks/internal/jsonrpc"
 )
 
 // MCP support: like Codex, the fake reads per-thread MCP servers from the
@@ -25,7 +25,7 @@ import (
 //
 //   - "CALL <tool> <json args>" (the rest of that line): calls the tool and
 //     replies "tool <tool>: <result text>"
-//   - a Switchyard ask ("[switchyard msg=<id> ... kind=ask"): answers it
+//   - a Switchworks ask ("[switchworks msg=<id> ... kind=ask"): answers it
 //     with fleet_reply, text "answer: <last line of the question>"
 
 type mcpConfig struct {
@@ -173,14 +173,14 @@ func (m *mcpState) client(thread string) (*mcpClient, error) {
 
 var (
 	callRe = regexp.MustCompile(`(?m)^CALL (\S+)\s*(.*)$`)
-	askRe  = regexp.MustCompile(`^\[switchyard msg=(\S+) from=(\S+) kind=ask`)
+	askRe  = regexp.MustCompile(`^\[switchworks msg=(\S+) from=(\S+) kind=ask`)
 )
 
 // toolCall runs one MCP tool call inside a turn, emitting the mcpToolCall
 // item as Codex does, and returns the result text.
 func (s *server) toolCall(t *turn, n int, tool string, args json.RawMessage) string {
 	itemID := fmt.Sprintf("%s-mcp-%d", t.id, n)
-	server := "swyd"
+	server := "swk"
 	s.mcp.mu.Lock()
 	if cfg := s.mcp.configs[t.thread]; cfg != nil {
 		server = cfg.Name

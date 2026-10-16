@@ -63,4 +63,4 @@ func AddPNGText(png []byte, key, value string) []byte {
 }
 
 // ProbeKey is the tEXt keyword of the vision probe's code.
-const ProbeKey = "swyd-probe"
+const ProbeKey = "swk-probe"

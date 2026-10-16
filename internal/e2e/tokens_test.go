@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/apiclient"
-	"github.com/jm2/switchyard/internal/cli"
-	"github.com/jm2/switchyard/internal/model"
-	"github.com/jm2/switchyard/internal/node"
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/cli"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
 )
 
 func runCLI(t *testing.T, args ...string) (int, string, string) {
@@ -34,7 +34,7 @@ func wantForbidden(t *testing.T, what string, err error) {
 }
 
 // A workstation that runs agents gets an operate-scoped cli.json made by
-// `swyd token create --cli-config`, never the admin token. With it the CLI
+// `swk token create --cli-config`, never the admin token. With it the CLI
 // drives sessions but cannot change the fleet.
 func TestScopedCLI(t *testing.T) {
 	ctx := context.Background()
@@ -57,7 +57,7 @@ func TestScopedCLI(t *testing.T) {
 	waitOnline(t, admin, "devbox")
 
 	// On the admin machine: make a cli.json for the workstation.
-	t.Setenv("SWYD_CLI_CONFIG", filepath.Join(coordDir, "cli.json"))
+	t.Setenv("SWK_CLI_CONFIG", filepath.Join(coordDir, "cli.json"))
 	code, out, errOut := runCLI(t, "token", "create", "devbox-cli", "--scope", "operate", "--cli-config")
 	if code != 0 {
 		t.Fatalf("token create: %d %s", code, errOut)
@@ -79,7 +79,7 @@ func TestScopedCLI(t *testing.T) {
 	}
 
 	// On the workstation, through the CLI.
-	t.Setenv("SWYD_CLI_CONFIG", scoped)
+	t.Setenv("SWK_CLI_CONFIG", scoped)
 	if code, out, errOut := runCLI(t, "hosts"); code != 0 || !strings.Contains(out, "devbox") {
 		t.Fatalf("hosts: %d %s %s", code, out, errOut)
 	}
@@ -146,7 +146,7 @@ func TestScopedCLI(t *testing.T) {
 	}
 
 	// Revoking the workstation's token locks its CLI out at once.
-	t.Setenv("SWYD_CLI_CONFIG", filepath.Join(coordDir, "cli.json"))
+	t.Setenv("SWK_CLI_CONFIG", filepath.Join(coordDir, "cli.json"))
 	if code, _, errOut := runCLI(t, "token", "rm", "devbox-cli"); code != 0 {
 		t.Fatalf("token rm: %s", errOut)
 	}

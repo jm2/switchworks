@@ -11,19 +11,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jm2/switchyard/internal/render"
+	"github.com/jm2/switchworks/internal/render"
 )
 
-const usage = `usage: swyd service install [--no-start] [node|coordinator]
-       swyd service uninstall [node|coordinator]
-       swyd service start|stop|restart [--if-installed] [node|coordinator]
-       swyd service status [--json] [node|coordinator]
+const usage = `usage: swk service install [--no-start] [node|coordinator]
+       swk service uninstall [node|coordinator]
+       swk service start|stop|restart [--if-installed] [node|coordinator]
+       swk service status [--json] [node|coordinator]
 
 Registers the node (the default) or the coordinator with your own service
 manager, to run as you: a systemd user unit on Linux, a LaunchAgent on
 macOS, a logon task on Windows. Nothing runs as root or SYSTEM.`
 
-// Main implements `swyd service ...`.
+// Main implements `swk service ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)
@@ -38,7 +38,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "install":
 		fs.BoolVar(&noStart, "no-start", false, "register only; start at the next login")
-		fs.StringVar(&exe, "swyd", "", "swyd binary the service runs (default: this one)")
+		fs.StringVar(&exe, "swk", "", "swk binary the service runs (default: this one)")
 	case "status":
 		fs.BoolVar(&asJSON, "json", false, "print JSON (what the tray apps read)")
 	case "start", "stop", "restart":
@@ -73,9 +73,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "install":
 		if !Query(role).Configured {
-			hint := "swyd node enroll - (token on stdin)"
+			hint := "swk node enroll - (token on stdin)"
 			if role == Coordinator {
-				hint = "swyd coordinator init --host <name>"
+				hint = "swk coordinator init --host <name>"
 			}
 			fmt.Fprintf(stdout, "Note: %s is not set up yet (%s); the service will fail until it is.\n", role, hint)
 		}
@@ -162,7 +162,7 @@ func Describe(in Info) string {
 	case in.Installed:
 		parts = append(parts, in.Manager+" "+in.Unit)
 	case in.Configured:
-		parts = append(parts, "no service (swyd service install "+in.Role+")")
+		parts = append(parts, "no service (swk service install "+in.Role+")")
 	}
 	if in.Error != "" {
 		parts = append(parts, "service manager: "+in.Error)

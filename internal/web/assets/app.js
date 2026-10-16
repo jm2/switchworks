@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Switchyard web UI: a single page over the coordinator's JSON API and SSE
+// Switchworks web UI: a single page over the coordinator's JSON API and SSE
 // streams. No framework and no build step. All text from sessions is put in
 // the DOM with textContent, never as HTML.
 'use strict';
@@ -58,7 +58,7 @@ function toast(msg) {
 }
 
 async function api(method, path, body) {
-  const opt = {method, credentials: 'same-origin', headers: {'X-Swyd-CSRF': '1'}};
+  const opt = {method, credentials: 'same-origin', headers: {'X-Swk-CSRF': '1'}};
   if (body !== undefined) {
     opt.headers['Content-Type'] = 'application/json';
     opt.body = JSON.stringify(body);
@@ -257,7 +257,7 @@ function setConn(live) {
 function refreshBadges() {
   const n = openAsks();
   const waiting = [...S.sessions.values()].filter((s) => (s.approvals || []).length).length;
-  document.title = (waiting + n ? `(${waiting + n}) ` : '') + 'Switchyard';
+  document.title = (waiting + n ? `(${waiting + n}) ` : '') + 'Switchworks';
   renderSide();
 }
 
@@ -310,7 +310,7 @@ function connectFleet() {
   };
 }
 
-// ---------- icons (drawn for Switchyard: 24px grid, 1.6px strokes) ----------
+// ---------- icons (drawn for Switchworks: 24px grid, 1.6px strokes) ----------
 
 const ICONS = {
   menu: 'M4 7h16M4 12h16M4 17h10',
@@ -367,10 +367,10 @@ const narrow = window.matchMedia('(max-width: 899px)');
 let current = {tab: '', session: ''};
 
 function hostFilter() {
-  try { return localStorage.getItem('swyd-host') || ''; } catch (e) { return ''; }
+  try { return localStorage.getItem('swk-host') || ''; } catch (e) { return ''; }
 }
 function setHostFilter(v) {
-  try { localStorage.setItem('swyd-host', v); } catch (e) { /* per page only */ }
+  try { localStorage.setItem('swk-host', v); } catch (e) { /* per page only */ }
   changed('all');
 }
 
@@ -474,7 +474,7 @@ const themeIcon = {dark: 'moon', light: 'sun', system: 'auto'};
 let activeTheme = null;
 function storedTheme() {
   if (activeTheme) return activeTheme;
-  try { const t = localStorage.getItem('swyd-theme'); return themes.includes(t) ? t : 'dark'; } catch (e) { return 'dark'; }
+  try { const t = localStorage.getItem('swk-theme'); return themes.includes(t) ? t : 'dark'; } catch (e) { return 'dark'; }
 }
 function applyTheme(t) {
   activeTheme = t;
@@ -493,13 +493,13 @@ function openMenu(anchor) {
   fill(menu,
     h('div', {class: 'menu-label', text: 'Theme'}),
     themes.map((t) => h('button', {type: 'button', role: 'menuitemradio', 'aria-checked': String(t === cur), onclick: () => {
-      try { localStorage.setItem('swyd-theme', t); } catch (e) { /* applies to this page only */ }
+      try { localStorage.setItem('swk-theme', t); } catch (e) { /* applies to this page only */ }
       applyTheme(t);
       closeMenu();
     }}, icon(themeIcon[t]), h('span', {text: themeName[t]}), t === cur ? h('span', {class: 'tick'}, icon('check')) : null)),
     h('hr'),
     h('button', {type: 'button', role: 'menuitem', onclick: async () => {
-      await fetch('/ui/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Swyd-CSRF': '1'}});
+      await fetch('/ui/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Swk-CSRF': '1'}});
       location.href = '/login';
     }}, icon('signout'), h('span', {text: 'Sign out'})));
   menu.hidden = false;
@@ -566,7 +566,7 @@ function fleetView() {
           h('p', {text: `${live.length} session${live.length === 1 ? '' : 's'} on ${online} host${online === 1 ? '' : 's'} online` +
             (working ? `, ${working} working` : '')})),
         attentionList(),
-        hosts.length ? tree : h('p', {class: 'empty', text: 'No hosts yet. Enroll one with swyd node enroll.'}),
+        hosts.length ? tree : h('p', {class: 'empty', text: 'No hosts yet. Enroll one with swk node enroll.'}),
         sessions.some((s) => !liveSession(s))
           ? h('p', {class: 'small'}, h('button', {class: 'link', type: 'button', onclick: () => { showStopped = !showStopped; render(); },
             text: showStopped ? 'Hide stopped sessions' : 'Show stopped sessions'}))
@@ -585,7 +585,7 @@ function newSessionComposer() {
   const send = h('button', {type: 'submit', class: 'send', 'aria-label': 'Start session', title: 'Start session'}, icon('send'));
   const picker = imagePicker();
   input.addEventListener('paste', picker.onPaste);
-  const lastCwd = (host) => { try { return localStorage.getItem('swyd-cwd:' + host) || ''; } catch (e) { return ''; } };
+  const lastCwd = (host) => { try { return localStorage.getItem('swk-cwd:' + host) || ''; } catch (e) { return ''; } };
   hostSel.addEventListener('change', () => { refreshHarness(); cwd.value = lastCwd(hostSel.value); });
   function refreshHarness() {
     const host = S.hosts.get(hostSel.value);
@@ -622,7 +622,7 @@ function newSessionComposer() {
       const s = await api('POST', '/v1/sessions', {host: hostSel.value, harness: harnessSel.value, name, cwd: dir, prompt: input.value.trim(),
         attachments: picker.attachments()});
       picker.clear();
-      try { localStorage.setItem('swyd-cwd:' + hostSel.value, dir); } catch (err) { /* convenience only */ }
+      try { localStorage.setItem('swk-cwd:' + hostSel.value, dir); } catch (err) { /* convenience only */ }
       S.sessions.set(s.id, s);
       location.hash = '#/s/' + s.id;
     } catch (err) {
@@ -647,7 +647,7 @@ function newSessionComposer() {
 function parseRouted(text) {
   const nl = text.indexOf('\n');
   const head = nl >= 0 ? text.slice(0, nl) : text;
-  const m = /^\[switchyard ([^\]]*)\]$/.exec(head);
+  const m = /^\[switchworks ([^\]]*)\]$/.exec(head);
   if (!m) return null;
   const f = {};
   for (const kv of m[1].split(' ')) {
@@ -1217,7 +1217,7 @@ function spawnView(presetHost) {
         host: f.host.value, harness: f.harness.value, name, cwd: f.cwd.value.trim(), model: f.model.value.trim(),
         prompt: f.prompt.value.trim(), labels, approval_policy: f.approval.value, sandbox: f.sandbox.value,
       });
-      try { localStorage.setItem('swyd-cwd:' + f.host.value, f.cwd.value.trim()); } catch (err) { /* convenience only */ }
+      try { localStorage.setItem('swk-cwd:' + f.host.value, f.cwd.value.trim()); } catch (err) { /* convenience only */ }
       S.sessions.set(s.id, s);
       location.hash = '#/s/' + s.id;
     } catch (err) {

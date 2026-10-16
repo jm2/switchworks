@@ -2,4 +2,4 @@
 
 package node_test
 
-import _ "github.com/jm2/switchyard/internal/ciannotate" // test failures as CI annotations
+import _ "github.com/jm2/switchworks/internal/ciannotate" // test failures as CI annotations

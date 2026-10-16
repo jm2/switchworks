@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jm2/switchyard/internal/attach"
-	"github.com/jm2/switchyard/internal/fleet"
-	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/model"
 )
 
 func testPNG(t *testing.T, w int) []byte {
@@ -81,10 +81,10 @@ func TestRouterImages(t *testing.T) {
 			t.Fatalf("send to %s: %v, want %q", to, err, want)
 		}
 	}
-	refused(old.Path, "older swyd node", fleet.SendArgs{})
+	refused(old.Path, "older swk node", fleet.SendArgs{})
 	refused(agy.Path, "text only", fleet.SendArgs{})
 	refused(gooseNo.Path, "does not advertise image prompts", fleet.SendArgs{})
-	refused(b.Path, "older swyd node", fleet.SendArgs{Images: []string{"shot.png"}}) // paths reaching the coordinator
+	refused(b.Path, "older swk node", fleet.SendArgs{Images: []string{"shot.png"}}) // paths reaching the coordinator
 	refused(b.Path, "not a PNG", fleet.SendArgs{Attachments: []model.Attachment{{Data: []byte("<svg/>")}}})
 	five := []model.Attachment{{Data: img}, {Data: img}, {Data: img}, {Data: img}, {Data: img}}
 	refused(b.Path, "at most 4", fleet.SendArgs{Attachments: five})
