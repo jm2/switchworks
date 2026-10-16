@@ -35,6 +35,7 @@ type FileStore struct {
 	hosts    map[string]model.Host
 	sessions map[string]*model.Session
 	tokens   map[string]tokenRec
+	apiToks  map[string]APIToken // by id
 	logs     map[string]*eventLog
 	daily    map[string]int64
 	dirty    bool
@@ -57,6 +58,7 @@ type snapshot struct {
 	Hosts       []model.Host     `json:"hosts"`
 	Sessions    []*model.Session `json:"sessions"`
 	Tokens      []tokenRec       `json:"tokens"`
+	APITokens   []APIToken       `json:"api_tokens,omitempty"`
 	DailyTokens map[string]int64 `json:"daily_tokens,omitempty"`
 }
 
@@ -91,7 +93,7 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	}
 	s := &FileStore{
 		dir: dir, hosts: map[string]model.Host{}, sessions: map[string]*model.Session{},
-		tokens: map[string]tokenRec{}, logs: map[string]*eventLog{}, daily: map[string]int64{},
+		tokens: map[string]tokenRec{}, apiToks: map[string]APIToken{}, logs: map[string]*eventLog{}, daily: map[string]int64{},
 		msgs: map[string]*model.Message{},
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
@@ -109,6 +111,9 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		}
 		for _, t := range snap.Tokens {
 			s.tokens[t.Hash] = t
+		}
+		for _, t := range snap.APITokens {
+			s.apiToks[t.ID] = t
 		}
 		for d, n := range snap.DailyTokens {
 			s.daily[d] = n
@@ -213,6 +218,12 @@ func (s *FileStore) saveLocked() error {
 			snap.Tokens = append(snap.Tokens, t)
 		}
 	}
+	for _, t := range s.apiToks {
+		if !t.Expired(now) {
+			snap.APITokens = append(snap.APITokens, t)
+		}
+	}
+	sort.Slice(snap.APITokens, func(i, j int) bool { return snap.APITokens[i].ID < snap.APITokens[j].ID })
 	if len(s.daily) > 0 {
 		snap.DailyTokens = map[string]int64{}
 		cutoff := now.AddDate(0, 0, -90).Format("2006-01-02")

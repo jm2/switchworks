@@ -163,8 +163,12 @@ start.
 
 ## Trust model
 
-- **People** hold the admin token (`cli.json`) or a web sign-in. They can do
-  anything.
+- **People** hold the admin token, a scoped API token (`swyd token
+  create`, in a `cli.json`) or a web sign-in. The admin token can do
+  anything; an API token, and a browser it signed in, only what its scope
+  allows: `read` looks, `operate` also sends, asks, replies, approves,
+  interrupts, stops and spawns, `admin` also enrolls and removes hosts and
+  manages tokens. A person's spawn is not confined by the guards below.
 - **Nodes** hold a certificate for one host. A node can only report on and
   run sessions of its own host. `swyd hosts rm <host>` revokes a host's
   certificate, and enrolling a host again replaces it.
@@ -179,9 +183,16 @@ but it could pass it on through the fleet tools to an unsandboxed session.
 Keeping these secrets from agents needs an OS boundary, such as running the
 node and its agents as a separate user. In particular:
 
-- Do not put `cli.json` (the admin token) on a machine where agents run:
-  an agent that reads it, sandboxed or not, can get it to one that can use
-  it, and the admin token controls the fleet.
+- Do not put the admin token on a machine where agents run: an agent that
+  reads it, sandboxed or not, can get it to one that can use it, and the
+  admin token controls the fleet. Give those machines a `read` or
+  `operate` token instead (`swyd token create devbox --scope operate
+  --cli-config`). An agent that reads that can still do what the token
+  allows, including spawning unconfined sessions with `operate`, but it
+  cannot enroll a host of its own, remove hosts or mint tokens, and
+  `swyd token rm devbox` cuts it off without touching the other machines.
+- The coordinator's directory holds the CA key and the admin `cli.json`:
+  do not run agents as the coordinator's user on its machine.
 - Prefer sandboxed sessions, and no unsandboxed peers on the same fleet,
   for agents that read untrusted input (web pages, issues, other people's
   code), since messages and spawns are how a manipulated agent would reach
@@ -210,3 +221,9 @@ swyd usage                                       # tokens by host, model, day
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
 | POST | `/v1/sessions/{id}/messages` | as before; now routed (202 with `state`) |
+
+Reading needs a `read` token; sending, asking and replying need `operate`.
+API tokens are managed with `POST /v1/tokens` (`{name, scope, ttl_seconds}`;
+the secret comes back once), `GET /v1/tokens` and `DELETE
+/v1/tokens/{id-or-name}`, all admin only. A request beyond a token's scope
+gets 403 naming the scope it needs.

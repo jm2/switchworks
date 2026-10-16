@@ -41,14 +41,21 @@ Messages:
   swyd reply <ask-id> <answer>    answer an agent's question
   swyd messages [session]         the fleet's message traffic
   swyd usage                      token use by host, model and day
-  swyd ui-link                    print a one-time sign-in link for the web UI
+  swyd ui-link [--scope S]        print a one-time sign-in link for the web UI
+
+Access:
+  swyd token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config]
+                                  make a named API token (secret shown once);
+                                  --cli-config prints a cli.json for another machine
+  swyd token ls                   list API tokens
+  swyd token rm <name-or-id>      revoke a token and the web sessions it signed in
 
 Services:
   swyd coordinator init [flags]   create the CA, server certificate and admin token
   swyd coordinator run [flags]    run the coordinator
   swyd coordinator enroll-token <host>
                                   print a one-time token to enroll a host
-  swyd coordinator cli-config     print a CLI config for this coordinator
+  swyd coordinator cli-config     print the admin CLI config (admin token: keep it off agent hosts)
   swyd node enroll -              enroll this host with a coordinator (token on stdin)
   swyd node run [flags]           run the node service
   swyd service install [node|coordinator]

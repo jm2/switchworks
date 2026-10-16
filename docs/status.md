@@ -20,6 +20,7 @@
 | Goose in the fleet | done | e2e with real goose: fleet_list, goose → Codex fleet_ask, Codex → goose fleet_ask, resume after node restart; web UI driven in headless Chromium at phone size (tool cards, approval card, approve) |
 | Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
 | Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
+| Scoped API tokens | done | unit tests: every route declares a scope and an undeclared one needs admin (walks the route table), every route with read, operate and admin tokens, create/list/revoke by name or id, expiry, secrets never listed, persistence across a store restart, cookies carrying their scope (forged scope refused, pre-token cookies stay admin), cookies and pending links dying with their token, links capped at the minting token's scope, admin token unchanged; e2e: `swyd token create --cli-config` makes a working operate `cli.json`, the CLI spawns, sends and mints links with it but `token ls`, `hosts rm` and enrollment are refused, a read token streams but cannot act, revoking cuts the CLI off |
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
 | `swyd service` (user services) | done | unit tests per platform (systemd unit quoting, LaunchAgent plist with `plutil -lint`, logon-task XML and SID names, the Windows stop event); CI's Services job runs a coordinator and node through systemd user units, LaunchAgents and logon tasks on GitHub's Linux, macOS and Windows runners: install, run as the user, connect, restart, stop, start, uninstall |
 | Status file (`status.json`) | done | unit tests; a real coordinator and node run with `--log-file` reported running and connected, and the file went away on SIGTERM |
@@ -81,6 +82,14 @@ real-Codex test.
   the sticky header.
 - **The transcript view loads the last 400 events.** "Show the whole
   history" loads everything, which is slow for very long sessions.
+- **The web UI does not know its scope.** A browser signed in with a
+  `read` token still shows the composer and the approve and stop buttons;
+  using them fails with a message naming the scope needed.
+- **The admin token cannot be rotated by a command.** To replace it, put
+  the SHA-256 (hex) of a new random secret in `admin_token_hash` in
+  `coordinator.json`, restart the coordinator, and update the admin
+  `cli.json`. Browsers it signed in stay signed in until `ui.key` is
+  deleted.
 - **No push notifications.** The tab title and inbox badge count what
   needs you, but only while the page is open.
 - **Approval prompts in `attach` are print-only.** Answer them with
@@ -96,6 +105,8 @@ real-Codex test.
 2. Try a real model on two hosts with a prompt that needs the other host
    ("ask buildbox/helper what `uname -m` says there"), and watch `swyd messages`.
 3. Set `guards.max_daily_tokens` before letting agents spawn freely.
+   Move the admin token off every workstation that runs agents and give
+   each one an `operate` or `read` token (`swyd token create`).
 4. Open the web UI on the phone you will actually use, and install the CA
    or set up `tailscale serve`.
 5. For M4, decide whether the node should use Codex's shared app-server

@@ -74,23 +74,34 @@ warn about it at first. There are two ways to fix that:
 
 ## Signing in
 
-- **With the admin token**: paste the `token` from `cli.json` into the login
-  page.
+- **With a token**: paste an API token (`swyd token create phone --scope
+  operate` prints one) or the admin token into the login page.
 - **With a one-time link** (easier on a phone): run `swyd ui-link` anywhere
   the CLI works and open the link it prints. A link signs one browser in,
   once, within 15 minutes. The code is in the URL fragment, so it never
   reaches server logs or a `Referer`.
 
-The browser gets a 30-day session cookie. Signing out from the top bar
-revokes that cookie on the server too, so a copy of it stops working. To
-sign every browser out, delete `ui.key` in the coordinator directory and
-restart the coordinator.
+The browser gets the scope of the credential that signed it in: the
+token's, or for a link, the scope of the token that minted it (`swyd
+ui-link --scope read` asks for less; a link never gets more). A browser
+with `read` scope sees everything live, but sending, approving, stopping
+or spawning is refused with a message naming the scope it needs. See the
+scope table in the [README](../README.md#3-the-cli-on-other-machines).
+
+The browser gets a 30-day session cookie, or shorter if its token expires
+sooner. Signing out from the top bar revokes that cookie on the server too,
+so a copy of it stops working. `swyd token rm <name>` signs out every
+browser that token signed in, directly or through a link, and voids its
+unused links. To sign every browser out, delete `ui.key` in the
+coordinator directory and restart the coordinator.
 
 ## Security model
 
 - The cookie is `HttpOnly` and `SameSite=Strict`, and `Secure` over HTTPS.
   It is HMAC-signed with `ui.key` (0600), so no server-side session table
-  is needed.
+  is needed. The signed payload holds its expiry, a random id (for
+  sign-out), its scope and the id of the API token behind it; each request
+  checks that token still exists, so revoking the token ends the cookie.
 - A cookie-authenticated request that changes anything must also send
   `X-Swyd-CSRF: 1`. A cross-site page cannot add that header without a CORS
   preflight, and the server never answers one.
@@ -104,8 +115,10 @@ restart the coordinator.
 - Sign-in and sign-out also require `X-Swyd-CSRF: 1`. Over HTTPS the server
   sends `Strict-Transport-Security`; browsers ignore it until they trust
   the fleet CA, so it cannot lock anyone out.
-- The CLI's bearer token works on every endpoint as before.
+- Bearer tokens and cookies go through the same check: every API route
+  declares the scope it needs, and one without a declaration needs admin.
 
-There is one identity, the owner. Messages sent from the UI come from
+There is one identity, the owner; tokens only limit what each credential
+may do. Messages sent from the UI come from
 `user:web` and the CLI's from `user:cli`. Any person can answer a question
 addressed to any `user:` name.

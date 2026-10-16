@@ -130,6 +130,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	hosts := fs.String("host", "", "comma-separated names/IPs for the server certificate; the first is what nodes and the CLI dial (e.g. coord.lan,10.0.0.5,coord.tailnet.ts.net)")
 	apiPort := fs.Int("api-port", 7480, "HTTPS API port")
 	nodePort := fs.Int("node-port", 7481, "node stream port")
+	noUserCLI := fs.Bool("no-user-cli", false, "do not install the admin cli.json for this user (use this when agents run on this machine)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -145,7 +146,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	}
 	userCLI := paths.CLIConfig()
 	copied := false
-	if _, err := os.Stat(userCLI); os.IsNotExist(err) {
+	if _, err := os.Stat(userCLI); !*noUserCLI && os.IsNotExist(err) {
 		if b, err := os.ReadFile(filepath.Join(*dir, "cli.json")); err == nil {
 			if paths.WriteFile(userCLI, b, 0o600) == nil {
 				copied = true
@@ -163,6 +164,19 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  CA SHA-256 fingerprint (check it when installing ca.crt):\n    %s\n", colonHex(pki.Fingerprint(ca.Cert)))
 	}
 	fmt.Fprintf(stdout, "\nNext: swyd coordinator run, then on each workstation:\n  ssh <this host> swyd coordinator enroll-token <host> | swyd node enroll -\n")
+	fmt.Fprint(stdout, `
+The admin token controls the whole fleet. Keep a copy somewhere safe (a
+password manager) and never put it on a machine where agents run: they can
+read any file you can. For the CLI on those machines, make a scoped token:
+  swyd token create <machine> --scope operate --cli-config > cli.json
+and install that file as ~/.config/swyd/cli.json there (or --scope read).
+`)
+	fmt.Fprintf(stdout, `If agents will run on this machine too, they can read %s
+(its CA key and admin cli.json) unless the coordinator runs as another user.
+`, *dir)
+	if copied {
+		fmt.Fprintf(stdout, "In that case, also replace %s with a scoped cli.json\n(or use --no-user-cli).\n", userCLI)
+	}
 	return 0
 }
 

@@ -4,6 +4,8 @@ package coord
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/store"
+	"github.com/jm2/switchyard/internal/ulid"
 )
 
 func TestCookies(t *testing.T) {
@@ -22,27 +25,57 @@ func TestCookies(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	c := a.newCookie(now)
-	if !a.validCookie(c, now) {
-		t.Fatal("fresh cookie rejected")
+	valid := func(c string, at time.Time) bool { _, ok := a.validCookie(c, at); return ok }
+	admin := grant{scope: scopeAdmin}
+	c := a.newCookie(now, admin, time.Time{})
+	if g, ok := a.validCookie(c, now); !ok || g != admin {
+		t.Fatalf("fresh cookie: %+v %v", g, ok)
 	}
-	if a.validCookie(c, now.Add(cookieTTL+time.Minute)) {
+	if valid(c, now.Add(cookieTTL+time.Minute)) {
 		t.Fatal("expired cookie accepted")
 	}
 	bad := []byte(c)
 	bad[3] ^= 1
-	if a.validCookie(string(bad), now) || a.validCookie("x.y", now) || a.validCookie("", now) {
+	if valid(string(bad), now) || valid("x.y", now) || valid("", now) {
 		t.Fatal("tampered cookie accepted")
 	}
 	other, _ := loadWebAuth(t.TempDir())
-	if other.validCookie(c, now) {
+	if _, ok := other.validCookie(c, now); ok {
 		t.Fatal("cookie valid under another key")
 	}
-	code := a.newCode(now, time.Minute)
-	if !a.useCode(code, now) || a.useCode(code, now) {
+
+	// The grant is signed into the cookie.
+	read := grant{scope: scopeRead, tokenID: ulid.New()}
+	rc := a.newCookie(now, read, now.Add(time.Hour))
+	if g, ok := a.validCookie(rc, now); !ok || g != read {
+		t.Fatalf("scoped cookie: %+v %v", g, ok)
+	}
+	if valid(rc, now.Add(2*time.Hour)) {
+		t.Fatal("cookie outlived its token's expiry")
+	}
+	// Raising the scope byte breaks the signature.
+	p, sig, _ := strings.Cut(rc, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(p)
+	raw[cookieIDEnd] = byte(scopeAdmin)
+	if valid(base64.RawURLEncoding.EncodeToString(raw)+"."+sig, now) {
+		t.Fatal("cookie with a forged scope accepted")
+	}
+	// A pre-token cookie (expiry and id only) is still the admin's.
+	legacy := make([]byte, legacyCookieLen)
+	binary.BigEndian.PutUint64(legacy, uint64(now.Add(time.Hour).Unix()))
+	lc := base64.RawURLEncoding.EncodeToString(legacy) + "." + base64.RawURLEncoding.EncodeToString(a.sign(legacy))
+	if g, ok := a.validCookie(lc, now); !ok || g != admin {
+		t.Fatalf("legacy cookie: %+v %v", g, ok)
+	}
+
+	code := a.newCode(now, time.Minute, read)
+	if g, ok := a.useCode(code, now); !ok || g != read {
+		t.Fatalf("login code: %+v %v", g, ok)
+	}
+	if _, ok := a.useCode(code, now); ok {
 		t.Fatal("login code must work exactly once")
 	}
-	if late := a.newCode(now, time.Minute); a.useCode(late, now.Add(2*time.Minute)) {
+	if late := a.newCode(now, time.Minute, admin); func() bool { _, ok := a.useCode(late, now.Add(2*time.Minute)); return ok }() {
 		t.Fatal("expired login code accepted")
 	}
 }
@@ -186,7 +219,7 @@ func TestWebSignIn(t *testing.T) {
 	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
 		t.Fatalf("throttle: %d", r.StatusCode)
 	}
-	code = e.srv.web.newCode(time.Now(), time.Minute)
+	code = e.srv.web.newCode(time.Now(), time.Minute, grant{scope: scopeAdmin})
 	if r := e.do(t, "POST", "/ui/login", `{"code":"`+code+`"}`, nil); r.StatusCode != 200 {
 		t.Fatalf("link sign-in while tokens are throttled: %d", r.StatusCode)
 	}
@@ -201,7 +234,7 @@ func TestWebSignIn(t *testing.T) {
 	if r := e.do(t, "GET", "/v1/hosts", "", cookie); r.StatusCode != 401 {
 		t.Fatalf("API with a signed-out cookie: %d", r.StatusCode)
 	}
-	if again, _ := loadWebAuth(filepath.Dir(e.srv.web.revokePath)); again.validCookie(ck.Value, time.Now()) {
+	if again, _ := loadWebAuth(filepath.Dir(e.srv.web.revokePath)); func() bool { _, ok := again.validCookie(ck.Value, time.Now()); return ok }() {
 		t.Fatal("revocation not persisted")
 	}
 	// Without the CSRF header, neither sign-in nor sign-out is accepted.

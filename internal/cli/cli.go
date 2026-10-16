@@ -55,7 +55,7 @@ var commands = map[string]command{
 func client(stderr io.Writer) (*apiclient.Client, bool) {
 	cfg, err := apiclient.LoadConfig(paths.CLIConfig())
 	if err != nil {
-		fmt.Fprintf(stderr, "swyd: no CLI config (%v)\n  copy it from the coordinator: swyd coordinator cli-config > %s\n", err, paths.CLIConfig())
+		fmt.Fprintf(stderr, "swyd: no CLI config (%v)\n  make one where the admin token is: swyd token create <name> --scope operate --cli-config > %s\n", err, paths.CLIConfig())
 		return nil, false
 	}
 	c, err := apiclient.New(cfg)

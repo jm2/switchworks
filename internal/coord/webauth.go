@@ -6,11 +6,12 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,13 +23,15 @@ import (
 	"github.com/jm2/switchyard/internal/apiclient"
 	"github.com/jm2/switchyard/internal/paths"
 	"github.com/jm2/switchyard/internal/pki"
+	"github.com/jm2/switchyard/internal/ulid"
 )
 
-// Browser sessions: the web UI signs in with the admin token, or with a
-// one-time login link minted by an authenticated client (`swyd ui-link`),
-// and gets a signed cookie. Cookie-authenticated requests that change
-// anything must also carry X-Swyd-CSRF: 1, which a cross-site page cannot
-// add without a CORS preflight that this server never answers.
+// Browser sessions: the web UI signs in with the admin token or an API
+// token, or with a one-time login link minted by an authenticated client
+// (`swyd ui-link`), and gets a signed cookie carrying that credential's
+// scope. Cookie-authenticated requests that change anything must also carry
+// X-Swyd-CSRF: 1, which a cross-site page cannot add without a CORS
+// preflight that this server never answers.
 
 const (
 	cookieName    = "swyd_session"
@@ -45,7 +48,7 @@ type webAuth struct {
 	revokePath string
 
 	mu       sync.Mutex
-	codes    map[string]time.Time   // sha256(code) -> expiry
+	codes    map[string]loginCode   // sha256(code) -> expiry and grant
 	failures map[string][]time.Time // client -> recent failed token sign-ins
 	revoked  map[string]time.Time   // signed-out cookie id -> its expiry
 }
@@ -69,7 +72,7 @@ func loadWebAuth(dir string) (*webAuth, error) {
 	if len(key) < 32 {
 		return nil, errors.New(path + " is too short; delete it to make a new one")
 	}
-	a := &webAuth{key: key, revokePath: filepath.Join(dir, uiRevokedFile), codes: map[string]time.Time{},
+	a := &webAuth{key: key, revokePath: filepath.Join(dir, uiRevokedFile), codes: map[string]loginCode{},
 		failures: map[string][]time.Time{}, revoked: map[string]time.Time{}}
 	if b, err := os.ReadFile(a.revokePath); err == nil {
 		_ = json.Unmarshal(b, &a.revoked)
@@ -83,44 +86,74 @@ func (a *webAuth) sign(payload []byte) []byte {
 	return m.Sum(nil)
 }
 
-func (a *webAuth) newCookie(now time.Time) string {
-	payload := make([]byte, 8+16)
-	binary.BigEndian.PutUint64(payload, uint64(now.Add(cookieTTL).Unix()))
-	_, _ = rand.Read(payload[8:])
+// A cookie's signed payload is its expiry (8 bytes, Unix seconds), a random
+// id (16), then the grant: the scope (1 byte) and the id of the API token it
+// came from (empty for the admin token). Cookies from before scoped tokens
+// stop after the id; they were all minted with the admin token, so they
+// stay admin.
+const (
+	cookieIDEnd     = 8 + 16
+	legacyCookieLen = cookieIDEnd
+)
+
+// newCookie mints a cookie for g, expiring after cookieTTL or at notAfter
+// (if set and sooner).
+func (a *webAuth) newCookie(now time.Time, g grant, notAfter time.Time) string {
+	exp := now.Add(cookieTTL)
+	if !notAfter.IsZero() && notAfter.Before(exp) {
+		exp = notAfter
+	}
+	payload := make([]byte, cookieIDEnd, cookieIDEnd+1+len(g.tokenID))
+	binary.BigEndian.PutUint64(payload, uint64(exp.Unix()))
+	_, _ = rand.Read(payload[8:cookieIDEnd])
+	payload = append(payload, byte(g.scope))
+	payload = append(payload, g.tokenID...)
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString(payload) + "." + enc.EncodeToString(a.sign(payload))
 }
 
-func (a *webAuth) validCookie(v string, now time.Time) bool {
+// validCookie checks a cookie's signature, expiry and revocation, and
+// returns the grant signed into it. Whether its API token still exists is
+// the caller's check (Server.cookieGrant).
+func (a *webAuth) validCookie(v string, now time.Time) (grant, bool) {
 	p, sig, ok := strings.Cut(v, ".")
 	if !ok {
-		return false
+		return grant{}, false
 	}
 	enc := base64.RawURLEncoding
 	payload, err1 := enc.DecodeString(p)
 	got, err2 := enc.DecodeString(sig)
-	if err1 != nil || err2 != nil || len(payload) != 24 {
-		return false
+	if err1 != nil || err2 != nil || len(payload) < cookieIDEnd {
+		return grant{}, false
 	}
 	if !hmac.Equal(got, a.sign(payload)) {
-		return false
+		return grant{}, false
 	}
 	if now.Unix() >= int64(binary.BigEndian.Uint64(payload)) {
-		return false
+		return grant{}, false
+	}
+	g := grant{scope: scopeAdmin}
+	if len(payload) != legacyCookieLen {
+		g = grant{scope: scope(payload[cookieIDEnd]), tokenID: string(payload[cookieIDEnd+1:])}
+		if !g.scope.valid() || (g.tokenID != "" && !ulid.Valid(g.tokenID)) {
+			return grant{}, false
+		}
 	}
 	a.mu.Lock()
 	_, out := a.revoked[cookieID(payload)]
 	a.mu.Unlock()
-	return !out
+	return g, !out
 }
 
-func cookieID(payload []byte) string { return base64.RawURLEncoding.EncodeToString(payload[8:]) }
+func cookieID(payload []byte) string {
+	return base64.RawURLEncoding.EncodeToString(payload[8:cookieIDEnd])
+}
 
 // revoke signs one cookie out for good, even if a copy of it survives.
 func (a *webAuth) revoke(v string, now time.Time) {
 	p, _, _ := strings.Cut(v, ".")
 	payload, err := base64.RawURLEncoding.DecodeString(p)
-	if err != nil || len(payload) != 24 {
+	if err != nil || len(payload) < cookieIDEnd {
 		return
 	}
 	a.mu.Lock()
@@ -136,27 +169,37 @@ func (a *webAuth) revoke(v string, now time.Time) {
 	}
 }
 
-// newCode mints a one-time login code.
-func (a *webAuth) newCode(now time.Time, ttl time.Duration) string {
+// loginCode is a pending one-time sign-in: when it expires, and the grant
+// the cookie it buys will carry.
+type loginCode struct {
+	expires time.Time
+	grant   grant
+}
+
+// newCode mints a one-time login code for g.
+func (a *webAuth) newCode(now time.Time, ttl time.Duration, g grant) string {
 	code := pki.RandomSecret(24)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for k, exp := range a.codes {
-		if now.After(exp) {
+	for k, c := range a.codes {
+		if now.After(c.expires) {
 			delete(a.codes, k)
 		}
 	}
-	a.codes[pki.HashSecret(code)] = now.Add(ttl)
+	a.codes[pki.HashSecret(code)] = loginCode{expires: now.Add(ttl), grant: g}
 	return code
 }
 
-func (a *webAuth) useCode(code string, now time.Time) bool {
+func (a *webAuth) useCode(code string, now time.Time) (grant, bool) {
 	h := pki.HashSecret(code)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	exp, ok := a.codes[h]
+	c, ok := a.codes[h]
 	delete(a.codes, h)
-	return ok && now.Before(exp)
+	if !ok || !now.Before(c.expires) {
+		return grant{}, false
+	}
+	return c.grant, true
 }
 
 // checkToken compares a sign-in token, limiting each client to maxFailures
@@ -213,37 +256,24 @@ func secureRequest(r *http.Request) bool {
 	return r.TLS != nil || (fromLocalProxy(r) && r.Header.Get("X-Forwarded-Proto") == "https")
 }
 
-func (s *Server) cookieAuthed(r *http.Request) bool {
+// cookieGrant returns the grant of the request's session cookie, if it is
+// valid and the API token it was minted from (if any) still exists.
+func (s *Server) cookieGrant(r *http.Request) (grant, bool) {
 	c, err := r.Cookie(cookieName)
-	return err == nil && s.web.validCookie(c.Value, time.Now())
+	if err != nil {
+		return grant{}, false
+	}
+	now := time.Now()
+	g, ok := s.web.validCookie(c.Value, now)
+	if !ok || !s.grantLive(g, now) {
+		return grant{}, false
+	}
+	return g, true
 }
 
-func (s *Server) tokenOK(tok string) bool {
-	return subtle.ConstantTimeCompare([]byte(pki.HashSecret(tok)), []byte(s.cfg.AdminTokenHash)) == 1
-}
-
-// requireAuth accepts the admin bearer token, or a browser session cookie
-// (plus the CSRF header on anything but reads).
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-			if s.tokenOK(tok) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			writeErr(w, http.StatusUnauthorized, errors.New("invalid token"))
-			return
-		}
-		if s.cookieAuthed(r) {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(csrfHeader) != "1" {
-				writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
-				return
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid token"))
-	})
+func (s *Server) cookieAuthed(r *http.Request) bool {
+	_, ok := s.cookieGrant(r)
+	return ok
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -261,14 +291,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	var ok bool
+	var g grant
 	switch {
 	case body.Code != "":
 		// One-time codes are 192-bit and single-use: no throttle, so a
 		// flood of bad tokens cannot block signing in with a link.
-		ok = s.web.useCode(body.Code, now)
+		g, ok = s.web.useCode(body.Code, now)
+		ok = ok && s.grantLive(g, now) // its token may have been revoked since
 	case body.Token != "":
 		var throttled bool
-		ok, throttled = s.web.checkToken(clientKey(r), now, func() bool { return s.tokenOK(body.Token) })
+		ok, throttled = s.web.checkToken(clientKey(r), now, func() bool {
+			var valid bool
+			g, valid = s.bearerGrant(body.Token, now)
+			return valid
+		})
 		if throttled {
 			writeErr(w, http.StatusTooManyRequests, errors.New("too many failed sign-ins; wait a minute"))
 			return
@@ -278,10 +314,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, errors.New("that token or link is not valid (links work once, for 15 minutes)"))
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.web.newCookie(now), Path: "/", MaxAge: int(cookieTTL.Seconds()),
+	var notAfter time.Time
+	if g.tokenID != "" {
+		if t, found := s.store.APIToken(g.tokenID); found {
+			notAfter = t.Expires // the cookie never outlives its token
+		}
+	}
+	value := s.web.newCookie(now, g, notAfter)
+	maxAge := cookieTTL
+	if !notAfter.IsZero() && notAfter.Sub(now) < maxAge {
+		maxAge = notAfter.Sub(now)
+	}
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: value, Path: "/", MaxAge: max(int(maxAge.Seconds()), 1),
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode})
-	s.logf("web sign-in from %s", clientKey(r))
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	s.logf("web sign-in from %s (%s)", clientKey(r), s.grantName(g))
+	writeJSON(w, 200, map[string]any{"ok": true, "scope": g.scope.String()})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -289,22 +336,47 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
 		return
 	}
-	if c, err := r.Cookie(cookieName); err == nil && s.web.validCookie(c.Value, time.Now()) {
-		s.web.revoke(c.Value, time.Now())
+	if c, err := r.Cookie(cookieName); err == nil {
+		if _, ok := s.web.validCookie(c.Value, time.Now()); ok {
+			s.web.revoke(c.Value, time.Now())
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode})
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+// handleUILink mints a one-time sign-in link. The browser it signs in gets
+// the caller's scope, or a lower one the caller asks for; never more.
 func (s *Server) handleUILink(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Scope string `json:"scope,omitempty"`
+	}
+	if err := decodeBody(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, 400, err)
+		return
+	}
+	g := grantFrom(r.Context())
+	if body.Scope != "" {
+		want, ok := parseScope(body.Scope)
+		if !ok {
+			writeErr(w, 400, errUnknownScope(body.Scope))
+			return
+		}
+		if want > g.scope {
+			writeErr(w, http.StatusForbidden, fmt.Errorf("a %s token cannot mint a %s sign-in link", g.scope, want))
+			return
+		}
+		g.scope = want
+	}
 	now := time.Now()
-	code := s.web.newCode(now, loginLinkTT)
+	code := s.web.newCode(now, loginLinkTT, g)
 	base := s.cfg.PublicUI
 	if base == "" {
 		base = "https://" + s.cfg.PublicAPI
 	}
 	// The code travels in the fragment, which browsers never send to the
 	// server or in a Referer.
-	writeJSON(w, 200, apiclient.UILink{URL: strings.TrimRight(base, "/") + "/login#code=" + code, ExpiresAt: now.Add(loginLinkTT).UTC()})
+	writeJSON(w, 200, apiclient.UILink{URL: strings.TrimRight(base, "/") + "/login#code=" + code,
+		ExpiresAt: now.Add(loginLinkTT).UTC(), Scope: g.scope.String()})
 }

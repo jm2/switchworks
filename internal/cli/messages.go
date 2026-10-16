@@ -31,18 +31,29 @@ func init() {
 }
 
 func cmdUILink(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ui-link", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	scope := fs.String("scope", "", "limit the browser to read or operate (default: this CLI token's scope)")
+	if fs.Parse(args) != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: swyd ui-link [--scope read|operate|admin]")
+		return 2
+	}
 	c, ok := client(stderr)
 	if !ok {
 		return 1
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	l, err := c.UILink(ctx)
+	l, err := c.UILink(ctx, *scope)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	fmt.Fprintln(stdout, l.URL)
-	fmt.Fprintf(stderr, "(signs one browser in; works once, until %s)\n", l.ExpiresAt.Local().Format("15:04"))
+	scopeNote := ""
+	if l.Scope != "" {
+		scopeNote = ", " + l.Scope + " scope"
+	}
+	fmt.Fprintf(stderr, "(signs one browser in%s; works once, until %s)\n", scopeNote, l.ExpiresAt.Local().Format("15:04"))
 	return 0
 }
 

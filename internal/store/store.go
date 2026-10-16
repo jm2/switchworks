@@ -24,7 +24,23 @@ var (
 	ErrSeqGap       = errors.New("event sequence gap")
 	ErrNoSuchHost   = errors.New("unknown host")
 	ErrBadSessionID = errors.New("invalid session id")
+	ErrNameInUse    = errors.New("name already in use")
 )
+
+// APIToken is a named, scoped API credential. Only a hash of its secret is
+// kept; the secret is shown once, when the token is created.
+type APIToken struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Scope    string    `json:"scope"`
+	Hash     string    `json:"hash"`
+	Created  time.Time `json:"created"`
+	LastUsed time.Time `json:"last_used,omitzero"`
+	Expires  time.Time `json:"expires,omitzero"` // zero: never
+}
+
+// Expired reports whether the token has passed its expiry.
+func (t APIToken) Expired(now time.Time) bool { return !t.Expires.IsZero() && !now.Before(t.Expires) }
 
 // Store is the coordinator's persistence boundary.
 type Store interface {
@@ -55,6 +71,22 @@ type Store interface {
 	AddToken(hash, host string, expires time.Time) error
 	// ConsumeToken returns the host a token enrolls and deletes the token.
 	ConsumeToken(hash string) (string, error)
+
+	// AddAPIToken stores a new API token; it fails with ErrNameInUse if a
+	// live token has the same name.
+	AddAPIToken(t APIToken) error
+	// APITokens returns the unexpired API tokens, by name.
+	APITokens() []APIToken
+	// APITokenByHash finds an unexpired token by the hash of its secret,
+	// comparing in constant time.
+	APITokenByHash(hash string) (APIToken, bool)
+	// APIToken finds an unexpired token by id.
+	APIToken(id string) (APIToken, bool)
+	// DeleteAPIToken revokes a token.
+	DeleteAPIToken(id string) error
+	// TouchAPIToken records that a token was used. It is coarse and saved
+	// with the next snapshot, not at once.
+	TouchAPIToken(id string, now time.Time)
 
 	// PutMessage creates or replaces a message record.
 	PutMessage(m model.Message) error
