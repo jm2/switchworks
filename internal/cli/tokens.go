@@ -70,8 +70,9 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	if *ttl < 0 {
-		fmt.Fprintln(stderr, "swyd token create: --ttl must not be negative")
+	if *ttl < 0 || (*ttl > 0 && *ttl < time.Second) {
+		// The API counts whole seconds, where 0 means no expiry.
+		fmt.Fprintln(stderr, "swyd token create: --ttl must be 0 (no expiry) or at least 1s")
 		return 2
 	}
 	if *api != "" && !*cliConfig {

@@ -142,7 +142,10 @@ func (a *webAuth) validCookie(v string, now time.Time) (grant, bool) {
 	a.mu.Lock()
 	_, out := a.revoked[cookieID(payload)]
 	a.mu.Unlock()
-	return g, !out
+	if out {
+		return grant{}, false
+	}
+	return g, true
 }
 
 func cookieID(payload []byte) string {
