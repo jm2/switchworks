@@ -4,6 +4,8 @@ package agyad
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -39,7 +41,7 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
 	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
 		return append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	created, err := mergeMCPConfig(filepath.Join(cwd, workspaceMCP), m.Name, map[string]any{"command": cmd, "args": args})
+	created, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, map[string]any{"command": cmd, "args": args})
 	if err != nil {
 		return append(warns, "fleet tools unavailable: "+err.Error())
 	}
@@ -98,11 +100,19 @@ func insideWorkspace(cwd, rel string) error {
 	return nil
 }
 
-// mergeMCPConfig sets mcpServers[name] in an agy MCP config file, keeping
-// everything else. It reports whether it created the file.
-func mergeMCPConfig(path, name string, server map[string]any) (bool, error) {
+// mergeMCPConfig sets mcpServers[name] in the agy MCP config file rel
+// under cwd, keeping everything else. It reports whether it created the
+// file. All access goes through an os.Root on cwd, so a symlink the agent
+// swaps in after insideWorkspace looked cannot lead the write outside.
+func mergeMCPConfig(cwd, rel, name string, server map[string]any) (bool, error) {
+	root, err := os.OpenRoot(cwd)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	path := filepath.Join(cwd, rel)
 	doc := map[string]any{}
-	b, err := os.ReadFile(path)
+	b, err := root.ReadFile(rel)
 	created := os.IsNotExist(err)
 	switch {
 	case created:
@@ -138,10 +148,10 @@ func mergeMCPConfig(path, name string, server map[string]any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
 		return false, err
 	}
-	return created, writeAtomic(path, append(out, '\n'))
+	return created, writeAtomicIn(root, rel, append(out, '\n'))
 }
 
 func asStrings(v any) []string {
@@ -307,4 +317,33 @@ func writeAtomic(path string, b []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// writeAtomicIn is writeAtomic inside root.
+func writeAtomicIn(root *os.Root, rel string, b []byte) error {
+	mode := os.FileMode(0o644)
+	if fi, err := root.Lstat(rel); err == nil && fi.Mode().IsRegular() {
+		mode = fi.Mode().Perm()
+	}
+	var rnd [8]byte
+	_, _ = rand.Read(rnd[:])
+	tmp := filepath.Join(filepath.Dir(rel), ".swyd-"+hex.EncodeToString(rnd[:]))
+	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		_ = root.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	if err := root.Chmod(tmp, mode); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	return root.Rename(tmp, rel)
 }

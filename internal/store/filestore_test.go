@@ -187,3 +187,45 @@ func TestErrorPathReuse(t *testing.T) {
 		}
 	}
 }
+
+// A record torn by a crash must not swallow the next one.
+func TestTornMessageTail(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	a := model.Message{ID: "01J00000000000000000000001", Kind: model.MsgNotify, State: model.MsgPending, Text: "a", CreatedAt: now}
+	if err := s.PutMessage(a); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	f, err := os.OpenFile(filepath.Join(dir, "messages.jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"id":"01J0000000000000000000000X","kind":"no`)
+	f.Close()
+
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := a
+	b.ID, b.Text = "01J00000000000000000000002", "b"
+	if err := s.PutMessage(b); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []string{a.ID, b.ID} {
+		if _, ok := s.Message(id); !ok {
+			t.Fatalf("message %s lost after a torn tail", id)
+		}
+	}
+}

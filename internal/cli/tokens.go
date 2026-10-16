@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/render"
 )
 
 func init() { commands["token"] = cmdToken }
@@ -135,7 +136,7 @@ func cmdTokenList(args []string, stdout, stderr io.Writer) int {
 		if toks == nil {
 			toks = []apiclient.TokenInfo{}
 		}
-		_ = json.NewEncoder(stdout).Encode(toks)
+		_ = json.NewEncoder(render.JSONSafe(stdout)).Encode(toks)
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)

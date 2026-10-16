@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ type webAuth struct {
 	mu       sync.Mutex
 	codes    map[string]loginCode   // sha256(code) -> expiry and grant
 	failures map[string][]time.Time // client -> recent failed token sign-ins
+	signins  map[string][]time.Time // credential -> recent sign-ins
 	revoked  map[string]time.Time   // signed-out cookie id -> its expiry
 }
 
@@ -73,7 +75,7 @@ func loadWebAuth(dir string) (*webAuth, error) {
 		return nil, errors.New(path + " is too short; delete it to make a new one")
 	}
 	a := &webAuth{key: key, revokePath: filepath.Join(dir, uiRevokedFile), codes: map[string]loginCode{},
-		failures: map[string][]time.Time{}, revoked: map[string]time.Time{}}
+		failures: map[string][]time.Time{}, signins: map[string][]time.Time{}, revoked: map[string]time.Time{}}
 	if b, err := os.ReadFile(a.revokePath); err == nil {
 		_ = json.Unmarshal(b, &a.revoked)
 	}
@@ -189,8 +191,53 @@ func (a *webAuth) newCode(now time.Time, ttl time.Duration, g grant) string {
 			delete(a.codes, k)
 		}
 	}
+	// Each credential keeps at most maxCodesPerGrant pending links; a new
+	// one replaces its oldest, so minting links cannot grow memory.
+	var mine []string
+	for k, c := range a.codes {
+		if c.grant.tokenID == g.tokenID {
+			mine = append(mine, k)
+		}
+	}
+	if len(mine) >= maxCodesPerGrant {
+		sort.Slice(mine, func(i, j int) bool { return a.codes[mine[i]].expires.Before(a.codes[mine[j]].expires) })
+		for _, k := range mine[:len(mine)-maxCodesPerGrant+1] {
+			delete(a.codes, k)
+		}
+	}
 	a.codes[pki.HashSecret(code)] = loginCode{expires: now.Add(ttl), grant: g}
 	return code
+}
+
+// maxCodesPerGrant bounds one credential's pending sign-in links.
+const maxCodesPerGrant = 20
+
+// maxSignInsPerMinute bounds sign-ins with one credential. Each sign-out
+// is remembered until the cookie would have expired, so unbounded sign-ins
+// would grow that list without limit.
+const maxSignInsPerMinute = 20
+
+// allowSignIn counts a sign-in with g and reports whether it is within
+// maxSignInsPerMinute.
+func (a *webAuth) allowSignIn(g grant, now time.Time) bool {
+	key := "admin"
+	if g.tokenID != "" {
+		key = g.tokenID
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	recent := a.signins[key][:0]
+	for _, t := range a.signins[key] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= maxSignInsPerMinute {
+		a.signins[key] = recent
+		return false
+	}
+	a.signins[key] = append(recent, now)
+	return true
 }
 
 func (a *webAuth) useCode(code string, now time.Time) (grant, bool) {
@@ -317,6 +364,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, errors.New("that token or link is not valid (links work once, for 15 minutes)"))
 		return
 	}
+	if !s.web.allowSignIn(g, now) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many sign-ins with this token; wait a minute"))
+		return
+	}
 	var notAfter time.Time
 	if g.tokenID != "" {
 		if t, found := s.store.APIToken(g.tokenID); found {
@@ -342,6 +393,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		if _, ok := s.web.validCookie(c.Value, time.Now()); ok {
 			s.web.revoke(c.Value, time.Now())
+			s.auth.recheck()
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1,

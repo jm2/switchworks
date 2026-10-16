@@ -211,6 +211,16 @@ func TestReadWithin(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused("nd/disguised.png", "Switchyard's own directory")
+	// A symlinked directory leading back inside: refused too, since the
+	// component could be swapped between the check and the open.
+	if err := os.Symlink(filepath.Join(cwd, "shots"), filepath.Join(cwd, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	refused("alias/a.png", "symlink")
+	// A hard link to an image in the node's directory.
+	if err := os.Link(filepath.Join(nodeDir, "disguised.png"), filepath.Join(cwd, "hard.png")); err == nil {
+		refused("hard.png", "hard links")
+	}
 	// A working directory reached through a symlink: absolute paths in
 	// either form work.
 	linkCwd := filepath.Join(root, "worklink")

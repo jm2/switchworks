@@ -18,6 +18,7 @@ import (
 	"github.com/jm2/switchyard/internal/apiclient"
 	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
+	"github.com/jm2/switchyard/internal/render"
 )
 
 func init() {
@@ -228,7 +229,7 @@ func cmdInbox(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(msgs)
+		_ = json.NewEncoder(render.JSONSafe(stdout)).Encode(msgs)
 		return 0
 	}
 	if len(msgs) == 0 {
@@ -281,7 +282,7 @@ func cmdMessages(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(msgs)
+		_ = json.NewEncoder(render.JSONSafe(stdout)).Encode(msgs)
 		return 0
 	}
 	printMessages(stdout, msgs)

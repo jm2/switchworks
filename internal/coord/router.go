@@ -458,7 +458,15 @@ func (r *router) started(sessionID string, hops int) {
 }
 
 // allow applies the per-pair rate limit (token bucket).
-func (r *router) allow(key string, perMinute int) bool {
+func (r *router) allow(key string, perMinute int) bool { return r.allowN(key, perMinute, 1) }
+
+// agentImageBytesPerMinute bounds the images one agent may send, so a busy
+// agent cannot crowd everyone's images out of the coordinator's store.
+const agentImageBytesPerMinute = 20 << 20
+
+// allowN takes n tokens from key's bucket, which refills to perMinute a
+// minute.
+func (r *router) allowN(key string, perMinute int, n float64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
@@ -472,10 +480,10 @@ func (r *router) allow(key string, perMinute int) bool {
 		b.tokens = float64(perMinute)
 	}
 	b.last = now
-	if b.tokens < 1 {
+	if b.tokens < n {
 		return false
 	}
-	b.tokens--
+	b.tokens -= n
 	return true
 }
 
@@ -509,7 +517,6 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		// attachments; an older node passes them on unread.
 		return nil, errors.New("image paths cannot be read: the sending host runs an older swyd node; upgrade it")
 	}
-	var images []model.Attachment
 	if len(args.Attachments) > 0 {
 		for _, t := range targets {
 			if t.sess != nil {
@@ -517,9 +524,6 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 					return nil, err
 				}
 			}
-		}
-		if images, err = r.s.storeAttachments(args.Attachments); err != nil {
-			return nil, err
 		}
 	}
 	if from.sess != nil {
@@ -548,13 +552,21 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if len(targets) > 1 {
 		group = ulid.New()
 	}
-	now := time.Now().UTC()
-	var out []model.Message
+	// Every guard runs before anything is stored, so a refused send
+	// costs no disk.
 	for _, t := range targets {
 		if t.sess != nil && t.sess.ID == from.sessionID() {
-			return out, errors.New("a session cannot message itself")
+			return nil, errors.New("a session cannot message itself")
 		}
-		if from.sess != nil {
+	}
+	var images []model.Attachment
+	if len(args.Attachments) > 0 {
+		if images, err = attach.Normalize(args.Attachments); err != nil {
+			return nil, err
+		}
+	}
+	if from.sess != nil {
+		for _, t := range targets {
 			limit, class := r.guards.SendPerMinute, "send"
 			if kind == model.MsgAsk {
 				limit, class = r.guards.AskPerMinute, "ask"
@@ -566,15 +578,27 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 				key = class + "|" + from.sess.ID + "|" + t.sess.ID
 			}
 			if !r.allow(key, limit) {
-				return out, ErrRateLimit
+				return nil, ErrRateLimit
 			}
 			// Every message also counts against the sender's own budget,
 			// whatever its recipients, so neither a broadcast nor many
 			// recipients can get past it.
 			if !r.allow("out|"+from.sess.ID, r.guards.OutPerMinute) {
-				return out, ErrRateLimit
+				return nil, ErrRateLimit
 			}
 		}
+		if n := attach.TotalBytes(images); n > 0 && !r.allowN("img|"+from.sess.ID, agentImageBytesPerMinute, float64(n)) {
+			return nil, fmt.Errorf("%w: agents may send at most %d MiB of images a minute", ErrRateLimit, agentImageBytesPerMinute>>20)
+		}
+	}
+	if len(images) > 0 {
+		if images, err = r.s.storeAttachments(images); err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now().UTC()
+	var out []model.Message
+	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(),
 			To: args.To, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
@@ -936,10 +960,11 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 // next turn.
 func (r *router) onDelivered(sessionID, messageID string) {
 	m, ok := r.s.store.Message(messageID)
-	if !ok {
-		// Not a routed message (a person's spawn prompt, recorded by
-		// started): keep what started the work, so a node cannot reset
-		// hops by reporting made-up messages.
+	if !ok || m.ToSession != sessionID {
+		// Not a routed message to this session (a person's spawn prompt,
+		// recorded by started, or another session's message): keep what
+		// started the work, so a node cannot reset hops by reporting
+		// made-up or borrowed messages.
 		return
 	}
 	r.mu.Lock()

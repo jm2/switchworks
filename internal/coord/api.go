@@ -179,6 +179,12 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	if spec.Parent != "" {
+		// A parent may steer and stop its children; only an agent's own
+		// spawn (fleet_spawn) makes one.
+		writeErr(w, 400, errors.New("parent is set only by fleet_spawn"))
+		return
+	}
 	sess, err := s.Spawn(r.Context(), spec)
 	if err == nil {
 		s.router.started(sess.ID, 0) // a person's spawn starts a new chain

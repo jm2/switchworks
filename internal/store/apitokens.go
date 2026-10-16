@@ -80,12 +80,19 @@ func (s *FileStore) APIToken(id string) (APIToken, bool) {
 func (s *FileStore) DeleteAPIToken(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.apiToks[id]; !ok {
+	t, ok := s.apiToks[id]
+	if !ok {
 		return ErrNotFound
 	}
 	delete(s.apiToks, id)
 	s.dirty = true
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		// Not on disk, so it would come back at the next start: keep it,
+		// and let the caller say the revocation failed.
+		s.apiToks[id] = t
+		return fmt.Errorf("revoke token: %w", err)
+	}
+	return nil
 }
 
 func (s *FileStore) TouchAPIToken(id string, now time.Time) {

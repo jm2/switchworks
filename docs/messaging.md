@@ -125,20 +125,25 @@ other sessions' tokens, `cli.json`. So the sender's node reads the file
 itself, and only:
 
 - inside the session's working directory, as the node recorded it at
-  spawn (not anything the agent can change), with symlinks and `..`
-  resolved; the file is opened through Go's `os.Root`, so no path
-  component can lead out of the directory, and a session confined to a
+  spawn (not anything the agent can change); a session confined to a
   directory root (spawned by an agent) is checked against that root first;
-- a regular file: not a symlink (even to a file inside), Windows reparse
-  point, device, pipe or directory; the opened file must be the one that
-  was checked;
+- reached without any symlink or Windows junction below the working
+  directory: the node opens the path one directory at a time, each through
+  the one before it, and checks that each is the directory it looked at,
+  so a component swapped for a symlink mid-read is refused;
+- a regular file: not a symlink (even to a file inside), device, pipe or
+  directory, and with no other hard links (on Unix), since another name
+  for it could be anywhere;
 - never under Switchyard's own directories (the node's directory, the
   config directory with `cli.json`), even when the working directory
-  contains them (a session working in your home directory);
+  contains them (a session working in your home directory); directories
+  are compared by identity, so another spelling of the name (case on
+  macOS) does not get past it;
 - an allowed image type by its bytes, within the size limits.
 
 Agents cannot pass image data directly: `swyd mcp` and the node's local API
-refuse an `attachments` argument. Paths never reach the coordinator.
+refuse an `attachments` argument (in any letter case). Paths never reach
+the coordinator.
 
 **Delivery and storage.** The coordinator keeps message records (and every
 event) with the images' metadata only: name, type, size and SHA-256. It
@@ -151,8 +156,11 @@ keeps the bytes in `<coordinator dir>/attachments/<sha256>` (0700; files
   the inbox and the traffic list; the oldest go first while the store
   holds more than 512 MiB.
 
-New images are refused while the store holds 1 GiB (only undelivered
-images can fill it). Keeping bytes in the message records instead would
+New images are refused while the store holds 1 GiB. Every guard runs
+before an agent's images are stored, and one agent may send at most
+20 MiB of images a minute, but a busy fleet can still push delivered
+images out of the store sooner than 7 days (the messages keep their
+metadata). Keeping bytes in the message records instead would
 put megabytes into `messages.jsonl` on every state change and into the
 coordinator's memory, which holds all message records.
 

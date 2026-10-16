@@ -48,6 +48,7 @@ type Server struct {
 
 	router *router
 	web    *webAuth
+	auth   authWatch  // ends open requests whose credential was revoked
 	blobs  *blobStore // image attachments (blobs.go)
 
 	nodeLn net.Listener
@@ -55,7 +56,9 @@ type Server struct {
 }
 
 // maxNodeReqs bounds concurrent fleet operations per node.
-const maxNodeReqs = 64
+// Each session on a node has at most 8 in progress (the node's
+// maxSessionReqs), so this is room for many sessions' waiting asks.
+const maxNodeReqs = 256
 
 type nodeConn struct {
 	host  string

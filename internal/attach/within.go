@@ -17,11 +17,13 @@ import (
 // The fleet tools run as the user, outside any sandbox the agent has, so
 // an unchecked path would let a sandboxed agent send out files it cannot
 // read itself (the node's key, say). The file must therefore be:
-//   - inside dir (the session's working directory), with symlinks resolved;
-//     the open goes through os.Root, so no component can lead out of dir;
-//   - a regular file, not a symlink, device, pipe or other special file;
-//   - not inside any of deny (the node's own directory), however it is
-//     reached;
+//   - inside dir (the session's working directory), reached without any
+//     symlink below dir: each component is opened through the one before
+//     it and checked to be the directory that was looked at;
+//   - a regular file with no other hard links, not a symlink, device, pipe
+//     or other special file;
+//   - not inside any of deny (the node's own directory), compared by
+//     identity, so another spelling of the name does not get past it;
 //   - at most MaxImageBytes, and a PNG, JPEG, WebP or GIF by its bytes.
 //
 // name may be relative to dir or absolute.
@@ -59,12 +61,75 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 			return model.Attachment{}, fmt.Errorf("%s is inside Switchyard's own directory and cannot be attached", name)
 		}
 	}
+	return openConfined(realDir, rel, name, deny)
+}
+
+// openConfined opens realDir/rel one component at a time, each through the
+// directory opened before it. It refuses any symlink (or junction) on the
+// way and checks that every directory it opens is the one it looked at, so
+// swapping a component for a symlink mid-read is caught. Directories are
+// compared with deny by identity, not by name, which also covers names
+// that differ only in case on macOS and Windows.
+func openConfined(realDir, rel, name string, deny []string) (model.Attachment, error) {
+	var denied []os.FileInfo
+	for _, d := range deny {
+		if d == "" {
+			continue
+		}
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			denied = append(denied, fi)
+		}
+	}
+	isDenied := func(fi os.FileInfo) bool {
+		for _, d := range denied {
+			if os.SameFile(d, fi) {
+				return true
+			}
+		}
+		return false
+	}
+	inOwn := fmt.Errorf("%s is inside Switchyard's own directory and cannot be attached", name)
+	// The working directory itself, and every directory above it.
+	for d := realDir; ; d = filepath.Dir(d) {
+		if fi, err := os.Stat(d); err == nil && isDenied(fi) {
+			return model.Attachment{}, inOwn
+		}
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+
 	root, err := os.OpenRoot(realDir)
 	if err != nil {
 		return model.Attachment{}, err
 	}
-	defer root.Close()
-	fi, err := root.Lstat(rel)
+	defer func() { root.Close() }()
+	parts := strings.Split(rel, string(filepath.Separator))
+	for _, part := range parts[:len(parts)-1] {
+		fi, err := root.Lstat(part)
+		if err != nil {
+			return model.Attachment{}, fmt.Errorf("%s: %w", name, notExist(err))
+		}
+		if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeIrregular != 0 || !fi.IsDir() {
+			return model.Attachment{}, fmt.Errorf("%s goes through a symlink or special directory (%s); name the file by its real path", name, part)
+		}
+		if isDenied(fi) {
+			return model.Attachment{}, inOwn
+		}
+		sub, err := root.OpenRoot(part)
+		if err != nil {
+			return model.Attachment{}, fmt.Errorf("%s: %w", name, notExist(err))
+		}
+		st, err := sub.Stat(".")
+		if err != nil || !os.SameFile(fi, st) {
+			sub.Close()
+			return model.Attachment{}, fmt.Errorf("%s changed while it was being read", name)
+		}
+		root.Close()
+		root = sub
+	}
+	base := parts[len(parts)-1]
+	fi, err := root.Lstat(base)
 	if err != nil {
 		return model.Attachment{}, fmt.Errorf("%s: %w", name, notExist(err))
 	}
@@ -75,14 +140,18 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 		return model.Attachment{}, fmt.Errorf("%s is not a regular file", name)
 	case fi.Size() > MaxImageBytes:
 		return model.Attachment{}, fmt.Errorf("%s is %d bytes; the limit is %d (5 MiB)", name, fi.Size(), MaxImageBytes)
+	case hardLinked(fi):
+		// Another name for it may be anywhere, Switchyard's directories
+		// included.
+		return model.Attachment{}, fmt.Errorf("%s has other hard links; attach a copy", name)
 	}
-	f, err := root.Open(rel)
+	f, err := root.OpenFile(base, os.O_RDONLY|oNoFollow, 0)
 	if err != nil {
 		return model.Attachment{}, fmt.Errorf("%s: %w", name, notExist(err))
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || !os.SameFile(fi, st) {
+	if err != nil || !os.SameFile(fi, st) || !st.Mode().IsRegular() || hardLinked(st) {
 		return model.Attachment{}, fmt.Errorf("%s changed while it was being read", name)
 	}
 	return readImage(f, filepath.Base(rel))

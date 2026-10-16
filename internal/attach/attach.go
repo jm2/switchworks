@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -161,18 +160,13 @@ func Normalize(atts []model.Attachment) ([]model.Attachment, error) {
 	return out, nil
 }
 
-// CheckMeta checks attachment metadata (no data), as stored records and
-// events carry it.
-func CheckMeta(atts []model.Attachment) error {
-	if len(atts) > MaxImages {
-		return fmt.Errorf("%d images; at most %d", len(atts), MaxImages)
-	}
+// TotalBytes is the size of the images' data together.
+func TotalBytes(atts []model.Attachment) int {
+	n := 0
 	for _, a := range atts {
-		if !ValidSHA256(a.SHA256) || !AllowedType(a.MIME) || a.Size <= 0 || a.Size > MaxImageBytes {
-			return errors.New("invalid attachment metadata")
-		}
+		n += len(a.Data)
 	}
-	return nil
+	return n
 }
 
 // Summary describes attachments in one line, for message headers and logs.
