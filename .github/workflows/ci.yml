@@ -105,29 +105,29 @@ jobs:
         run: |
           mkdir -p bin
           if [ "$RUNNER_OS" = Windows ]; then
-            go build -o bin/swyd.exe ./cmd/swyd
-            go build -ldflags -H=windowsgui -o bin/swydw.exe ./cmd/swyd
-            go build -ldflags -H=windowsgui -o bin/swyd-tray.exe ./cmd/swyd-tray
+            go build -o bin/swk.exe ./cmd/swk
+            go build -ldflags -H=windowsgui -o bin/swkw.exe ./cmd/swk
+            go build -ldflags -H=windowsgui -o bin/swk-tray.exe ./cmd/swk-tray
           else
-            go build -o bin/swyd ./cmd/swyd
+            go build -o bin/swk ./cmd/swk
           fi
 
       - name: Coordinator and node as user services
         shell: bash
         run: |
-          exe=swyd
-          [ "$RUNNER_OS" = Windows ] && exe=swyd.exe
+          exe=swk
+          [ "$RUNNER_OS" = Windows ] && exe=swk.exe
           bash build-aux/ci/service-smoke.sh "$PWD/bin/$exe"
 
       - name: Windows tray starts and stays up
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process bin\swyd-tray.exe -PassThru
+          $p = Start-Process bin\swk-tray.exe -PassThru
           Start-Sleep -Seconds 5
-          if ($p.HasExited) { throw "swyd-tray exited with $($p.ExitCode)" }
+          if ($p.HasExited) { throw "swk-tray exited with $($p.ExitCode)" }
           # A second copy in the same session exits at once.
-          $q = Start-Process bin\swyd-tray.exe -PassThru
+          $q = Start-Process bin\swk-tray.exe -PassThru
           if (-not $q.WaitForExit(10000)) { Stop-Process -Id $q.Id; throw 'a second tray kept running' }
           if ($p.HasExited) { throw 'the first tray exited' }
           Stop-Process -Id $p.Id
@@ -154,10 +154,10 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build
-        run: CGO_ENABLED=0 go build -o bin/swyd ./cmd/swyd
+        run: CGO_ENABLED=0 go build -o bin/swk ./cmd/swk
 
       - name: Coordinator image under Quadlet, with a node enrolled
-        run: bash build-aux/ci/container-smoke.sh "$PWD/bin/swyd"
+        run: bash build-aux/ci/container-smoke.sh "$PWD/bin/swk"
 
   cross:
     name: Cross-compile
@@ -177,10 +177,10 @@ jobs:
 
       - name: Check the version is stamped into the binary
         run: |
-          out=$(dist/swyd-linux-amd64 version)
+          out=$(dist/swk-linux-amd64 version)
           echo "$out"
           case "$out" in
-            "swyd ci-${GITHUB_SHA::12} "*) ;;
+            "swk ci-${GITHUB_SHA::12} "*) ;;
             *) echo "::error::version was not stamped by -ldflags -X"; exit 1 ;;
           esac
 
@@ -231,18 +231,18 @@ jobs:
       - name: Check scripts and data files
         run: |
           shellcheck build-aux/linux/*.sh build-aux/macos/*.sh build-aux/winget/*.sh
-          desktop-file-validate data/io.github.jm2.Switchyard.desktop
+          desktop-file-validate data/io.github.jm2.Switchworks.desktop
           build-aux/winget/render.sh 0.0.0 "$(printf '0%.0s' {1..64})" "$RUNNER_TEMP/winget"
 
       - name: Build and lint the .deb
         run: |
           make cross VERSION="v0.0.0-ci.${GITHUB_RUN_NUMBER}"
           make deb ARCH=amd64 VERSION="v0.0.0-ci.${GITHUB_RUN_NUMBER}"
-          lintian --fail-on error,warning dist/switchyard-amd64.deb
-          sudo apt-get install -y ./dist/switchyard-amd64.deb
-          swyd version
-          systemd-analyze verify /usr/lib/systemd/user/swyd-node.service /usr/lib/systemd/user/swyd-coordinator.service
-          test -z "$(dpkg-deb --ctrl-tarfile dist/switchyard-amd64.deb | tar -t | grep -E 'postinst|preinst|prerm|postrm' || true)"
+          lintian --fail-on error,warning dist/switchworks-amd64.deb
+          sudo apt-get install -y ./dist/switchworks-amd64.deb
+          swk version
+          systemd-analyze verify /usr/lib/systemd/user/swk-node.service /usr/lib/systemd/user/swk-coordinator.service
+          test -z "$(dpkg-deb --ctrl-tarfile dist/switchworks-amd64.deb | tar -t | grep -E 'postinst|preinst|prerm|postrm' || true)"
 
   # The same spec COPR builds.
   package-rpm:
@@ -265,9 +265,9 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           top="$PWD/rpmbuild"
           mkdir -p "$top/SOURCES"
-          version=$(sed -n 's/^Version: *//p' build-aux/rpm/switchyard.spec)
-          git archive --format=tar.gz --prefix="switchyard-$version/" -o "$top/SOURCES/v$version.tar.gz" HEAD
-          rpmbuild --define "_topdir $top" -bb build-aux/rpm/switchyard.spec
+          version=$(sed -n 's/^Version: *//p' build-aux/rpm/switchworks.spec)
+          git archive --format=tar.gz --prefix="switchworks-$version/" -o "$top/SOURCES/v$version.tar.gz" HEAD
+          rpmbuild --define "_topdir $top" -bb build-aux/rpm/switchworks.spec
           rpm -qlp "$top"/RPMS/*/*.rpm
           test -z "$(rpm -qp --scripts "$top"/RPMS/*/*.rpm)"
 
@@ -288,11 +288,11 @@ jobs:
       - name: Build the package
         run: |
           useradd -m builder
-          cp -r . /home/builder/switchyard
-          cp build-aux/arch/PKGBUILD /home/builder/switchyard/PKGBUILD
-          chown -R builder:builder /home/builder/switchyard
-          su builder -c "cd /home/builder/switchyard && SWYD_VERSION=v0.0.0-ci makepkg -f --noconfirm"
-          bsdtar -tf /home/builder/switchyard/switchyard-*.pkg.tar.zst
+          cp -r . /home/builder/switchworks
+          cp build-aux/arch/PKGBUILD /home/builder/switchworks/PKGBUILD
+          chown -R builder:builder /home/builder/switchworks
+          su builder -c "cd /home/builder/switchworks && SWK_VERSION=v0.0.0-ci makepkg -f --noconfirm"
+          bsdtar -tf /home/builder/switchworks/switchworks-*.pkg.tar.zst
 
   # Builds the installer, installs it for the current user without elevation,
   # registers and removes the node's logon task, and uninstalls.
@@ -309,14 +309,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build swyd.exe, swydw.exe and swyd-tray.exe
+      - name: Build swk.exe, swkw.exe and swk-tray.exe
         shell: pwsh
         run: |
           $env:CGO_ENABLED = '0'
-          $ld = '-s -w -X github.com/jm2/switchyard/internal/version.Version=v0.0.0-ci'
-          go build -trimpath -ldflags "$ld" -o dist\windows-amd64\swyd.exe .\cmd\swyd
-          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swydw.exe .\cmd\swyd
-          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swyd-tray.exe .\cmd\swyd-tray
+          $ld = '-s -w -X github.com/jm2/switchworks/internal/version.Version=v0.0.0-ci'
+          go build -trimpath -ldflags "$ld" -o dist\windows-amd64\swk.exe .\cmd\swk
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swkw.exe .\cmd\swk
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swk-tray.exe .\cmd\swk-tray
 
       - name: Install Inno Setup
         shell: pwsh
@@ -327,29 +327,29 @@ jobs:
       - name: Build the installer
         shell: pwsh
         run: |
-          iscc /Qp /DAppVersion=0.0.0-ci /DAppNumericVersion=0.0.0.0 "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchyard.iss
+          iscc /Qp /DAppVersion=0.0.0-ci /DAppNumericVersion=0.0.0.0 "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install, register the logon task, uninstall
         shell: pwsh
         run: |
-          $setup = Start-Process out\switchyard-windows-x86_64-setup.exe -Wait -PassThru `
+          $setup = Start-Process out\switchworks-windows-x86_64-setup.exe -Wait -PassThru `
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
-          $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchyard'
-          $swyd = Join-Path $app 'swyd.exe'
-          & $swyd version
-          & $swyd service install --no-start node
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchworks'
+          $swk = Join-Path $app 'swk.exe'
+          & $swk version
+          & $swk service install --no-start node
           if ($LASTEXITCODE -ne 0) { throw 'service install failed' }
-          # "Switchyard node (<user>, <SID>)"
+          # "Switchworks node (<user>, <SID>)"
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          $task = "Switchyard node ($env:USERNAME, $sid)"
+          $task = "Switchworks node ($env:USERNAME, $sid)"
           $t = Get-ScheduledTask -TaskName $task
           $t.Principal | Format-List
           if ($t.Principal.RunLevel -ne 'Limited') { throw "task runs elevated: $($t.Principal.RunLevel)" }
-          if ($t.Actions[0].Execute -notlike '*\swydw.exe') { throw "task runs $($t.Actions[0].Execute)" }
-          & $swyd service status node
-          & $swyd service uninstall node
+          if ($t.Actions[0].Execute -notlike '*\swkw.exe') { throw "task runs $($t.Actions[0].Execute)" }
+          & $swk service status node
+          & $swk service uninstall node
           if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) { throw 'task still registered' }
           $un = Start-Process (Join-Path $app 'unins000.exe') -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
           if ($un.ExitCode -ne 0) { throw "uninstall exited $($un.ExitCode)" }
@@ -368,17 +368,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build Switchyard.app and the .dmg
+      - name: Build Switchworks.app and the .dmg
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/jm2/switchyard/internal/version.Version=v0.0.0-ci" -o dist/swyd ./cmd/swyd
-          bash build-aux/macos/build-dmg.sh v0.0.0-ci dist/swyd out
-          hdiutil attach -nobrowse -mountpoint /tmp/swyd-dmg out/switchyard-macos-aarch64.dmg
-          /tmp/swyd-dmg/Switchyard.app/Contents/MacOS/swyd service status --json
-          test "$(plutil -extract LSUIElement raw -o - /tmp/swyd-dmg/Switchyard.app/Contents/Info.plist)" = true
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/jm2/switchworks/internal/version.Version=v0.0.0-ci" -o dist/swk ./cmd/swk
+          bash build-aux/macos/build-dmg.sh v0.0.0-ci dist/swk out
+          hdiutil attach -nobrowse -mountpoint /tmp/swk-dmg out/switchworks-macos-aarch64.dmg
+          /tmp/swk-dmg/Switchworks.app/Contents/MacOS/swk service status --json
+          test "$(plutil -extract LSUIElement raw -o - /tmp/swk-dmg/Switchworks.app/Contents/Info.plist)" = true
           # The menu-bar app starts (no Dock icon) and stays up.
-          cp -R /tmp/swyd-dmg/Switchyard.app /Applications/
-          open -g /Applications/Switchyard.app
+          cp -R /tmp/swk-dmg/Switchworks.app /Applications/
+          open -g /Applications/Switchworks.app
           sleep 5
-          pgrep -x Switchyard
-          osascript -e 'quit app "Switchyard"' || pkill -x Switchyard
-          hdiutil detach /tmp/swyd-dmg
+          pgrep -x Switchworks
+          osascript -e 'quit app "Switchworks"' || pkill -x Switchworks
+          hdiutil detach /tmp/swk-dmg
