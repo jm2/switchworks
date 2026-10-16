@@ -162,7 +162,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 		// To check the CA a phone or browser downloads from /ca.crt.
 		fmt.Fprintf(stdout, "  CA SHA-256 fingerprint (check it when installing ca.crt):\n    %s\n", colonHex(pki.Fingerprint(ca.Cert)))
 	}
-	fmt.Fprintf(stdout, "\nNext: swyd coordinator run, then on each workstation:\n  swyd node enroll $(swyd coordinator enroll-token <host>)\n")
+	fmt.Fprintf(stdout, "\nNext: swyd coordinator run, then on each workstation:\n  ssh <this host> swyd coordinator enroll-token <host> | swyd node enroll -\n")
 	return 0
 }
 

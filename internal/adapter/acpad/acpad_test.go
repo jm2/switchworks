@@ -662,3 +662,20 @@ func TestCloseWhileStarting(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A session an agent spawned must not start with fewer approvals than its
+// policy asks for: an unmappable policy fails the start instead of falling
+// back to the agent's default mode. A person's spawn only warns.
+func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
+	a, _ := testAdapter(t, nil)
+	a.cfg.Modes = map[string]string{"untrusted": "no-such-mode"}
+	cwd := t.TempDir()
+	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, CwdRoot: cwd, ApprovalPolicy: "untrusted"}, newRec().sink); err == nil {
+		t.Fatal("an agent-spawned session started without its approval policy")
+	}
+	h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ApprovalPolicy: "untrusted"}, newRec().sink)
+	if err != nil {
+		t.Fatalf("a person's spawn: %v", err)
+	}
+	_ = h.Stop(context.Background())
+}

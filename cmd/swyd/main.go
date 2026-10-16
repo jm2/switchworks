@@ -49,7 +49,7 @@ Services:
   swyd coordinator enroll-token <host>
                                   print a one-time token to enroll a host
   swyd coordinator cli-config     print a CLI config for this coordinator
-  swyd node enroll <token>        enroll this host with a coordinator
+  swyd node enroll -              enroll this host with a coordinator (token on stdin)
   swyd node run [flags]           run the node service
   swyd service install [node|coordinator]
                                   run it at login as you (systemd user unit,

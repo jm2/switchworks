@@ -80,10 +80,15 @@ type MessageFilter struct {
 }
 
 // Reusable reports whether a session's path can be taken by a new session.
+// A session in error is reusable only if it never started (its spawn
+// failed): one that is running can pass through "error" while its harness
+// restarts, and must keep its path.
 func Reusable(s model.Session) bool {
 	switch s.Status {
-	case model.StatusStopped, model.StatusGone, model.StatusError:
+	case model.StatusStopped, model.StatusGone:
 		return true
+	case model.StatusError:
+		return s.NativeRef == nil
 	}
 	return false
 }

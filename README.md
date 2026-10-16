@@ -252,14 +252,15 @@ fingerprint, so there is nothing else to copy:
 ```bash
 # on the coordinator
 swyd coordinator enroll-token devbox
-# on the workstation, with the token it printed
-swyd node enroll <token>
+# on the workstation: paste the token it printed (read from stdin, so it
+# never appears in the process list)
+swyd node enroll -
 ```
 
 or in one step over SSH:
 
 ```bash
-swyd node enroll "$(ssh coord.lan swyd coordinator enroll-token devbox)"
+ssh coord.lan swyd coordinator enroll-token devbox | swyd node enroll -
 ```
 
 The host name you give the token (`devbox`) is how the fleet names that

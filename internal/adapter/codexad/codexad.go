@@ -605,6 +605,7 @@ func (h *handle) onApproval(c *codex.Client, id json.RawMessage, method string, 
 			return
 		}
 		req.Kind, req.TurnID, req.ItemID, req.Reason = "file_change", p.TurnID, p.ItemID, deref(p.Reason)
+		req.GrantRoot = deref(p.GrantRoot)
 	}
 	h.mu.Lock()
 	h.approvals[aid] = pendingApproval{rpcID: append(json.RawMessage(nil), id...), turnID: req.TurnID, decisions: req.Decisions}

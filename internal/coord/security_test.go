@@ -302,3 +302,31 @@ func TestAgentSpawnKeepsSandbox(t *testing.T) {
 		t.Fatalf("goose spawning goose: %v", err)
 	}
 }
+
+// Review 4: cross-host spawns trust only configured roots and not node-
+// reported policies; agy children need a parent that approves nothing.
+func TestAgentSpawnCrossHostAndApprovals(t *testing.T) {
+	s := testServer(t, Guards{SpawnHosts: []string{"*"}, SpawnHarnesses: []string{"*"}})
+	p := addSession(t, s, "devbox", "lead", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox, x.PoliciesReported = "/", "never", "danger-full-access", true
+	})
+	spec := model.SpawnSpec{Host: "buildbox", Cwd: "/etc"}
+	if err := s.agentSpawn(from(p), &spec, 1); err == nil || !strings.Contains(err.Error(), "spawn_cwd_roots") {
+		t.Fatalf("cross-host spawn under a node-reported cwd: %v", err)
+	}
+	s.router.guards.SpawnCwdRoots = []string{"/srv/work"}
+	spec = model.SpawnSpec{Host: "buildbox", Cwd: "/srv/work/x"}
+	if err := s.agentSpawn(from(p), &spec, 1); err != nil {
+		t.Fatal(err)
+	}
+	if spec.ApprovalPolicy != "untrusted" || spec.Sandbox != "read-only" {
+		t.Fatalf("node-reported policies carried to another host: %q %q", spec.ApprovalPolicy, spec.Sandbox)
+	}
+	q := addSession(t, s, "devbox", "careful", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/w", "untrusted", "danger-full-access"
+	})
+	spec = model.SpawnSpec{Harness: "agy"}
+	if err := s.agentSpawn(from(q), &spec, 1); err == nil || !strings.Contains(err.Error(), "does not ask for approvals") {
+		t.Fatalf("agy child of an approving parent: %v", err)
+	}
+}

@@ -60,6 +60,9 @@ type snapshot struct {
 	DailyTokens map[string]int64 `json:"daily_tokens,omitempty"`
 }
 
+// maxEventsRead bounds the bytes one Events call reads.
+const maxEventsRead = 16 << 20
+
 // Messages older than this in a terminal state are dropped at open.
 const messageRetention = 14 * 24 * time.Hour
 
@@ -322,17 +325,70 @@ func (s *FileStore) openMessages() error {
 	return nil
 }
 
-// PruneMessages drops finished messages older than the retention from
-// memory; the file is compacted at the next open.
+// maxMessageBytes bounds the text of stored messages: past it, the oldest
+// finished messages go first, however recent.
+const maxMessageBytes = 256 << 20
+
+// PruneMessages drops finished messages older than the retention, then the
+// oldest finished ones while their text exceeds maxMessageBytes, and
+// compacts messages.jsonl when most of its lines are superseded.
 func (s *FileStore) PruneMessages(now time.Time) {
 	cutoff := now.Add(-messageRetention)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	total := 0
+	var done []*model.Message
 	for id, m := range s.msgs {
 		if m.Terminal() && m.CreatedAt.Before(cutoff) {
 			delete(s.msgs, id)
+			continue
+		}
+		total += len(m.Text)
+		if m.Terminal() {
+			done = append(done, m)
 		}
 	}
+	if total > maxMessageBytes {
+		sort.Slice(done, func(i, j int) bool { return done[i].ID < done[j].ID })
+		for _, m := range done {
+			if total <= maxMessageBytes {
+				break
+			}
+			total -= len(m.Text)
+			delete(s.msgs, m.ID)
+		}
+	}
+	if s.msgLines > 2*len(s.msgs)+1000 {
+		_ = s.compactMessagesLocked()
+	}
+}
+
+// compactMessagesLocked rewrites messages.jsonl with one line per message.
+func (s *FileStore) compactMessagesLocked() error {
+	var buf bytes.Buffer
+	ids := make([]string, 0, len(s.msgs))
+	for id := range s.msgs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		b, _ := json.Marshal(s.msgs[id])
+		buf.Write(append(b, '\n'))
+	}
+	if s.msgLog != nil {
+		_ = s.msgLog.Close()
+		s.msgLog = nil
+	}
+	err := atomicWrite(s.msgPath(), buf.Bytes())
+	if err == nil {
+		s.msgLines = len(s.msgs)
+	}
+	f, oerr := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if oerr != nil {
+		return oerr
+	}
+	s.msgLog = f
+	return err
 }
 
 func (s *FileStore) PutMessage(m model.Message) error {
@@ -345,6 +401,13 @@ func (s *FileStore) PutMessage(m model.Message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.msgLog == nil { // a compaction could not reopen it
+		f, err := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		s.msgLog = f
+	}
 	if _, err := s.msgLog.Write(append(b, '\n')); err != nil {
 		return err
 	}
@@ -506,17 +569,16 @@ func (s *FileStore) Session(id string) (model.Session, bool) {
 func (s *FileStore) SessionByPath(path string) (model.Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The newest live session, else the newest of any.
 	var best *model.Session
+	bestLive := false
 	for _, sess := range s.sessions {
 		if sess.Path != path {
 			continue
 		}
-		if !Reusable(*sess) {
-			best = sess
-			break
-		}
-		if best == nil || sess.ID > best.ID {
-			best = sess
+		isLive := !Reusable(*sess)
+		if best == nil || (isLive && !bestLive) || (isLive == bestLive && sess.ID > best.ID) {
+			best, bestLive = sess, isLive
 		}
 	}
 	if best == nil {
@@ -617,9 +679,23 @@ func (s *FileStore) Events(sessionID string, after int64, limit int) ([]model.Ev
 	if limit > 0 && i+limit < len(l.index) {
 		end = l.index[i+limit].off
 	}
-	buf := make([]byte, end-start)
-	_, err := l.f.ReadAt(buf, start)
+	// One read returns at most maxEventsRead bytes (but always at least
+	// one event): callers page with `after` until they get nothing.
+	if end-start > maxEventsRead {
+		k := sort.Search(len(l.index), func(k int) bool { return l.index[k].off-start > maxEventsRead })
+		if k <= i+1 {
+			k = i + 1
+		}
+		if k < len(l.index) {
+			end = l.index[k].off
+		}
+	}
+	f := l.f
 	s.mu.Unlock()
+	// Read outside the store lock: the range is already written and
+	// indexed, and appends only add after it.
+	buf := make([]byte, end-start)
+	_, err := f.ReadAt(buf, start)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}

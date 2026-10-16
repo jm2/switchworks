@@ -527,10 +527,15 @@ const decisionLabel = {
   decline: 'Decline', declineAlways: 'Always decline', cancel: 'Decline and stop',
 };
 
+// Bidirectional overrides and isolates can make text read differently from
+// what it is: an approval must show exactly what would run.
+const BIDI = /[\u202A-\u202E\u2066-\u2069]/g;
+function plain(s) { return (s || '').replace(BIDI, ''); }
+
 function approvalCard(sessionID, a, onDone) {
   const card = h('div', {class: 'approval', role: 'group', 'aria-label': 'Approval'});
   const ask = a.kind === 'file_change' ? 'Allow these file changes?' : a.kind === 'command' ? 'Run this command?' : 'Allow this tool?';
-  const what = a.kind === 'file_change' ? (a.reason || a.command || 'file changes') : (a.command || a.kind);
+  const what = plain(a.kind === 'file_change' ? (a.reason || a.command || 'file changes') : (a.command || a.kind));
   // Show the usual choice first, and the turn-stopping one last.
   const order = ['accept', 'acceptForSession', 'acceptWithExecpolicyAmendment', 'decline', 'declineAlways', 'cancel'];
   const rank = (d) => (order.indexOf(d) < 0 ? order.length - 1 : order.indexOf(d));
@@ -550,8 +555,10 @@ function approvalCard(sessionID, a, onDone) {
   fill(card,
     h('div', {class: 'ask'}, icon('alert'), h('span', {text: ask})),
     h('div', {class: 'what', text: what}),
-    a.kind !== 'file_change' && a.reason ? h('div', {class: 'small muted', text: a.reason}) : null,
-    a.cwd ? h('div', {class: 'where', title: a.cwd}, h('span', {dir: 'ltr', text: a.cwd})) : null,
+    a.kind !== 'file_change' && a.reason ? h('div', {class: 'small muted', text: plain(a.reason)}) : null,
+    a.cwd ? h('div', {class: 'where', title: plain(a.cwd)}, h('span', {dir: 'ltr', text: plain(a.cwd)})) : null,
+    a.grant_root ? h('div', {class: 'small muted'}, h('span', {text: '"Allow for this session" also allows writes under '}),
+      h('span', {dir: 'ltr', text: plain(a.grant_root)})) : null,
     h('div', {class: 'row'}, buttons));
   return card;
 }

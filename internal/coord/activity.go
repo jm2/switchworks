@@ -20,11 +20,15 @@ import (
 // memory and is rebuilt from the tail of each log at startup.
 type activity struct {
 	preview   string
+	last      string // the last agent message, clipped for fleet_status
 	approvals map[string]model.ApprovalRequested
 	order     []string // approval ids, oldest first
 }
 
-const previewLen = 280
+const (
+	previewLen     = 280
+	lastMessageLen = 4000
+)
 
 func clipText(s string, n int) string {
 	s = strings.TrimSpace(s)
@@ -49,6 +53,10 @@ func (s *Server) track(ev model.Event) bool {
 		var it model.Item
 		if json.Unmarshal(ev.Payload, &it) == nil && it.ItemType == "agentMessage" && it.Text != "" {
 			a.preview = clipText(it.Text, previewLen)
+			a.last = it.Text
+			if len(a.last) > lastMessageLen {
+				a.last = a.last[:lastMessageLen] + "…"
+			}
 			return true
 		}
 		return false
@@ -96,12 +104,23 @@ func (s *Server) rebuildActivity() {
 		if after < 0 {
 			after = 0
 		}
-		evs, err := s.store.Events(sess.ID, after, 0)
-		if err != nil {
-			continue
-		}
-		for _, ev := range evs {
-			s.track(ev)
+		for {
+			evs, err := s.store.Events(sess.ID, after, 400)
+			if err != nil || len(evs) == 0 {
+				break
+			}
+			for _, ev := range evs {
+				s.track(ev)
+				// Rebuild what started each session's current work, so a
+				// restart does not hand running chains fresh hop counts.
+				if ev.Kind == model.KindMessageDelivered {
+					var p model.MessageEvent
+					if json.Unmarshal(ev.Payload, &p) == nil {
+						s.router.onDelivered(ev.SessionID, p.MessageID)
+					}
+				}
+			}
+			after = evs[len(evs)-1].Seq
 		}
 	}
 }

@@ -86,7 +86,10 @@ func TestFleetMessaging(t *testing.T) {
 	coordDir := t.TempDir()
 	work := t.TempDir()
 	// Let agents spawn on other hosts (by default only on their own).
-	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0", func(c *coord.Config) { c.Guards.SpawnHosts = []string{"*"} })
+	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0", func(c *coord.Config) {
+		c.Guards.SpawnHosts = []string{"*"}
+		c.Guards.SpawnCwdRoots = []string{work} // on another host only configured roots count
+	})
 	defer co.stop()
 	c := apiClient(t, coordDir)
 

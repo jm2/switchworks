@@ -66,10 +66,24 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func decodeBody(r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<20))
+func decodeBody(r *http.Request, v any) error { return decodeBodyLimit(r, v, 4<<20) }
+
+// decodeBodyLimit is decodeBody with its own size limit, small for the
+// endpoints anyone can reach.
+func decodeBodyLimit(r *http.Request, v any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	dec.DisallowUnknownFields()
 	return dec.Decode(v)
+}
+
+// ipBucket groups addresses for per-client limits: an IPv6 client usually
+// has a whole /64, so it counts as one.
+func ipBucket(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() != nil {
+		return host
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func (s *Server) view(sess model.Session) apiclient.SessionView {
@@ -143,6 +157,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, err := s.Spawn(r.Context(), spec)
+	if err == nil {
+		s.router.started(sess.ID, 0) // a person's spawn starts a new chain
+	}
 	switch {
 	case errors.Is(err, store.ErrPathInUse):
 		writeErr(w, 409, fmt.Errorf("%s/%s: %w", spec.Host, spec.Name, err))
@@ -216,20 +233,32 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		last = ev.Seq
 		return nil
 	}
-	for {
-		backlog, err := s.store.Events(id, last, 1000)
-		if err != nil {
-			return
-		}
-		for _, ev := range backlog {
-			if send(ev) != nil {
-				return
+	// catchUp sends stored events after last, page by page (a page can be
+	// short when its events are large), until none are left or upto is
+	// reached.
+	catchUp := func(upto int64) bool {
+		for upto == 0 || last < upto {
+			backlog, err := s.store.Events(id, last, 1000)
+			if err != nil {
+				return false
 			}
+			if len(backlog) == 0 {
+				return true
+			}
+			for _, ev := range backlog {
+				if upto != 0 && ev.Seq > upto {
+					return true
+				}
+				if send(ev) != nil {
+					return false
+				}
+			}
+			flusher.Flush()
 		}
-		flusher.Flush()
-		if len(backlog) < 1000 {
-			break
-		}
+		return true
+	}
+	if !catchUp(0) {
+		return
 	}
 	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
@@ -242,14 +271,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			if ev.Seq > last+1 {
 				// Gap (events published before this subscriber caught up):
 				// fill from the store.
-				backlog, err := s.store.Events(id, last, 0)
-				if err != nil {
+				if !catchUp(ev.Seq - 1) {
 					return
-				}
-				for _, b := range backlog {
-					if send(b) != nil {
-						return
-					}
 				}
 			}
 			if send(ev) != nil {
@@ -540,7 +563,7 @@ type EnrollResponse struct {
 
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req EnrollRequest
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBodyLimit(r, &req, 64<<10); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -672,7 +695,7 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 		}
 		ip := ""
 		if h, _, err := net.SplitHostPort(c.RemoteAddr().String()); err == nil {
-			ip = h
+			ip = ipBucket(h)
 		}
 		l.mu.Lock()
 		if l.open >= l.total || (l.perIP > 0 && l.byIP[ip] >= l.perIP) {

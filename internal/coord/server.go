@@ -220,6 +220,10 @@ func (s *Server) handleNode(c net.Conn) {
 	s.publishHost(host)
 
 	acked := map[string]int64{}
+	if len(hello.Sessions) > maxHelloSessions {
+		s.logf("node %s reports %d sessions; considering the first %d", host, len(hello.Sessions), maxHelloSessions)
+		hello.Sessions = hello.Sessions[:maxHelloSessions]
+	}
 	for _, st := range hello.Sessions {
 		s.reconcile(host, st)
 		s.learnPolicies(host, st)
@@ -297,7 +301,7 @@ func (s *Server) learnPolicies(host string, st wire.SessionState) {
 	}
 	_, _ = s.store.UpdateSession(st.ID, func(x *model.Session) {
 		if x.Host == host && x.ApprovalPolicy == "" && x.Sandbox == "" {
-			x.ApprovalPolicy, x.Sandbox = st.ApprovalPolicy, st.Sandbox
+			x.ApprovalPolicy, x.Sandbox, x.PoliciesReported = st.ApprovalPolicy, st.Sandbox, true
 		}
 	})
 }
@@ -379,6 +383,12 @@ func (s *Server) readNode(n *nodeConn) {
 		}
 	}
 }
+
+// maxHelloSessions bounds the sessions one hello can report (and adopt).
+const maxHelloSessions = 1000
+
+// maxTokensPerEvent bounds the usage one event can add to the daily total.
+const maxTokensPerEvent = 20_000_000
 
 // ingest stores events from host, projects them and notifies subscribers.
 // It returns the highest seq to acknowledge per session: events it refuses
@@ -475,8 +485,14 @@ func (s *Server) route(ev model.Event) {
 func (s *Server) project(ev model.Event) {
 	var tokenDelta int64
 	defer func() {
+		// Booked by the coordinator's clock (the one the budget is checked
+		// against), and bounded per event, so a node's clock or report
+		// cannot move usage out of today or blow the budget for everyone.
+		if tokenDelta > maxTokensPerEvent {
+			tokenDelta = maxTokensPerEvent
+		}
 		if tokenDelta > 0 {
-			s.store.AddDailyTokens(ev.TS.UTC().Format("2006-01-02"), tokenDelta)
+			s.store.AddDailyTokens(time.Now().UTC().Format("2006-01-02"), tokenDelta)
 		}
 	}()
 	_, _ = s.store.UpdateSession(ev.SessionID, func(sess *model.Session) {
@@ -487,7 +503,10 @@ func (s *Server) project(ev model.Event) {
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				ref := p.NativeRef
 				sess.NativeRef = &ref
-				if p.Cwd != "" {
+				// The node's word on the cwd counts only where the
+				// coordinator has none (adopted sessions): agent spawns
+				// are confined relative to it.
+				if p.Cwd != "" && sess.Cwd == "" {
 					sess.Cwd = p.Cwd
 				}
 				if p.Model != "" {
@@ -684,8 +703,19 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	}
 	var sr wire.SpawnResult
 	if json.Unmarshal(res.Data, &sr) == nil {
+		// What the coordinator asked for stands; the node's answer only
+		// fills in its defaults, and is marked as reported.
 		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) {
-			x.ApprovalPolicy, x.Sandbox = sr.ApprovalPolicy, sr.Sandbox
+			if spec.ApprovalPolicy == "" {
+				x.ApprovalPolicy, x.PoliciesReported = sr.ApprovalPolicy, true
+			} else {
+				x.ApprovalPolicy = spec.ApprovalPolicy
+			}
+			if spec.Sandbox == "" {
+				x.Sandbox, x.PoliciesReported = sr.Sandbox, true
+			} else {
+				x.Sandbox = spec.Sandbox
+			}
 		})
 	}
 	out, _ := s.store.Session(sess.ID)
