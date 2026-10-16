@@ -52,7 +52,9 @@ func MockMain(args []string, stdout, stderr io.Writer) int {
 	for _, k := range keys {
 		fmt.Fprintf(stdout, "  export %s=%q\n", k, env[k])
 	}
-	fmt.Fprintf(stdout, "  swyd dev run --codex-home %q \"hello\"\n  (\"RUN: <cmd>\" makes the mock call a shell tool)\n\nCtrl-C to stop.\n", abs)
+	fmt.Fprintf(stdout, "  swyd dev run --codex-home %q \"hello\"\n  (\"RUN: <cmd>\" makes the mock call a shell tool)\n", abs)
+	fmt.Fprintf(stdout, "  swyd dev vision-probe --codex-home %q\n  (the mock reads the probe's code from the PNG's metadata, so this checks the image path, not a model)\n", abs)
+	fmt.Fprintf(stdout, "\nAnthropic Messages API (goose: GOOSE_PROVIDER=anthropic ANTHROPIC_API_KEY=mock):\n  export ANTHROPIC_HOST=%q\n\nCtrl-C to stop.\n", m.AnthropicHost())
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig

@@ -81,6 +81,11 @@ type Hello struct {
 	// Sandboxed lists the harnesses on this node that enforce a session's
 	// sandbox setting (Codex, agy); ACP agents do not.
 	Sandboxed []string `json:"sandboxed,omitempty"`
+	// Images lists the harnesses on this node that can take image
+	// attachments: Codex, and ACP agents (each session reports in its caps
+	// whether its agent advertises image prompts). agy cannot. Older nodes
+	// send none, and the coordinator then refuses images for them.
+	Images []string `json:"images,omitempty"`
 }
 
 // FeatureCwdRoot: the node confines a spawn to SpawnSpec.CwdRoot.
@@ -137,6 +142,9 @@ type MessageCmd struct {
 	Mode    string `json:"mode,omitempty"` // queue (default) | steer | interrupt
 	Kind    string `json:"kind,omitempty"` // notify | ask | reply | done | system
 	ReplyTo string `json:"reply_to,omitempty"`
+	// Attachments carry the image bytes (at most attach.MaxTotalBytes, so
+	// the envelope stays well under MaxLine).
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 // DeliverResult is the data of a successful deliver command.

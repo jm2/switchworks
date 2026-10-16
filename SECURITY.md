@@ -53,6 +53,11 @@ or tailnet:
   session.
 - The node's local API used by `swyd mcp`, and files the node writes into workspaces (agy's
   `.agents/mcp_config.json`, `.git/info/exclude`).
+- Image attachments: whether an agent can make its node read a file outside its working
+  directory, or under Switchyard's own directories, through the fleet tools' `images`; whether a
+  non-image (or an image of a type other than PNG, JPEG, WebP and GIF) gets through; and the
+  coordinator's attachment store and `GET /v1/attachments`. See
+  [`docs/messaging.md`](docs/messaging.md#images).
 - Cross-site scripting or injection in the web UI, and terminal injection in CLI output.
 - Secrets on disk (permissions, and anything written to logs or event logs).
 - CI and release workflow permissions and their pinned actions.

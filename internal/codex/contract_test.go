@@ -247,9 +247,21 @@ func TestContractAgainstSchema(t *testing.T) {
 		}
 	}
 
-	// UserInput text variant.
+	// UserInput text and localImage variants, with the fields we send.
 	if !contains(enumStrings(s.defs["UserInput"]), "text") {
 		t.Error("UserInput has no text variant")
+	}
+	if !contains(enumStrings(s.defs["UserInput"]), "localImage") {
+		t.Error("UserInput has no localImage variant")
+	}
+	for _, v := range s.defs["UserInput"]["oneOf"].([]any) {
+		props, _ := v.(map[string]any)["properties"].(map[string]any)
+		typ, _ := props["type"].(map[string]any)
+		if e, _ := typ["enum"].([]any); len(e) == 1 && e[0] == "localImage" {
+			if _, ok := props["path"]; !ok {
+				t.Error("UserInput localImage has no path")
+			}
+		}
 	}
 	// Enum values we branch on.
 	for _, st := range []string{TurnCompleted, TurnInterrupted, TurnFailed, TurnInProgress} {

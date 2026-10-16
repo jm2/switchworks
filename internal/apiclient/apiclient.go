@@ -208,10 +208,22 @@ type SendResult struct {
 	Mode      string `json:"mode,omitempty"`
 }
 
-func (c *Client) Send(ctx context.Context, id, text, mode, from string) (SendResult, error) {
+// Send delivers a message into a session, with optional images.
+func (c *Client) Send(ctx context.Context, id, text, mode, from string, images ...model.Attachment) (SendResult, error) {
 	var out SendResult
-	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages",
-		map[string]string{"text": text, "mode": mode, "from": from}, &out)
+	body := struct {
+		Text        string             `json:"text"`
+		Mode        string             `json:"mode"`
+		From        string             `json:"from"`
+		Attachments []model.Attachment `json:"attachments,omitempty"`
+	}{text, mode, from, images}
+	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages", body, &out)
+}
+
+// Attachment fetches a stored image by its SHA-256.
+func (c *Client) Attachment(ctx context.Context, sha256 string) (model.Attachment, error) {
+	var out model.Attachment
+	return out, c.do(ctx, "GET", "/v1/attachments/"+url.PathEscape(sha256), nil, &out)
 }
 
 // PostMessage is the body of POST /v1/messages: a message from a person
@@ -224,6 +236,8 @@ type PostMessage struct {
 	Mode        string `json:"mode,omitempty"`
 	TTLSeconds  int    `json:"ttl_seconds,omitempty"`
 	WaitSeconds *int   `json:"wait_seconds,omitempty"` // ask only
+	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 // PostMessage sends a notify or broadcast; the result is a fleet.SendResult.

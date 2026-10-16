@@ -66,6 +66,7 @@ Services:
 Development:
   swyd mcp                        MCP server with the fleet tools (started by the node inside sessions)
   swyd dev run [flags] <prompt>   run one turn directly against a harness
+  swyd dev vision-probe [flags]   check that a harness and model can read an image
   swyd dev mock-provider          serve a fake model endpoint for token-free smoke tests
 
   swyd version
@@ -94,7 +95,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "mock-provider" {
 			return devrun.MockMain(args[2:], stdout, stderr)
 		}
-		fmt.Fprintln(stderr, "usage: swyd dev run [flags] <prompt> | swyd dev mock-provider [--codex-home DIR]")
+		if len(args) >= 2 && args[1] == "vision-probe" {
+			return devrun.VisionMain(args[2:], stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "usage: swyd dev run [flags] <prompt> | swyd dev vision-probe [flags] | swyd dev mock-provider [--codex-home DIR]")
 		return 2
 	case "mcp":
 		return mcp.Main(os.Stdin, stdout, stderr)

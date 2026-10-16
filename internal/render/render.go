@@ -86,10 +86,21 @@ func (r *Renderer) Event(kind string, payload json.RawMessage) {
 				Content []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
+					Name string `json:"name"`
+					MIME string `json:"mime"`
+					Size int64  `json:"size"`
 				} `json:"content"`
 			}
 			_ = json.Unmarshal(p.Raw, &u)
 			for _, c := range u.Content {
+				if c.Type == "image" || c.Type == "localImage" {
+					if c.Name != "" {
+						r.line("[image] %s (%s, %d bytes)", c.Name, c.MIME, c.Size)
+					} else {
+						r.line("[image]")
+					}
+					continue
+				}
 				if c.Type != "text" {
 					continue
 				}

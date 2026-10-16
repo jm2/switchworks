@@ -75,6 +75,136 @@ async function api(method, path, body) {
   return data;
 }
 
+// ---------- images ----------
+// Images are shown as data: URLs (the page's CSP allows img-src 'self'
+// data: only). A data URL is only ever built for an allowed type, checked
+// against the bytes' own magic number, from base64 the browser produced or
+// the server returned from /v1/attachments/{sha256}.
+
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 5 << 20;
+const MAX_IMAGES_BYTES = 10 << 20;
+const SHA_RE = /^[0-9a-f]{64}$/;
+const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+function sniffImage(b) {
+  const ascii = (from, to) => String.fromCharCode(...b.subarray(from, to));
+  if (b.length >= 8 && b[0] === 0x89 && ascii(1, 4) === 'PNG' && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a) return 'image/png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 6 && (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a')) return 'image/gif';
+  if (b.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
+  return '';
+}
+
+function toBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// imageURL returns a data: URL for base64 image data, or null unless the
+// type is allowed and the data really is of that type.
+function imageURL(mime, b64) {
+  if (!IMAGE_TYPES.includes(mime) || typeof b64 !== 'string' || !b64 || !B64_RE.test(b64)) return null;
+  let head;
+  try { head = Uint8Array.from(atob(b64.slice(0, 24)), (c) => c.charCodeAt(0)); } catch (e) { return null; }
+  if (sniffImage(head) !== mime) return null;
+  return `data:${mime};base64,${b64}`;
+}
+
+function humanBytes(n) {
+  n = n || 0;
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + ' MiB';
+  if (n >= 1 << 10) return Math.round(n / (1 << 10)) + ' KiB';
+  return n + ' B';
+}
+
+// Stored images, by SHA-256 (a few dozen at most are kept in memory).
+const imageCache = new Map();
+function loadImage(sha) {
+  if (!SHA_RE.test(sha || '')) return Promise.resolve(null);
+  if (!imageCache.has(sha)) {
+    if (imageCache.size >= 40) imageCache.delete(imageCache.keys().next().value);
+    imageCache.set(sha, api('GET', '/v1/attachments/' + sha)
+      .then((a) => (a && a.sha256 === sha ? imageURL(a.mime, a.data) : null))
+      .catch(() => { imageCache.delete(sha); return null; }));
+  }
+  return imageCache.get(sha);
+}
+
+function openImage(url, name) {
+  const close = () => { box.remove(); document.removeEventListener('keydown', esc); };
+  const esc = (e) => { if (e.key === 'Escape') close(); };
+  const box = h('div', {class: 'lightbox', role: 'dialog', 'aria-label': name || 'Image', onclick: close},
+    h('img', {src: url, alt: name || 'Image'}), h('div', {class: 'caption', text: name || ''}));
+  document.addEventListener('keydown', esc);
+  document.body.append(box);
+}
+
+// thumbs shows attachments (metadata from events and messages) as
+// thumbnails that open full size.
+function thumbs(atts, cls) {
+  const list = (atts || []).filter((a) => a && SHA_RE.test(a.sha256 || ''));
+  if (!list.length) return null;
+  return h('div', {class: 'thumbs' + (cls ? ' ' + cls : '')}, list.map((a) => {
+    const label = `${a.name || 'image'} (${humanBytes(a.size)})`;
+    const img = h('img', {alt: a.name || 'image'});
+    const btn = h('button', {type: 'button', class: 'thumb', title: label, 'aria-label': 'Open ' + label, onclick: (e) => {
+      e.stopPropagation();
+      if (img.src) openImage(img.src, a.name);
+    }}, img);
+    loadImage(a.sha256).then((url) => {
+      if (url) img.src = url;
+      else fill(btn, h('span', {class: 'gone', text: `${a.name || 'image'}: no longer available`}));
+    });
+    return btn;
+  }));
+}
+
+// imagePicker lets a composer attach images: a button with a file picker,
+// and pasting. Files are checked here (type by their bytes, limits) and
+// again on the server.
+function imagePicker() {
+  const files = [];
+  const tray = h('div', {class: 'tray', hidden: true});
+  const input = h('input', {type: 'file', accept: IMAGE_TYPES.join(','), multiple: true, hidden: true, tabindex: '-1'});
+  const btn = iconBtn('image', 'Attach images', () => input.click());
+  async function add(list) {
+    for (const f of list) {
+      if (files.length >= MAX_IMAGES) { toast(`At most ${MAX_IMAGES} images per message`); break; }
+      if (f.size > MAX_IMAGE_BYTES) { toast(`${f.name || 'That image'} is over 5 MiB`); continue; }
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const mime = sniffImage(bytes);
+      if (!mime) { toast(`${f.name || 'That file'} is not a PNG, JPEG, WebP or GIF image`); continue; }
+      if (files.reduce((n, x) => n + x.size, 0) + bytes.length > MAX_IMAGES_BYTES) { toast('Images are limited to 10 MiB per message'); break; }
+      const ext = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif'}[mime];
+      files.push({name: f.name || `pasted-${files.length + 1}.${ext}`, mime, data: toBase64(bytes), size: bytes.length});
+    }
+    draw();
+  }
+  input.addEventListener('change', () => { add([...input.files]); input.value = ''; });
+  function draw() {
+    tray.hidden = !files.length;
+    fill(tray, files.map((f, i) => h('span', {class: 'chip-img', title: `${f.name} (${humanBytes(f.size)})`},
+      h('img', {src: imageURL(f.mime, f.data), alt: f.name}),
+      iconBtn('close', 'Remove ' + f.name, () => { files.splice(i, 1); draw(); }))));
+  }
+  function onPaste(e) {
+    const pasted = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => f.type.startsWith('image/'));
+    if (pasted.length) {
+      e.preventDefault();
+      add(pasted);
+    }
+  }
+  return {
+    btn: h('span', {}, btn, input), tray, onPaste,
+    count: () => files.length,
+    attachments: () => (files.length ? files.map((f) => ({name: f.name, mime: f.mime, data: f.data})) : undefined),
+    clear: () => { files.length = 0; draw(); },
+  };
+}
+
 // A small subset of Markdown, built as DOM: fenced code, inline code, bold.
 function md(text) {
   const out = document.createDocumentFragment();
@@ -210,6 +340,7 @@ const ICONS = {
   sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4',
   auto: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18',
   reply: 'M10 8L5 12l5 4M5 12h9a5 5 0 0 1 5 5v1',
+  image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
 };
 
 function icon(name, cls) {
@@ -452,6 +583,8 @@ function newSessionComposer() {
   const harnessSel = h('select', {'aria-label': 'Harness'});
   const cwd = h('input', {type: 'text', placeholder: 'Folder on the host', 'aria-label': 'Working directory', autocapitalize: 'off', spellcheck: 'false'});
   const send = h('button', {type: 'submit', class: 'send', 'aria-label': 'Start session', title: 'Start session'}, icon('send'));
+  const picker = imagePicker();
+  input.addEventListener('paste', picker.onPaste);
   const lastCwd = (host) => { try { return localStorage.getItem('swyd-cwd:' + host) || ''; } catch (e) { return ''; } };
   hostSel.addEventListener('change', () => { refreshHarness(); cwd.value = lastCwd(hostSel.value); });
   function refreshHarness() {
@@ -478,6 +611,7 @@ function newSessionComposer() {
     e.preventDefault();
     const dir = cwd.value.trim();
     if (!dir) { toast('Enter the folder on the host to work in'); cwd.focus(); return; }
+    if (picker.count() && !input.value.trim()) { toast('Add a prompt to go with the images'); input.focus(); return; }
     const base = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 56) || 'session';
     // Several sessions on one folder are common: number them.
     const taken = new Set([...S.sessions.values()].filter((x) => x.host === hostSel.value).map((x) => x.name));
@@ -485,7 +619,9 @@ function newSessionComposer() {
     for (let i = 2; taken.has(name); i++) name = `${base}-${i}`;
     send.disabled = true;
     try {
-      const s = await api('POST', '/v1/sessions', {host: hostSel.value, harness: harnessSel.value, name, cwd: dir, prompt: input.value.trim()});
+      const s = await api('POST', '/v1/sessions', {host: hostSel.value, harness: harnessSel.value, name, cwd: dir, prompt: input.value.trim(),
+        attachments: picker.attachments()});
+      picker.clear();
       try { localStorage.setItem('swyd-cwd:' + hostSel.value, dir); } catch (err) { /* convenience only */ }
       S.sessions.set(s.id, s);
       location.hash = '#/s/' + s.id;
@@ -494,8 +630,10 @@ function newSessionComposer() {
       send.disabled = false;
     }
   }},
+  picker.tray,
   input,
   h('div', {class: 'bar'},
+    picker.btn,
     h('label', {class: 'chip lead', title: 'Host'}, icon('host'), hostSel, icon('chevron', 'chev')),
     h('label', {class: 'chip', title: 'Harness'}, harnessSel, icon('chevron', 'chev')),
     h('label', {class: 'chip', title: 'Working directory'}, cwd),
@@ -518,6 +656,7 @@ function parseRouted(text) {
   }
   let body = nl >= 0 ? text.slice(nl + 1) : '';
   body = body.replace(/^\((?:.*?is waiting for an answer.*?|This answers your earlier fleet_ask.*?)\)\n/, '');
+  body = body.replace(/^\(\d+ images? attached, in this turn's input: .*\)\n/, ''); // shown as thumbnails
   return {from: f.from, kind: f.kind, msg: f.msg, re: f.re, body};
 }
 
@@ -605,9 +744,11 @@ function sessionView(id, full) {
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
   const sendBtn = h('button', {type: 'submit', class: 'send', 'aria-label': 'Send', title: 'Send'}, icon('send'));
-  const form = h('form', {class: 'composer', onsubmit: send}, input,
-    h('div', {class: 'bar'}, h('label', {class: 'chip', title: 'How to deliver'}, mode, icon('chevron', 'chev')), sendBtn));
+  const picker = imagePicker();
+  const form = h('form', {class: 'composer', onsubmit: send}, picker.tray, input,
+    h('div', {class: 'bar'}, picker.btn, h('label', {class: 'chip', title: 'How to deliver'}, mode, icon('chevron', 'chev')), sendBtn));
   const dock = h('div', {class: 'dock'}, approvals, form);
+  input.addEventListener('paste', picker.onPaste);
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
@@ -617,18 +758,23 @@ function sessionView(id, full) {
   async function send(e) {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    if (!text) {
+      if (picker.count()) toast('Add a message to go with the images');
+      return;
+    }
+    const attachments = picker.attachments();
     sendBtn.disabled = true;
     try {
       let res;
       if (mode.value === 'ask') {
-        res = await api('POST', '/v1/messages', {to: id, kind: 'ask', text, from: ME, wait_seconds: 0});
+        res = await api('POST', '/v1/messages', {to: id, kind: 'ask', text, from: ME, wait_seconds: 0, attachments});
         toast(res.status === 'failed' ? 'Ask failed: ' + res.error : 'Asked. The answer will appear in Inbox');
       } else {
-        res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME});
+        res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
         else if (mode.value === 'steer' && res.mode === 'queue') toast('Nothing was running, so it starts the next turn');
       }
+      picker.clear();
       input.value = '';
       input.style.height = 'auto';
       follow = true;
@@ -712,6 +858,13 @@ function sessionView(id, full) {
       }
       case 'approval.resolved':
         if (p.decision !== 'cleared') add(h('div', {class: 'sys', text: `Approval: ${decisionLabel[p.decision] || p.decision}`}));
+        break;
+      case 'message.delivered':
+        // Images arrive with the message that starts (or steers) a turn;
+        // the event carries their metadata, the bytes come from the store.
+        if ((p.attachments || []).length) {
+          add(h('div', {class: 'ev'}, thumbs(p.attachments, (p.from || '').startsWith('user:') ? 'mine' : '')));
+        }
         break;
       case 'message.failed':
         add(h('div', {class: 'sys bad', text: `A message from ${p.from} failed: ${p.error}`}));
@@ -920,7 +1073,7 @@ function inboxView() {
         const el = h('div', {class: 'item'},
           h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
             h('span', {class: 'grow'}), h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
-          h('div', {class: 'text', text: m.text}), form);
+          h('div', {class: 'text', text: m.text}), thumbs(m.attachments), form);
         if (focused === m.id) setTimeout(() => box.focus(), 0);
         return el;
       })) : h('p', {class: 'empty', text: 'No questions waiting for you.'}),
@@ -940,6 +1093,7 @@ function messageItem(m) {
       h('span', {class: 'state ' + m.state, text: m.state + (m.inline ? ', inline' : '')}),
       h('span', {class: 'faint', text: ago(m.created_at)})),
     h('div', {class: 'text', text: m.text}),
+    thumbs(m.attachments),
     m.error ? h('div', {class: 'small error', text: m.error}) : null);
   return el;
 }

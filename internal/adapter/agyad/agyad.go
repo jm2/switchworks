@@ -271,6 +271,11 @@ func (h *handle) startProc(t *turnState) (*proc.Process, error) {
 
 // Deliver runs one turn. Only queue delivery is supported.
 func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.DeliveryMode) error {
+	if len(in.Images) > 0 {
+		// agy's headless docs: in stream-json input, "text is the only
+		// supported block type"; any other block ends the session.
+		return fmt.Errorf("%w: agy's headless stream-json input documents text blocks only", adapter.ErrNoImages)
+	}
 	if mode == adapter.DeliverSteer {
 		return adapter.ErrNotSupported
 	}

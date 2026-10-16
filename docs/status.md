@@ -18,6 +18,8 @@
 | ACP client | done | ACP v1 schema (agentclientprotocol repo); traffic recorded from goose 1.54.0 |
 | ACP adapter (Goose and others) | done | fake-agent tests: streaming, tool items (command, edit with diff, MCP, generic), reasoning, plans, approvals with every decision, cancel during approval, stuck agent killed, crash and reopen, `session/load` with replay suppressed, `session/resume`, no-reopen agents, mode/model/provider config, fleet tools auto-approved; real goose 1.54.0 against the mock's Anthropic endpoint: approvals, commands, usage, resume across processes, approval modes |
 | Goose in the fleet | done | e2e with real goose: fleet_list, goose → Codex fleet_ask, Codex → goose fleet_ask, resume after node restart; web UI driven in headless Chromium at phone size (tool cards, approval card, approve) |
+| Images in messages and prompts | done | unit tests: type sniffing, limits, safe names, path confinement (outside the cwd, `..`, symlinked file, symlinked directory out, the node's key and directory inside the cwd, FIFOs), coordinator attachment store (retention, pinning, cap, digests), node queue files; Codex adapter writes private `localImage` files and removes them after the turn (fake app-server reads them); ACP adapter sends image blocks only when the agent advertises them; agy refuses; e2e: a screenshot file sent with `fleet_send` from one host arrives byte for byte in the other host's harness, plus `fleet_ask`, `fleet_spawn`, a person's `send` and spawn, refusals, metadata-only events and records; real goose 1.54.0 passes images to the mock's Anthropic emulation (by `swyd send` and by a Codex agent's `fleet_send`). Web UI driven in headless Chromium (desktop and phone sizes) against a fake Codex host: attach with the file picker and by pasting, an SVG refused, send, thumbnails in the transcript and the inbox, the full-size view, no console errors or CSP violations |
+| `swyd dev vision-probe` | done | passes against the fake app-server, the fake ACP agent and real goose 1.54.0 through the mock provider; the mock reads the probe's PNG text chunk in both API emulations. Not yet run against a real vision model |
 | Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
 | Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
 | Scoped API tokens | done | unit tests: every route declares a scope and an undeclared one needs admin (walks the route table), every route with read, operate and admin tokens, create/list/revoke by name or id, expiry, secrets never listed, persistence across a store restart, cookies carrying their scope (forged scope refused, pre-token cookies stay admin), cookies and pending links dying with their token, links capped at the minting token's scope, admin token unchanged; e2e: `swyd token create --cli-config` makes a working operate `cli.json`, the CLI spawns, sends and mints links with it but `token ls`, `hosts rm` and enrollment are refused, a read token streams but cannot act, revoking cuts the CLI off |
@@ -60,8 +62,13 @@ real-Codex test.
   turns, so per-turn figures are taken when the report does not grow.
 - **ACP agents other than goose are untested** (opencode, Crush's ACP PR,
   claude-agent-acp): expect mode-name and tool-naming differences.
-- **ACP prompts are text only**; no images, ACP terminals or client file
-  access.
+- **ACP prompts are text and images**; no audio, embedded resources, ACP
+  terminals or client file access.
+- **Images reach the harness, not necessarily the model.** Which real
+  models and provider endpoints see images is unverified; run
+  `swyd dev vision-probe` per host. Real Codex has not yet been run with a
+  `localImage` input (the fake app-server and the contract test cover the
+  protocol shape). agy cannot take images.
 - **agy is untested against the real binary.** The parser follows the
   documented schema; tool parameter names (`CommandLine`, `TargetFile`)
   and MCP tool naming are informed guesses. The soft-deny notice on stderr

@@ -14,11 +14,16 @@ import (
 
 // Host is an enrolled workstation running `swyd node`.
 type Host struct {
-	ID        string    `json:"id"`
-	OS        string    `json:"os"`
-	Arch      string    `json:"arch"`
-	Version   string    `json:"version"`
-	Adapters  []string  `json:"adapters"`
+	ID       string   `json:"id"`
+	OS       string   `json:"os"`
+	Arch     string   `json:"arch"`
+	Version  string   `json:"version"`
+	Adapters []string `json:"adapters"`
+	// Images lists the harnesses on the host that can take image
+	// attachments, as its node last reported. An ACP agent is listed when
+	// the node supports images for it; each session's Caps.Images says
+	// whether its agent actually advertises image prompts.
+	Images    []string  `json:"images,omitempty"`
 	Connected bool      `json:"connected"`
 	LastSeen  time.Time `json:"last_seen"`
 	// CertSHA256 is the fingerprint of the host's current node certificate.
@@ -55,6 +60,9 @@ type Caps struct {
 	Stop      bool `json:"stop"`
 	Approve   bool `json:"approve"`
 	ReadOnly  bool `json:"read_only"`
+	// Images: the session accepts image attachments (Codex, and ACP agents
+	// whose initialize response advertises promptCapabilities.image).
+	Images bool `json:"images,omitempty"`
 }
 
 // NativeRef identifies a session inside its harness.
@@ -109,6 +117,7 @@ type SpawnSpec struct {
 	Harness        string            `json:"harness"` // "codex" (default), "agy", "goose" or a configured ACP agent
 	Cwd            string            `json:"cwd"`
 	Prompt         string            `json:"prompt,omitempty"`
+	Attachments    []Attachment      `json:"attachments,omitempty"` // images sent with the prompt
 	Model          string            `json:"model,omitempty"`
 	Provider       string            `json:"provider,omitempty"`
 	ApprovalPolicy string            `json:"approval_policy,omitempty"`
@@ -226,6 +235,8 @@ type MessageEvent struct {
 	Text      string `json:"text,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Attachments: metadata only, never the image bytes.
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 type UsageEvent struct {

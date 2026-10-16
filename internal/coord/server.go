@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -47,6 +48,7 @@ type Server struct {
 
 	router *router
 	web    *webAuth
+	blobs  *blobStore // image attachments (blobs.go)
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup
@@ -103,6 +105,9 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 		fleet: map[chan FleetEvent]struct{}{}, acts: map[string]*activity{}}
 	if s.web, err = loadWebAuth(dir); err != nil {
 		return nil, fmt.Errorf("web sign-in key: %w", err)
+	}
+	if s.blobs, err = openBlobStore(filepath.Join(dir, "attachments")); err != nil {
+		return nil, fmt.Errorf("attachment store: %w", err)
 	}
 	s.router = newRouter(s, cfg.Guards)
 	s.rebuildActivity()
@@ -207,6 +212,7 @@ func (s *Server) handleNode(c net.Conn) {
 		s.logf("node %s: pinned certificate %s", host, fp)
 	}
 	rec.OS, rec.Arch, rec.Version, rec.Adapters = hello.OS, hello.Arch, hello.Version, hello.Adapters
+	rec.Images = hello.Images
 	rec.Connected, rec.LastSeen = true, time.Now()
 	_ = s.store.UpsertHost(rec)
 	s.mu.Lock()
@@ -683,6 +689,21 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	}
 	if !contains(n.hello.Adapters, spec.Harness) {
 		return model.Session{}, fmt.Errorf("host %q has no %s harness (available: %v)", spec.Host, spec.Harness, n.hello.Adapters)
+	}
+	if len(spec.Attachments) > 0 {
+		if strings.TrimSpace(spec.Prompt) == "" {
+			return model.Session{}, errors.New("images need a prompt to go with them")
+		}
+		if err := s.imagesRefusal(spec.Host, spec.Harness, nil); err != nil {
+			return model.Session{}, err
+		}
+		// The node gets the bytes with the spawn; the store keeps them for
+		// the web UI.
+		atts, err := s.storeAttachments(spec.Attachments)
+		if err != nil {
+			return model.Session{}, err
+		}
+		spec.Attachments = atts
 	}
 	now := time.Now()
 	sess := model.Session{

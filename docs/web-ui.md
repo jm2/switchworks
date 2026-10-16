@@ -31,7 +31,11 @@ system; the choice is kept per browser.
   The composer delivers on the **next turn**, **steers** the running one,
   **interrupts and sends**, or **asks** with the answer going to your
   inbox. Interrupt and Stop are in the top bar; session details are at the
-  top of the transcript.
+  top of the transcript. The image button (or pasting an image) attaches
+  up to four PNG, JPEG, WebP or GIF images; images in messages show as
+  thumbnails in the transcript, the inbox and the traffic list, and open
+  full size when tapped. The home composer takes images for the first
+  prompt the same way.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
   reply box each, and other messages addressed to people.
 - **Traffic**: every routed message, filterable, with its delivery state.
@@ -109,6 +113,13 @@ coordinator directory and restart the coordinator.
   scripts or styles), `X-Frame-Options: DENY` and `Referrer-Policy:
   no-referrer`. Text from sessions is only ever inserted as text, never as
   HTML.
+- Images are shown as `data:` URLs (the CSP allows `img-src 'self' data:`
+  and nothing else). The UI builds one only for PNG, JPEG, WebP or GIF,
+  and only when the bytes' magic number matches that type: from files it
+  read itself, or from `GET /v1/attachments/{sha256}`, which returns JSON
+  (type sniffed again by the server, data in base64) rather than a raw
+  image, so attachment bytes are never served as a page of the UI's
+  origin. SVG, which can carry script, is never accepted.
 - Failed token sign-ins are limited to 10 a minute per client. One-time
   links are not limited (they cannot be guessed), so a flood of bad tokens
   cannot keep you from signing in with a link.

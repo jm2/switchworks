@@ -31,6 +31,7 @@ import (
 
 	"github.com/jm2/switchyard/internal/adapter"
 	"github.com/jm2/switchyard/internal/adapter/agyad"
+	"github.com/jm2/switchyard/internal/attach"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/proc"
@@ -86,6 +87,9 @@ type queuedMsg struct {
 	Text    string `json:"text"`
 	Kind    string `json:"kind,omitempty"`
 	ReplyTo string `json:"reply_to,omitempty"`
+	// Attachments: metadata only. The bytes wait in the session's
+	// attachment directory (see images.go) until the message is delivered.
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 // seenCap bounds the per-session list of delivered message ids kept for
@@ -122,6 +126,7 @@ type session struct {
 	delta      *model.ItemDelta // coalescing buffer
 	deltaSince time.Time
 	delivering bool
+	imgMu      sync.Mutex // orders storing queued images against gcImages
 
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
@@ -521,6 +526,10 @@ func (n *Node) resume(s *session) {
 	defer cancel()
 	spec := rec.Spec
 	spec.MCP = n.mcpFor(rec.ID, rec.Path)
+	// No turn survives a node restart, so no harness still needs the
+	// image files of one.
+	_ = os.RemoveAll(n.scratchDir(rec.ID))
+	spec.ScratchDir = n.scratchDir(rec.ID)
 	h, err := a.Resume(ctx, *rec.NativeRef, spec, s.sink)
 	if err != nil {
 		n.logf("session %s: resume failed: %v", rec.Path, err)
@@ -570,6 +579,16 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if fi, err := os.Stat(spec.Cwd); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("cwd %q is not a directory on %s", spec.Cwd, n.cfg.Host)
 	}
+	images, err := attach.Normalize(spec.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	if len(images) > 0 && !harness.TakesImages(harnessName) {
+		return nil, noImages(harnessName)
+	}
+	if len(images) > 0 && strings.TrimSpace(spec.Prompt) == "" {
+		return nil, errors.New("images need a prompt to go with them")
+	}
 	if spec.CwdRoot != "" {
 		// An agent's spawn: the coordinator checked the path's text; here
 		// symlinks are resolved too, so a link inside the root cannot lead
@@ -596,20 +615,37 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	n.mu.Unlock()
 	startSpec := s.rec.Spec
 	startSpec.MCP = n.mcpFor(s.rec.ID, s.rec.Path)
+	startSpec.ScratchDir = n.scratchDir(s.rec.ID)
 	h, err := a.Start(ctx, startSpec, s.sink)
-	if err != nil {
+	failStart := func(err error) (json.RawMessage, error) {
 		s.emit(model.KindError, model.ErrorEvent{Message: "start: " + err.Error()})
 		s.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusError, Detail: "start failed"})
 		s.mu.Lock()
 		s.rec.Stopped = true
 		s.mu.Unlock()
 		_ = n.saveState()
+		n.dropImages(s.rec.ID)
 		return nil, err
+	}
+	if err != nil {
+		return failStart(err)
+	}
+	var metas []model.Attachment
+	if len(images) > 0 {
+		// Only now is it known whether an ACP agent takes images.
+		if !h.Caps().Images {
+			_ = h.Stop(ctx)
+			return failStart(noImages(harnessName))
+		}
+		if metas, err = n.storeImages(s.rec.ID, images); err != nil {
+			_ = h.Stop(ctx)
+			return failStart(err)
+		}
 	}
 	s.mu.Lock()
 	s.h = h
 	if strings.TrimSpace(spec.Prompt) != "" {
-		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Text: spec.Prompt})
+		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Text: spec.Prompt, Attachments: metas})
 	}
 	ref, sp := s.rec.NativeRef, s.rec.Spec
 	s.mu.Unlock()
@@ -691,6 +727,13 @@ func formatMessage(m queuedMsg) string {
 	case model.MsgReply:
 		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
 	}
+	if n := len(m.Attachments); n > 0 {
+		plural := "s"
+		if n == 1 {
+			plural = ""
+		}
+		fmt.Fprintf(&b, "(%d image%s attached, in this turn's input: %s.)\n", n, plural, attach.Summary(m.Attachments))
+	}
 	b.WriteString(quoteHeaders(m.Text))
 	return b.String()
 }
@@ -716,6 +759,15 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	if err != nil {
 		return nil, err
 	}
+	// Images are checked again here (type by their bytes, limits), and
+	// refused before anything is queued if the session cannot take them.
+	images, err := attach.Normalize(m.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	if len(images) > 0 && !h.Caps().Images {
+		return nil, noImages(s.rec.Harness)
+	}
 	s.mu.Lock()
 	dup := containsID(s.rec.Seen, m.ID)
 	if !dup {
@@ -734,23 +786,47 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		s.rec.Seen = s.rec.Seen[len(s.rec.Seen)-seenCap:]
 	}
 	s.mu.Unlock()
-	msg := queuedMsg{ID: m.ID, From: m.From, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo}
+	msg := queuedMsg{ID: m.ID, From: m.From, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo, Attachments: model.MetaOnly(images)}
+	unseen := func() {
+		s.mu.Lock()
+		for i, id := range s.rec.Seen {
+			if id == m.ID {
+				s.rec.Seen = append(s.rec.Seen[:i:i], s.rec.Seen[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
 	caps := h.Caps()
-	switch {
-	case m.Mode == model.ModeSteer && caps.Steer:
-		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID}, adapter.DeliverSteer)
+	if m.Mode == model.ModeSteer && caps.Steer {
+		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverSteer)
 		if err == nil {
 			_ = n.saveState()
-			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer})
+			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
 			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer}), nil
 		}
+		if errors.Is(err, adapter.ErrNoImages) {
+			unseen()
+			return nil, err
+		}
 		n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+	}
+	// imgMu keeps gcImages from removing these files before the message
+	// is in the queue.
+	s.imgMu.Lock()
+	if _, err := n.storeImages(s.rec.ID, images); err != nil {
+		s.imgMu.Unlock()
+		unseen()
+		return nil, fmt.Errorf("store images: %w", err)
+	}
+	switch {
 	case m.Mode == model.ModeInterrupt && caps.Interrupt:
 		s.mu.Lock()
 		s.rec.Queue = append([]queuedMsg{msg}, s.rec.Queue...)
 		s.mu.Unlock()
+		s.imgMu.Unlock()
 		_ = n.saveState()
-		s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeInterrupt})
+		s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeInterrupt, Attachments: msg.Attachments})
 		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
 		}
@@ -760,8 +836,9 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	s.mu.Lock()
 	s.rec.Queue = append(s.rec.Queue, msg)
 	s.mu.Unlock()
+	s.imgMu.Unlock()
 	_ = n.saveState()
-	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeQueue})
+	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeQueue, Attachments: msg.Attachments})
 	go n.tryDeliver(s)
 	return model.Marshal(wire.DeliverResult{Mode: model.ModeQueue}), nil
 }
@@ -797,13 +874,17 @@ func (n *Node) tryDeliver(s *session) {
 		// Record delivery before the turn's own events, so the log reads in
 		// order; a failure is recorded right after.
 		s.flushDeltaLocked()
-		s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue"})
+		s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Attachments: msg.Attachments})
+		id := s.rec.ID
 		s.mu.Unlock()
 		n.wakeSender()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID}, adapter.DeliverQueue)
-		cancel()
+		images, err := n.loadImages(id, msg.Attachments)
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			err = h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverQueue)
+			cancel()
+		}
 
 		s.mu.Lock()
 		s.delivering = false
@@ -823,6 +904,9 @@ func (n *Node) tryDeliver(s *session) {
 			s.emit(model.KindMessageFailed, model.MessageEvent{MessageID: msg.ID, From: msg.From, Error: err.Error()})
 		}
 		_ = n.saveState()
+		if len(msg.Attachments) > 0 {
+			n.gcImages(s)
+		}
 		// Loop: if the turn already finished (or failed to start), the next
 		// queued message goes now; otherwise the idle status triggers it.
 	}
@@ -847,7 +931,9 @@ func (n *Node) stop(ctx context.Context, s *session) error {
 	s.rec.Stopped = true
 	s.rec.Status = model.StatusStopped
 	s.h = nil
+	id := s.rec.ID
 	s.mu.Unlock()
+	n.dropImages(id)
 	return n.saveState()
 }
 
@@ -950,10 +1036,21 @@ func sandboxed(names []string) []string {
 	return out
 }
 
+// takesImages picks the harnesses that can be given images.
+func takesImages(names []string) []string {
+	out := []string{}
+	for _, h := range names {
+		if harness.TakesImages(h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 // hello builds the node's greeting.
 func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Features: []string{wire.FeatureCwdRoot}, Sandboxed: sandboxed(n.Adapters()),
+		Features: []string{wire.FeatureCwdRoot}, Sandboxed: sandboxed(n.Adapters()), Images: takesImages(n.Adapters()),
 		Version: version.Version, Adapters: n.Adapters()}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()

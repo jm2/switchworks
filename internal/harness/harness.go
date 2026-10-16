@@ -119,6 +119,14 @@ func EnforcesSandbox(name string) bool {
 	return name == codexad.Harness || name == agyad.Harness || name == ""
 }
 
+// TakesImages reports whether a harness can be given image attachments:
+// Codex (localImage inputs) and ACP agents (image content blocks, sent only
+// when the agent advertises promptCapabilities.image; each session reports
+// that in Caps.Images). agy's headless input documents text only.
+func TakesImages(name string) bool {
+	return name != agyad.Harness
+}
+
 // Available returns the harnesses whose binaries resolve on this host.
 func Available(o Options) []string {
 	var out []string

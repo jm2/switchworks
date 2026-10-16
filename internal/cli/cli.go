@@ -235,8 +235,9 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	approval := fs.String("approval", "", "codex approval policy: never, on-request, untrusted (default: node's)")
 	sandbox := fs.String("sandbox", "", "read-only, workspace-write, danger-full-access (default: node's)")
 	doAttach := fs.Bool("attach", false, "attach after spawning")
+	images := addImageFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swyd spawn <host> --cwd DIR [flags] [prompt]")
+		fmt.Fprintln(stderr, "usage: swyd spawn <host> --cwd DIR [--image FILE]... [flags] [prompt]")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -252,13 +253,20 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	if *name == "" {
 		*name = defaultName(*cwd)
 	}
+	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(atts) > 0 && strings.TrimSpace(prompt) == "" {
+		return fail(stderr, errors.New("--image needs a prompt to go with it"))
+	}
 	c, ok := client(stderr)
 	if !ok {
 		return 1
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: host, Name: *name, Harness: *h, Cwd: *cwd, Prompt: prompt,
+	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: host, Name: *name, Harness: *h, Cwd: *cwd, Prompt: prompt, Attachments: atts,
 		Model: *modelName, Provider: *provider, ApprovalPolicy: *approval, Sandbox: *sandbox})
 	if err != nil {
 		return fail(stderr, err)
@@ -350,10 +358,15 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	steer := fs.Bool("steer", false, "inject into the running turn instead of queueing a new one")
 	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
 	from := fs.String("from", "", "sender (default user:cli)")
+	images := addImageFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd send [--steer|--interrupt] <session> <text>")
+		fmt.Fprintln(stderr, "usage: swyd send [--steer|--interrupt] [--image FILE]... <session> <text>")
 		return 2
+	}
+	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
 	}
 	c, ok := client(stderr)
 	if !ok {
@@ -375,7 +388,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	res, err := c.Send(ctx, s.ID, strings.Join(pos[1:], " "), mode, *from)
+	res, err := c.Send(ctx, s.ID, strings.Join(pos[1:], " "), mode, *from, atts...)
 	if err != nil {
 		return fail(stderr, err)
 	}

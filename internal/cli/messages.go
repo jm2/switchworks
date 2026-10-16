@@ -77,14 +77,19 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	bcast := fs.Bool("broadcast", false, "send to every session matching an @selector")
 	from := fs.String("from", "", "sender (default user:cli)")
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")
+	images := addImageFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swyd msg [flags] <address> <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
+		fmt.Fprintln(stderr, "usage: swyd msg [flags] [--image FILE]... <address> <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
 		fs.Usage()
 		return 2
+	}
+	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
 	}
 	c, ok := client(stderr)
 	if !ok {
@@ -97,7 +102,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := ctxTimeout()
 	defer cancel()
 	res, err := c.PostMessage(ctx, apiclient.PostMessage{From: *from, To: pos[0], Kind: kind, Text: strings.Join(pos[1:], " "),
-		Mode: *mode, TTLSeconds: int(ttl.Seconds())})
+		Mode: *mode, TTLSeconds: int(ttl.Seconds()), Attachments: atts})
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -110,10 +115,15 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	wait := fs.Duration("wait", 10*time.Minute, "how long to wait for the answer (0: print the ticket and exit)")
 	from := fs.String("from", "", "sender (default user:cli)")
+	images := addImageFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swyd ask [--wait 10m] <address> <question>")
+		fmt.Fprintln(stderr, "usage: swyd ask [--wait 10m] [--image FILE]... <address> <question>")
 		return 2
+	}
+	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
 	}
 	c, ok := client(stderr)
 	if !ok {
@@ -127,7 +137,7 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	ctx, cancel2 := context.WithTimeout(ctx, *wait+time.Minute)
 	defer cancel2()
-	res, err := c.Ask(ctx, apiclient.PostMessage{From: *from, To: pos[0], Text: strings.Join(pos[1:], " "), WaitSeconds: &secs})
+	res, err := c.Ask(ctx, apiclient.PostMessage{From: *from, To: pos[0], Text: strings.Join(pos[1:], " "), WaitSeconds: &secs, Attachments: atts})
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -190,7 +200,11 @@ func printMessages(stdout io.Writer, msgs []model.Message) {
 		if m.Inline {
 			state += " (inline)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, oneLine(m.Text, 60), m.ID)
+		text := m.Text
+		if n := len(m.Attachments); n > 0 {
+			text = fmt.Sprintf("[%d image%s] %s", n, map[bool]string{true: "", false: "s"}[n == 1], text)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, oneLine(text, 60), m.ID)
 	}
 	tw.Flush()
 }

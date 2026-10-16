@@ -166,14 +166,32 @@ type ThreadUnsubscribeResponse struct {
 	Status string `json:"status"`
 }
 
-// UserInput: only the text variant is used.
+// UserInput: the text and localImage variants are used. localImage makes
+// app-server read the image file itself (and encode it for the model), as
+// the Codex TUI does for pasted images.
 type UserInput struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
+	Text string `json:"text,omitempty"` // text
+	Path string `json:"path,omitempty"` // localImage
+}
+
+// MarshalJSON always writes text for the text variant (it is required).
+func (u UserInput) MarshalJSON() ([]byte, error) {
+	if u.Type == "text" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{u.Type, u.Text})
+	}
+	type plain UserInput
+	return json.Marshal(plain(u))
 }
 
 // TextInput builds a text UserInput.
 func TextInput(s string) []UserInput { return []UserInput{{Type: "text", Text: s}} }
+
+// LocalImageInput builds a localImage UserInput.
+func LocalImageInput(path string) UserInput { return UserInput{Type: "localImage", Path: path} }
 
 type TurnStartParams struct {
 	ThreadID            string      `json:"threadId"`

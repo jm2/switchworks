@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jm2/switchyard/internal/attach"
 	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/store"
@@ -229,6 +230,77 @@ func (r *router) tidy(now time.Time) {
 		}
 	}
 	r.s.store.PruneMessages(now)
+	if r.s.blobs != nil {
+		pinned := map[string]bool{}
+		for _, m := range r.s.store.PendingMessages() {
+			for _, a := range m.Attachments {
+				pinned[a.SHA256] = true
+			}
+		}
+		r.s.blobs.prune(now, pinned)
+	}
+}
+
+// storeAttachments validates images (type sniffed from the bytes, size
+// limits) and keeps their bytes in the attachment store. It returns them
+// with their data and metadata filled in.
+func (s *Server) storeAttachments(atts []model.Attachment) ([]model.Attachment, error) {
+	if len(atts) == 0 {
+		return nil, nil
+	}
+	out, err := attach.Normalize(atts)
+	if err != nil {
+		return nil, err
+	}
+	if s.blobs == nil {
+		return nil, errors.New("this coordinator has no attachment store")
+	}
+	for _, a := range out {
+		if _, err := s.blobs.put(a.Data); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// loadAttachments reads a stored message's images back for delivery.
+func (s *Server) loadAttachments(metas []model.Attachment) ([]model.Attachment, error) {
+	if s.blobs == nil {
+		return nil, errors.New("this coordinator has no attachment store")
+	}
+	out := make([]model.Attachment, 0, len(metas))
+	for _, m := range metas {
+		data, err := s.blobs.get(m.SHA256)
+		if err != nil {
+			return nil, fmt.Errorf("image %s: %w", m.Name, err)
+		}
+		m.Data = data
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// imagesRefusal says why images cannot go to harness on host (and, once it
+// has registered, to session sess), or returns nil.
+func (s *Server) imagesRefusal(host, harness string, sess *model.Session) error {
+	if harness == "" {
+		harness = "codex"
+	}
+	var list []string
+	if n, ok := s.node(host); ok {
+		list = n.hello.Images
+	} else if h, ok := s.store.Host(host); ok {
+		list = h.Images
+	}
+	switch {
+	case harness == "agy":
+		return errors.New("agy sessions cannot take images (agy's headless input is text only)")
+	case !contains(list, harness):
+		return fmt.Errorf("%s on %s cannot take images (its node does not offer images for it; an older swyd node never does)", harness, host)
+	case sess != nil && sess.NativeRef != nil && !sess.Caps.Images:
+		return fmt.Errorf("%s cannot take images: its agent does not advertise image prompts (ACP promptCapabilities.image)", sess.Path)
+	}
+	return nil
 }
 
 // put stores a message and tells the fleet views.
@@ -432,6 +504,24 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if err != nil {
 		return nil, err
 	}
+	if len(args.Images) > 0 {
+		// Paths are read by the sender's node, which replaces them with
+		// attachments; an older node passes them on unread.
+		return nil, errors.New("image paths cannot be read: the sending host runs an older swyd node; upgrade it")
+	}
+	var images []model.Attachment
+	if len(args.Attachments) > 0 {
+		for _, t := range targets {
+			if t.sess != nil {
+				if err := r.s.imagesRefusal(t.sess.Host, t.sess.Harness, t.sess); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if images, err = r.s.storeAttachments(args.Attachments); err != nil {
+			return nil, err
+		}
+	}
 	if from.sess != nil {
 		if len(targets) > r.guards.MaxBroadcast {
 			return nil, fmt.Errorf("%s matches %d sessions; agents may broadcast to at most %d", args.To, len(targets), r.guards.MaxBroadcast)
@@ -486,8 +576,8 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			}
 		}
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(),
-			To: args.To, Text: args.Text, Mode: args.Mode, Group: group, Hops: hops, State: model.MsgPending,
-			CreatedAt: now, ExpiresAt: now.Add(ttl)}
+			To: args.To, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
+			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
 		} else {
@@ -543,8 +633,15 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	if !r.s.Online(sess.Host) {
 		return m
 	}
+	var images []model.Attachment
+	if len(m.Attachments) > 0 {
+		var err error
+		if images, err = r.s.loadAttachments(m.Attachments); err != nil {
+			return r.fail(m, err.Error())
+		}
+	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
-		ID: m.ID, From: m.From, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo}}, 30*time.Second)
+		ID: m.ID, From: m.From, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo, Attachments: images}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -642,7 +739,8 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 		}
 		opts = append(opts, func(m *model.Message) { m.HoldUntil = m.CreatedAt.Add(hold) })
 	}
-	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds}, opts...)
+	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds,
+		Images: args.Images, Attachments: args.Attachments}, opts...)
 	if err != nil {
 		return fleet.AskResult{Status: fleet.AskFailed, Error: err.Error()}
 	}
