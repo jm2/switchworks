@@ -34,6 +34,7 @@ by the tools you already use, under your own sign-ins.
 | Steer a running turn | ✅ Codex; other harnesses queue the message for the next turn |
 | Agent-to-agent messaging across machines (`fleet_ask`, `fleet_send`, `fleet_spawn`, ...) | ✅ Hop limits, rate limits, spawn depth and a daily token budget |
 | Questions from agents to you, with an inbox | ✅ |
+| Images in messages and prompts (screenshots between agents, from the CLI and web UI) | ✅ Codex and Goose (ACP agents that advertise image prompts); agy is text only |
 | Web UI for desktop and phone | ✅ Dark by default, with Light and Match-system themes |
 | Sign in on a phone with a one-time link | ✅ |
 | Live streaming of turns, diffs and token usage | ✅ |
@@ -379,6 +380,7 @@ swyd attach devbox/myapp         # follow it live; Ctrl-C detaches
 swyd ls                                   # every session on every host
 swyd send myapp "also update the changelog"          # next turn
 swyd send --steer myapp "skip the docs for now"      # into the running turn (Codex)
+swyd send --image shot.png myapp "does this look right?"   # with an image (up to 4)
 swyd approve myapp <approval-id> accept   # or answer in the web UI
 swyd interrupt myapp
 swyd stop myapp                           # history is kept
@@ -407,6 +409,16 @@ agents such as goose ignore sandboxes). Agents steer, interrupt and stop only se
 [docs/messaging.md](docs/messaging.md), including its trust model: the
 guards are not a sandbox, and an agent with a shell can read its node's
 credentials.
+
+Messages and first prompts can carry images (PNG, JPEG, WebP or GIF, up to
+4 per message, 5 MiB each): `--image` on `swyd send`, `msg`, `ask` and
+`spawn`, the attach button or a paste in the web UI, and an `images` list of
+file paths in `fleet_send`, `fleet_ask` and `fleet_spawn`, so one agent can
+hand a screenshot to a reviewer on another host. Agents can attach only
+regular files inside their own working directory. Codex and Goose take
+images; whether the model actually sees them depends on the model and the
+provider endpoint, which `swyd dev vision-probe` checks. See
+[docs/messaging.md](docs/messaging.md#images).
 
 If a workstation is lost or compromised, `swyd hosts rm <host>` revokes its
 certificate and `swyd token rm <name>` its CLI token. Enrolling a host
@@ -452,6 +464,11 @@ swyd dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 coordinator: a quick check that a harness works on a machine. With
 `--record FILE` it captures the raw protocol stream.
 
+`swyd dev vision-probe [--harness goose] [--model M]` sends the harness an
+image with a random code and reports PASS if the model reads it back: run
+it on each host with your real configuration to see which models can see
+images. Against the mock provider it checks the image path without a model.
+
 ---
 
 ## Development
@@ -491,12 +508,13 @@ internal/
 ├── jsonrpc/              # Shared JSON-RPC 2.0 over stdio
 ├── mcp/                  # swyd mcp: the fleet tools as a stdio MCP server
 ├── fleet/                # Fleet operations: arguments and results
+├── attach/               # Image attachments: type sniffing, limits, confined file reads
 ├── web/                  # Web UI (embedded HTML, CSS, JS and fonts)
 ├── store/                # Storage interface and file-backed implementation
 ├── pki/                  # Private CA and enrollment tokens
 ├── wire/                 # Node ↔ coordinator protocol
 ├── cli/, apiclient/, render/  # The swyd command line
-├── devrun/               # swyd dev run and swyd dev mock-provider
+├── devrun/               # swyd dev run, vision-probe and mock-provider
 ├── service/              # swyd service: systemd user units, LaunchAgents, logon tasks
 ├── runstatus/            # status.json, which the tray and swyd service status read
 ├── tray/                 # Tray menu and actions; sni/ (Linux D-Bus), wintray/ (Win32)

@@ -29,6 +29,10 @@ import (
 //     answers it with fleet_reply, text "answer: <last line>", then says
 //     "replied: <output>"
 //   - anything else: the model answers "mock: <message>" in three deltas
+//   - with images (input_image data URLs): "Reply with only the code in
+//     this image" is answered with the vision probe's code, read from the
+//     PNG's tEXt chunk; otherwise the answer lists each image's type, size
+//     and SHA-256 (see SeeImages)
 //
 // Every response reports usage of 120 input (40 cached) + 7 output tokens.
 type MockProvider struct {
@@ -90,8 +94,9 @@ type respInput struct {
 	Type    string `json:"type"`
 	Role    string `json:"role"`
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL string `json:"image_url"` // input_image
 	} `json:"content"`
 	Output json.RawMessage `json:"output"`
 }
@@ -140,6 +145,7 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	lastUser, sawOutput, output := "", false, ""
+	var images [][]byte
 	for _, raw := range body.Input {
 		var it respInput
 		if json.Unmarshal(raw, &it) != nil {
@@ -152,10 +158,27 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 		case "message":
 			if it.Role == "user" {
 				sawOutput = false
+				var imgs [][]byte
+				text := ""
 				for _, c := range it.Content {
-					if c.Type == "input_text" {
-						lastUser = c.Text
+					switch c.Type {
+					case "input_text":
+						// Codex wraps a local image in <image ...> tags
+						// around the input_image; those are not the prompt.
+						if t := strings.TrimSpace(c.Text); strings.HasPrefix(t, "<image") || strings.HasPrefix(t, "</image") {
+							continue
+						}
+						text = c.Text
+					case "input_image":
+						if b := DecodeDataURL(c.ImageURL); b != nil {
+							imgs = append(imgs, b)
+						}
 					}
+				}
+				if text != "" {
+					lastUser, images = text, imgs
+				} else if len(imgs) > 0 {
+					images = append(images, imgs...)
 				}
 			}
 		}
@@ -204,7 +227,12 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 		ev(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item})
 	default:
 		text := "mock: " + lastUser
+		seen, withImages := SeeImages(lastUser, images)
 		switch {
+		case !sawOutput && withImages && strings.Contains(strings.ToLower(lastUser), "code in this image"):
+			text = seen
+		case !sawOutput && withImages:
+			text += seen
 		case sawOutput && askM != nil:
 			text = "replied: " + output
 		case sawOutput && callM != nil:

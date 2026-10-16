@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/attach"
 	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/pki"
@@ -50,6 +51,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"GET /v1/messages", scopeRead, s.handleListMessages},
 		{"GET /v1/messages/{id}", scopeRead, s.handleGetMessage},
 		{"GET /v1/usage", scopeRead, s.handleUsage},
+		{"GET /v1/attachments/{sha256}", scopeRead, s.handleAttachment},
 		{"GET /v1/stream", scopeRead, s.handleFleetStream},
 		// A sign-in link carries the minting credential's scope, never more.
 		{"POST /v1/ui-links", scopeRead, s.handleUILink},
@@ -84,8 +86,13 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 
 func decodeBody(r *http.Request, v any) error { return decodeBodyLimit(r, v, 4<<20) }
 
-// decodeBodyLimit is decodeBody with its own size limit, small for the
-// endpoints anyone can reach.
+// maxImageBody bounds the bodies of the endpoints that take image
+// attachments: up to attach.MaxTotalBytes of images (about 13.4 MiB as
+// base64) plus the text.
+const maxImageBody = 16 << 20
+
+// decodeBodyLimit is decodeBody with its own size limit: small for the
+// endpoints anyone can reach, larger for those that take images.
 func decodeBodyLimit(r *http.Request, v any, limit int64) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	dec.DisallowUnknownFields()
@@ -168,7 +175,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	var spec model.SpawnSpec
-	if err := decodeBody(r, &spec); err != nil {
+	if err := decodeBodyLimit(r, &spec, maxImageBody); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -308,11 +315,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Text string `json:"text"`
-		Mode string `json:"mode"`
-		From string `json:"from"`
+		Text        string             `json:"text"`
+		Mode        string             `json:"mode"`
+		From        string             `json:"from"`
+		Attachments []model.Attachment `json:"attachments"`
 	}
-	if err := decodeBody(r, &body); err != nil {
+	if err := decodeBodyLimit(r, &body, maxImageBody); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -340,7 +348,8 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, fmt.Errorf("host %q: %w (steering needs a live session)", sess.Host, ErrOffline))
 		return
 	}
-	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode})
+	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode,
+		Attachments: body.Attachments})
 	if err != nil {
 		writeErr(w, routeStatus(err), err)
 		return
@@ -380,7 +389,7 @@ func userSender(from string) (sender, error) {
 
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	var body apiclient.PostMessage
-	if err := decodeBody(r, &body); err != nil {
+	if err := decodeBodyLimit(r, &body, maxImageBody); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -395,7 +404,8 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		if body.Kind == model.MsgBroadcast {
 			kind = model.MsgBroadcast
 		}
-		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode, TTLSeconds: body.TTLSeconds})
+		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode,
+			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments})
 		if err != nil {
 			writeErr(w, routeStatus(err), err)
 			return
@@ -406,7 +416,8 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		if body.WaitSeconds != nil {
 			wait = *body.WaitSeconds
 		}
-		res := s.router.ask(r.Context(), from, fleet.AskArgs{To: body.To, Text: body.Text, WaitSeconds: &wait, TTLSeconds: body.TTLSeconds})
+		res := s.router.ask(r.Context(), from, fleet.AskArgs{To: body.To, Text: body.Text, WaitSeconds: &wait, TTLSeconds: body.TTLSeconds,
+			Attachments: body.Attachments})
 		if res.Status == fleet.AskFailed && res.MessageID == "" {
 			writeErr(w, 400, errors.New(res.Error))
 			return
@@ -460,6 +471,30 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, res)
+}
+
+// handleAttachment returns a stored image as JSON: its type (sniffed from
+// the bytes again) and its data in base64. The web UI builds a data: URL
+// from it; serving JSON rather than the raw image means a browser never
+// renders attachment bytes as a page of this origin.
+func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
+	sum := r.PathValue("sha256")
+	if s.blobs == nil {
+		writeErr(w, 404, store.ErrNotFound)
+		return
+	}
+	data, err := s.blobs.get(sum)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	mime := attach.Sniff(data)
+	if mime == "" {
+		writeErr(w, 404, errors.New("not an image"))
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
+	writeJSON(w, 200, model.Attachment{MIME: mime, Size: int64(len(data)), SHA256: sum, Data: data})
 }
 
 func addUsage(m map[string]model.Usage, k string, u model.Usage) {

@@ -58,6 +58,13 @@ type SendArgs struct {
 	Mode       string `json:"mode,omitempty"` // queue (default) | steer | interrupt
 	Broadcast  bool   `json:"broadcast,omitempty"`
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+	// Images are image files on the sender's host, as an agent names them
+	// in a fleet tool. The sender's node reads them (under the session's
+	// working directory only) and replaces them with Attachments; they
+	// never reach the coordinator.
+	Images []string `json:"images,omitempty"`
+	// Attachments carry the images' bytes to the coordinator.
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 // MessageInfo summarizes a routed message.
@@ -84,6 +91,9 @@ type AskArgs struct {
 	// sooner is held for it instead of being delivered as a new turn.
 	// (swyd mcp uses this to wait in a separate, retriable call.)
 	HoldSeconds int `json:"hold_seconds,omitempty"`
+	// Images and Attachments: as in SendArgs.
+	Images      []string           `json:"images,omitempty"`
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 // Ask statuses.
@@ -137,6 +147,9 @@ type SpawnArgs struct {
 	Harness string            `json:"harness,omitempty"`
 	Model   string            `json:"model,omitempty"`
 	Labels  map[string]string `json:"labels,omitempty"`
+	// Images and Attachments go with the prompt: as in SendArgs.
+	Images      []string           `json:"images,omitempty"`
+	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
 type SpawnResult struct {

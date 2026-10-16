@@ -172,11 +172,20 @@ func (a *Adapter) Close() error {
 	a.closed = true
 	c := a.client
 	a.client = nil
-	a.mu.Unlock()
-	if c != nil {
-		return c.Close()
+	hs := make([]*handle, 0, len(a.threads))
+	for _, h := range a.threads {
+		hs = append(hs, h)
 	}
-	return nil
+	a.mu.Unlock()
+	var err error
+	if c != nil {
+		err = c.Close()
+	}
+	// app-server is gone, so no turn can still need its image files.
+	for _, h := range hs {
+		h.cleanImages()
+	}
+	return err
 }
 
 // OnNotification routes app-server notifications to sessions.
@@ -303,13 +312,23 @@ type handle struct {
 	provider   string
 	home       string
 	closed     bool
+
+	// Image files written for localImage inputs, by turn id; removed when
+	// the turn completes (app-server has read them by then) or the
+	// session stops. imageMeta maps each file to its attachment, so the
+	// turn's userMessage item can show the image without its path.
+	scratch    string
+	ownScratch bool
+	files      map[string][]string
+	imageMeta  map[string]model.Attachment
 }
 
 func newHandle(a *Adapter, c *codex.Client, threadID string, spec adapter.StartSpec, sink adapter.Sink) *handle {
 	return &handle{
 		a: a, c: c, threadID: threadID, spec: spec, sink: sink,
 		status: model.StatusStarting, approvals: map[string]pendingApproval{},
-		home: c.Info.CodexHome,
+		home: c.Info.CodexHome, scratch: spec.ScratchDir,
+		files: map[string][]string{}, imageMeta: map[string]model.Attachment{},
 	}
 }
 
@@ -318,7 +337,7 @@ func (h *handle) emit(kind string, payload any) {
 }
 
 func (h *handle) caps() model.Caps {
-	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true}
+	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true}
 }
 
 // attached finishes registration after thread/start or thread/resume.
@@ -458,7 +477,10 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 			if len(h.doneTurns) > 16 {
 				h.doneTurns = h.doneTurns[len(h.doneTurns)-16:]
 			}
+			done := h.files[n.Turn.ID]
+			delete(h.files, n.Turn.ID)
 			h.mu.Unlock()
+			h.removeFiles(done)
 			tc := model.TurnCompleted{TurnID: n.Turn.ID, Status: n.Turn.Status}
 			if n.Turn.Error != nil {
 				tc.Error = n.Turn.Error.Message
@@ -476,6 +498,9 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 		var hdr codex.ItemHeader
 		_ = json.Unmarshal(n.Item, &hdr)
 		it := model.Item{TurnID: n.TurnID, ItemID: hdr.ID, ItemType: hdr.Type, Raw: n.Item}
+		if hdr.Type == "userMessage" {
+			it.Raw = h.userItem(n.Item)
+		}
 		if hdr.Type == "agentMessage" {
 			var am codex.AgentMessageItem
 			if json.Unmarshal(n.Item, &am) == nil {
@@ -660,19 +685,29 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		if active == "" {
 			return adapter.ErrNotActive
 		}
-		_, err := c.TurnSteer(ctx, codex.TurnSteerParams{
-			ThreadID: h.threadID, ExpectedTurnID: active, Input: codex.TextInput(in.Text),
+		input, paths, err := h.inputs(in)
+		if err != nil {
+			return err
+		}
+		_, err = c.TurnSteer(ctx, codex.TurnSteerParams{
+			ThreadID: h.threadID, ExpectedTurnID: active, Input: input,
 			ClientUserMessageID: in.ClientMessageID,
 		})
+		h.adoptFiles(active, paths, err)
 		return err
 	default:
 		if active != "" || status == model.StatusActive || status == model.StatusWaitingApproval {
 			return adapter.ErrBusy
 		}
+		input, paths, err := h.inputs(in)
+		if err != nil {
+			return err
+		}
 		resp, err := c.TurnStart(ctx, codex.TurnStartParams{
-			ThreadID: h.threadID, Input: codex.TextInput(in.Text), ClientUserMessageID: in.ClientMessageID,
+			ThreadID: h.threadID, Input: input, ClientUserMessageID: in.ClientMessageID,
 		})
 		if err != nil {
+			h.adoptFiles("", paths, err)
 			return err
 		}
 		// Notifications for this turn may already have been processed (a
@@ -683,6 +718,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 			h.activeTurn = resp.Turn.ID
 		}
 		h.mu.Unlock()
+		h.adoptFiles(resp.Turn.ID, paths, nil)
 		return nil
 	}
 }
@@ -719,5 +755,6 @@ func (h *handle) Stop(ctx context.Context) error {
 	h.mu.Lock()
 	h.closed = true
 	h.mu.Unlock()
+	h.cleanImages()
 	return nil
 }

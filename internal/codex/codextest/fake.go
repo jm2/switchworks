@@ -75,9 +75,48 @@ type server struct {
 }
 
 type turn struct {
-	id     string
-	thread string
-	stop   chan string // receives "interrupted" or steer text
+	id      string
+	thread  string
+	stop    chan string // receives "interrupted" or steer text
+	images  [][]byte    // image inputs, read when the turn started
+	content []any       // the input as sent, echoed in the userMessage item
+}
+
+// readInput decodes a turn's UserInput list: the text of the first text
+// input, and the bytes of every image input. Like app-server, it reads a
+// localImage file when the turn starts, so it fails if the file is gone.
+func readInput(v any) (string, [][]byte, []any, error) {
+	in, _ := v.([]any)
+	text, sawText := "", false
+	var images [][]byte
+	for _, x := range in {
+		m, _ := x.(map[string]any)
+		switch m["type"] {
+		case "text":
+			if !sawText {
+				text, _ = m["text"].(string)
+				sawText = true
+			}
+		case "localImage":
+			p, _ := m["path"].(string)
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("localImage %s: %v", p, err)
+			}
+			images = append(images, b)
+		case "image":
+			u, _ := m["url"].(string)
+			b := DecodeDataURL(u)
+			if b == nil {
+				return "", nil, nil, fmt.Errorf("image url is not a base64 data URL")
+			}
+			images = append(images, b)
+		}
+	}
+	if in == nil {
+		in = []any{}
+	}
+	return text, images, in, nil
 }
 
 func newID() string {
@@ -231,11 +270,10 @@ func (s *server) handle(line []byte) {
 		s.reply(m.ID, map[string]any{"status": "unsubscribed"})
 	case "turn/start":
 		tid := str("threadId")
-		text := ""
-		if in, ok := p["input"].([]any); ok && len(in) > 0 {
-			if first, ok := in[0].(map[string]any); ok {
-				text, _ = first["text"].(string)
-			}
+		text, images, content, err := readInput(p["input"])
+		if err != nil {
+			s.fail(m.ID, -32600, err.Error())
+			return
 		}
 		s.mu.Lock()
 		if s.turns[tid] != nil {
@@ -244,7 +282,7 @@ func (s *server) handle(line []byte) {
 			return
 		}
 		s.turnSeq++
-		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4)}
+		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4), images: images, content: content}
 		s.turns[tid] = t
 		s.mu.Unlock()
 		s.reply(m.ID, map[string]any{"turn": map[string]any{"id": t.id, "items": []any{}, "status": "inProgress", "error": nil}})
@@ -258,11 +296,13 @@ func (s *server) handle(line []byte) {
 			s.fail(m.ID, -32600, "no matching active turn")
 			return
 		}
-		text := ""
-		if in, ok := p["input"].([]any); ok && len(in) > 0 {
-			if first, ok := in[0].(map[string]any); ok {
-				text, _ = first["text"].(string)
-			}
+		text, images, _, err := readInput(p["input"])
+		if err != nil {
+			s.fail(m.ID, -32600, err.Error())
+			return
+		}
+		if r, ok := SeeImages(text, images); ok {
+			text += r
 		}
 		s.reply(m.ID, map[string]any{"turnId": t.id})
 		t.stop <- "steer:" + text
@@ -323,11 +363,18 @@ func (s *server) runTurn(t *turn, text string) {
 	}()
 	s.note("thread/status/changed", map[string]any{"threadId": t.thread, "status": map[string]any{"type": "active", "activeFlags": []any{}}})
 	s.note("turn/started", map[string]any{"threadId": t.thread, "turn": map[string]any{"id": t.id, "items": []any{}, "status": "inProgress", "error": nil}})
+	content := t.content
+	if content == nil {
+		content = []any{map[string]any{"type": "text", "text": text}}
+	}
 	s.note("item/started", map[string]any{"threadId": t.thread, "turnId": t.id, "startedAtMs": time.Now().UnixMilli(),
-		"item": map[string]any{"type": "userMessage", "id": t.id + "-u", "content": []any{map[string]any{"type": "text", "text": text}}}})
+		"item": map[string]any{"type": "userMessage", "id": t.id + "-u", "content": content}})
 	status := "completed"
 	reply := "echo: " + text
+	seen, withImages := SeeImages(text, t.images)
 	switch {
+	case withImages && strings.Contains(strings.ToLower(text), "code in this image"):
+		reply = seen
 	case strings.Contains(text, "CRASH"):
 		os.Exit(3)
 	case strings.Contains(text, "APPROVE"):
@@ -363,6 +410,9 @@ func (s *server) runTurn(t *turn, text string) {
 		if r, ok := s.scriptedTools(t, text); ok {
 			reply = r
 		}
+	}
+	if withImages && reply != "" && reply != seen {
+		reply += seen // what it saw, for tests to check
 	}
 	if reply != "" {
 		s.agentMessage(t, t.id+"-msg", reply, true)

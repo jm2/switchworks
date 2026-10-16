@@ -37,11 +37,11 @@ The model sees the tools in the `mcp__swyd` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status (filter by host or label) |
-| `fleet_send` | fire-and-forget message; `mode` queue / steer / interrupt; `broadcast` with an `@selector` |
-| `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout |
+| `fleet_send` | fire-and-forget message; `mode` queue / steer / interrupt; `broadcast` with an `@selector`; `images` (see [Images](#images)) |
+| `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | recent traffic for this session; with `ticket`, check or wait on an ask |
-| `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles |
+| `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
 
@@ -76,6 +76,93 @@ cannot pass its text off as a person's.
 A spawned session's first prompt arrives the same way: from a person it is
 passed through; from an agent's `fleet_spawn` it is a `kind=notify` message
 from that agent.
+
+A message with images says so under its header, and the images are part
+of the same turn's input:
+
+```
+[switchyard msg=01M41… from=devbox/game kind=notify]
+(1 image attached, in this turn's input: level1.png (image/png, 412 KiB).)
+does level 1 render?
+```
+
+## Images
+
+Messages (`fleet_send`, `fleet_ask`, `swyd send`/`msg`/`ask`, the web UI)
+and first prompts (`fleet_spawn`, `swyd spawn`, the web UI) can carry
+images, for example a game agent's screenshots for a reviewer agent on
+another host.
+
+**Limits.** PNG, JPEG, WebP or GIF only, at most 4 images per message,
+5 MiB each and 10 MiB in all. The type is sniffed from the bytes (magic
+numbers); a declared type that disagrees is refused. Each check runs on
+the sender's node (or CLI or browser), again on the coordinator, and again
+on the receiving node. As base64, the largest message is about 13.4 MiB,
+well under the 32 MiB limit of a node connection's line. The API accepts
+bodies up to 16 MiB on the three endpoints that take images and 4 MiB
+elsewhere.
+
+**Which harnesses.** Each node reports which of its harnesses take images,
+and each session reports whether it does, so the coordinator refuses
+undeliverable images before storing the message:
+
+| Harness | Images | How |
+| --- | --- | --- |
+| Codex | yes | `localImage` inputs: the node writes each image to a private file and app-server reads it |
+| Goose and other ACP agents | if the agent advertises `promptCapabilities.image` (goose 1.54 does) | ACP `image` content blocks after the text |
+| agy | no | its headless stream-json input documents text blocks only |
+
+Whether the *model* sees the image is a separate question: a model without
+vision, or a provider endpoint that drops images, gets the text only. Use
+`swyd dev vision-probe` ([harnesses.md](harnesses.md#images-and-the-vision-probe)).
+
+**Agents attach files by path.** The `images` argument is a list of file
+paths on the sender's host, relative to the session's working directory
+or absolute. `swyd mcp` runs as your user, outside any sandbox the agent
+has, so if it read whatever path an agent named, a sandboxed agent could
+send itself (or another agent) files it cannot read: the node's key,
+other sessions' tokens, `cli.json`. So the sender's node reads the file
+itself, and only:
+
+- inside the session's working directory, as the node recorded it at
+  spawn (not anything the agent can change), with symlinks and `..`
+  resolved; the file is opened through Go's `os.Root`, so no path
+  component can lead out of the directory, and a session confined to a
+  directory root (spawned by an agent) is checked against that root first;
+- a regular file: not a symlink (even to a file inside), Windows reparse
+  point, device, pipe or directory; the opened file must be the one that
+  was checked;
+- never under Switchyard's own directories (the node's directory, the
+  config directory with `cli.json`), even when the working directory
+  contains them (a session working in your home directory);
+- an allowed image type by its bytes, within the size limits.
+
+Agents cannot pass image data directly: `swyd mcp` and the node's local API
+refuse an `attachments` argument. Paths never reach the coordinator.
+
+**Delivery and storage.** The coordinator keeps message records (and every
+event) with the images' metadata only: name, type, size and SHA-256. It
+keeps the bytes in `<coordinator dir>/attachments/<sha256>` (0700; files
+0600; names are digests, never a sender's file name):
+
+- while a message carrying them is pending, so it can still be delivered
+  when an offline host returns; these are never evicted;
+- after delivery, for 7 days, so the web UI can show them in transcripts,
+  the inbox and the traffic list; the oldest go first while the store
+  holds more than 512 MiB.
+
+New images are refused while the store holds 1 GiB (only undelivered
+images can fill it). Keeping bytes in the message records instead would
+put megabytes into `messages.jsonl` on every state change and into the
+coordinator's memory, which holds all message records.
+
+On the receiving node a queued message keeps only metadata in
+`state.json`; its images wait in `<node dir>/attachments/<session>/` until
+the message is delivered. Codex's image files go in
+`<node dir>/scratch/<session>/` and are removed when the turn completes,
+when the node restarts, or when the session stops. Events
+(`message.queued`, `message.delivered`, the turn's `userMessage` item)
+carry metadata only.
 
 ## Delivery
 
@@ -199,11 +286,18 @@ node and its agents as a separate user. In particular:
   the rest of the fleet.
 - If a workstation may be compromised, `swyd hosts rm` it.
 
+The fleet tools themselves do not widen what an agent can read: the files
+an agent attaches as images are confined to its working directory and
+never come from Switchyard's own directories ([Images](#images)). Images
+an agent receives are model input like any message text, and a crafted
+image can carry instructions the same way text can.
+
 ## CLI
 
 ```sh
 swyd msg buildbox/helper "the build is green"        # by address
 swyd msg --broadcast @role=reviewer "please look at PR 42"
+swyd msg --image shot.png --image diff.png reviewer "these two frames"
 swyd ask lead "are you done with the parser?"    # waits for fleet_reply
 swyd inbox                                       # messages and open questions for people
 swyd reply <ask-id> "yes, go ahead"
@@ -215,15 +309,22 @@ swyd usage                                       # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify|ask|broadcast, mode, ttl_seconds, wait_seconds, from}` |
+| POST | `/v1/messages` | `{to, text, kind: notify|ask|broadcast, mode, ttl_seconds, wait_seconds, from, attachments}` |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
-| POST | `/v1/sessions/{id}/messages` | as before; now routed (202 with `state`) |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode, from, attachments}`; routed (202 with `state`) |
+| POST | `/v1/sessions` | a spawn; `attachments` go with `prompt` |
+| GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 
 Reading needs a `read` token; sending, asking and replying need `operate`.
 API tokens are managed with `POST /v1/tokens` (`{name, scope, ttl_seconds}`;
 the secret comes back once), `GET /v1/tokens` and `DELETE
 /v1/tokens/{id-or-name}`, all admin only. A request beyond a token's scope
-gets 403 naming the scope it needs.
+gets 403 naming the scope it needs. Reading a stored image
+needs `read`.
+
+`attachments` is a list of `{name, mime, data}` with `data` in base64;
+`mime` may be left out (it is sniffed). Messages returned by the API carry
+`attachments` without `data`.

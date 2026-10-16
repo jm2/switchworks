@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jm2/switchyard/internal/attach"
 	"github.com/jm2/switchyard/internal/fleet"
 	"github.com/jm2/switchyard/internal/model"
 	"github.com/jm2/switchyard/internal/ulid"
@@ -260,12 +261,27 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 		id := strings.ToLower(ulid.New())
 		name = fmt.Sprintf("%s-%s", base, id[len(id)-6:])
 	}
+	if len(a.Images) > 0 {
+		return fleet.SpawnResult{}, errors.New("image paths cannot be read: the sending host runs an older swyd node; upgrade it")
+	}
 	spec := model.SpawnSpec{Host: a.Host, Name: name, Harness: a.Harness, Cwd: a.Cwd, Prompt: a.Prompt,
-		Model: a.Model, Labels: a.Labels, Parent: from.sessionID()}
+		Attachments: a.Attachments, Model: a.Model, Labels: a.Labels, Parent: from.sessionID()}
 	hops := s.router.hopsFor(from)
 	if from.sess != nil {
 		if err := s.agentSpawn(from, &spec, hops); err != nil {
 			return fleet.SpawnResult{}, err
+		}
+		if len(a.Attachments) > 0 {
+			if strings.TrimSpace(a.Prompt) == "" {
+				return fleet.SpawnResult{}, errors.New("images need a prompt to go with them")
+			}
+			// Refuse before starting a child that could not see them.
+			if err := s.imagesRefusal(spec.Host, spec.Harness, nil); err != nil {
+				return fleet.SpawnResult{}, err
+			}
+			if _, err := attach.Normalize(a.Attachments); err != nil {
+				return fleet.SpawnResult{}, err
+			}
 		}
 	}
 	sess, err := s.Spawn(ctx, spec)
@@ -277,7 +293,11 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 		// An agent's prompt goes to the child as a routed message from the
 		// agent: it carries the hop count, and the child sees who sent it
 		// rather than taking it for the owner's words.
-		if _, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt}); err != nil {
+		msgs, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt, Attachments: a.Attachments})
+		if err == nil && len(a.Attachments) > 0 && len(msgs) == 1 && msgs[0].State == model.MsgFailed {
+			err = errors.New(msgs[0].Error) // e.g. the child's agent does not take images
+		}
+		if err != nil {
 			// Stop the child rather than leave it idle with no task.
 			_, _ = s.SessionCommand(ctx, sess.ID, wire.Cmd{Op: wire.OpStop})
 			return fleet.SpawnResult{}, fmt.Errorf("spawned %s, but its prompt could not be sent (%w), so it was stopped", sess.Path, err)
@@ -362,7 +382,7 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 	if spec.Sandbox == "" {
 		spec.Sandbox = "read-only"
 	}
-	spec.Prompt = "" // sent as a message once the child exists
+	spec.Prompt, spec.Attachments = "", nil // sent as a message once the child exists
 	if !s.router.allow("spawn|"+p.ID, g.SpawnPerMinute) {
 		return fmt.Errorf("spawn rate limit: at most %d a minute", g.SpawnPerMinute)
 	}

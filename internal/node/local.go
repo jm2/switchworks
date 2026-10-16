@@ -161,6 +161,15 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 	if len(body) == 0 {
 		body = []byte("{}")
 	}
+	switch op {
+	case wire.ReqSend, wire.ReqAsk, wire.ReqSpawn:
+		// Image paths are read here, on the sender's host, under the
+		// session's working directory only.
+		if body, err = n.resolveImages(s, body); err != nil {
+			writeLocal(w, 200, LocalResponse{Error: err.Error()})
+			return
+		}
+	}
 	res, err := n.request(r.Context(), op, id, body)
 	switch {
 	case errors.Is(err, errNoCoordinator):

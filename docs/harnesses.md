@@ -4,12 +4,12 @@ Switchyard manages harnesses; it is not one. Each node runs whichever of
 these it finds, and `swyd hosts` (and the spawn form, and `fleet_list`)
 shows what each host offers. Spawn with `--harness <name>`.
 
-| Harness | Protocol | Approvals relayed | Steer | Fleet tools | Resume after node restart | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| `codex` | `codex app-server` (JSON-RPC, stdio) | yes | yes | per thread (MCP) | `thread/resume` | done |
-| `goose` | ACP over stdio (`goose acp`) | yes | no (queued) | per session (ACP `mcpServers`) | `session/load` | done; tested against goose 1.54.0 |
-| other ACP agents | ACP over stdio | yes | no (queued) | per session | `session/load` or `session/resume` | experimental; tested with a fake ACP agent |
-| `agy` | headless `stream-json` | no (agy never asks) | no (queued) | opt-in, via workspace config | `--conversation` | experimental; tested with a fake agy only |
+| Harness | Protocol | Approvals relayed | Steer | Fleet tools | Images | Resume after node restart | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `codex` | `codex app-server` (JSON-RPC, stdio) | yes | yes | per thread (MCP) | yes (`localImage`) | `thread/resume` | done |
+| `goose` | ACP over stdio (`goose acp`) | yes | no (queued) | per session (ACP `mcpServers`) | yes (ACP image blocks) | `session/load` | done; tested against goose 1.54.0 |
+| other ACP agents | ACP over stdio | yes | no (queued) | per session | if advertised | `session/load` or `session/resume` | experimental; tested with a fake ACP agent |
+| `agy` | headless `stream-json` | no (agy never asks) | no (queued) | opt-in, via workspace config | no | `--conversation` | experimental; tested with a fake agy only |
 
 Steering is a Codex feature. For the others, a message sent with `--steer`
 is queued for the next turn.
@@ -55,6 +55,64 @@ Anthropic Messages emulation (`swyd dev mock-provider`), not with real keys;
 check the model ids against each provider's current list. Keys can also
 live in goose's own config (`goose configure`) instead of `node.json`,
 which is plain text (0600).
+
+## Images and the vision probe
+
+Messages and first prompts can carry images ([messaging.md](messaging.md#images)
+has the limits and the rules for files agents attach). Per harness:
+
+- **Codex**: each image becomes a `localImage` input. The node writes it to
+  a private file (0600) in the session's scratch directory
+  (`<node dir>/scratch/<session>`, 0700) named after its digest, and
+  app-server reads it and encodes it for the model, as the Codex TUI does
+  for pasted images. The file is removed when the turn completes, when the
+  node restarts and when the session stops. The schema also accepts an
+  `image` input with a `data:` URL, but app-server passes that through
+  unchanged and echoes it in the turn's `userMessage` item (Switchyard
+  replaces any such URL in the event log); `localImage` keeps the bytes
+  out of the protocol stream. Steering with images works too.
+- **Goose and other ACP agents**: ACP image content blocks, only when the
+  agent advertises `promptCapabilities.image` (see below).
+- **agy**: refused. agy's headless docs say of the stream-json input that
+  "text is the only supported block type"; any other block ends the
+  session.
+
+A harness that takes images does not mean the model sees them. A model
+without vision, a provider without image input, or an "OpenAI- or
+Anthropic-compatible" endpoint that ignores image parts leaves the model
+with the text alone, and it may then make something up. Check each
+host's configuration with the vision probe:
+
+```sh
+swyd dev vision-probe                          # codex with its configured model
+swyd dev vision-probe --model <model>
+swyd dev vision-probe --harness goose          # goose with its configured provider
+swyd dev vision-probe --harness goose-deepseek --acp-bin goose --acp-args acp   # or any ACP agent
+```
+
+It draws a random six-character code into a PNG (with a built-in bitmap
+font), sends it with "Reply with only the code in this image." in a new
+session in an empty temporary directory, and prints PASS or FAIL with the
+model's answer. It runs the harness directly with your own configuration
+and keys, like `swyd dev run`, so a goose configured in `node.json` needs
+the same environment (or its own `goose configure`). `--save FILE` keeps
+the image.
+
+The probe image also carries its code in a PNG text chunk that no real
+model reads. The mock provider (`swyd dev mock-provider`) and the fake
+harnesses in the tests read it there, so the probe and the whole image
+path are tested in CI without a model:
+
+```sh
+swyd dev mock-provider --codex-home /tmp/mock-home &
+swyd dev vision-probe --codex-home /tmp/mock-home     # PASS: the image reached the "model"
+```
+
+Both of the mock's emulations take images: `input_image` data URLs
+(OpenAI Responses, from Codex) and base64 `image` blocks (Anthropic
+Messages, from goose). Real goose 1.54.0 passes the probe through the
+mock's Anthropic emulation. Real models are yet to be probed; record what
+you find per model and endpoint.
 
 ## ACP agents (Goose and others)
 
@@ -110,7 +168,15 @@ How a session maps onto ACP:
   `mcpServers`, with the session's credentials in the server's
   environment. Nothing is written to disk.
 
-Not supported yet: images and other non-text prompt content, ACP terminals
+- **Images.** Sent as ACP `image` content blocks (`{"type": "image",
+  "data": <base64>, "mimeType": ...}`) after the prompt's text, only when
+  the agent's `initialize` response advertises
+  `promptCapabilities.image` (goose 1.54.0 does:
+  `{"image": true, "audio": false, "embeddedContext": true}`). For an
+  agent that does not, a message with images is refused before delivery,
+  and a spawn whose prompt has images fails.
+
+Not supported yet: audio and embedded resources in prompts, ACP terminals
 and client-side file access (agents use their own tools), authentication
 flows (configure the agent's provider beforehand), and observing sessions
 started outside Switchyard.

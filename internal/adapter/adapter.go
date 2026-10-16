@@ -20,6 +20,9 @@ var (
 	ErrNotActive    = errors.New("no active turn")
 	ErrUnknown      = errors.New("unknown approval id")
 	ErrClosed       = errors.New("session closed")
+	// ErrNoImages is returned by Deliver for input with images when the
+	// harness (or its agent) cannot take them. Nothing is delivered.
+	ErrNoImages = errors.New("this harness cannot take images")
 )
 
 // DeliveryMode says how a message enters a session.
@@ -37,6 +40,21 @@ const (
 type Input struct {
 	Text            string
 	ClientMessageID string
+	// Images are image attachments, already validated (attach.Normalize):
+	// allowed type sniffed, size within limits. Adapters whose session
+	// cannot take images return ErrNoImages without delivering anything.
+	Images []model.Attachment
+}
+
+// UserContent is the content of the userMessage item adapters record for
+// input they deliver: the text, then each image's metadata (never its
+// bytes, which would bloat every event log and stream).
+func UserContent(in Input) []map[string]any {
+	out := []map[string]any{{"type": "text", "text": in.Text}}
+	for _, im := range in.Images {
+		out = append(out, map[string]any{"type": "image", "name": im.Name, "mime": im.MIME, "size": im.Size, "sha256": im.SHA256})
+	}
+	return out
 }
 
 // StartSpec describes a new or resumed session.
@@ -55,6 +73,11 @@ type StartSpec struct {
 	// MCP is an MCP server to attach to this session only (the fleet
 	// tools). It carries a per-session credential, so it is never persisted.
 	MCP *MCPServer `json:"-"`
+
+	// ScratchDir is a private directory (0700) the node owns for this
+	// session, where adapters may write files the harness reads (Codex's
+	// localImage inputs). Empty: the adapter makes its own temp directory.
+	ScratchDir string `json:"-"`
 }
 
 // MCPServer is a stdio MCP server launched by the harness for one session.

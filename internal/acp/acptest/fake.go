@@ -26,6 +26,8 @@
 //   - "CRASH":   exits mid-turn
 //   - "REFUSE":  stops with "refusal"
 //   - "FAIL":    answers session/prompt with an error
+//   - with image blocks: replies "echo: <prompt>" plus each image's type,
+//     size and SHA-256, or the vision probe's code (codextest.SeeImages)
 //   - otherwise: replies "echo: <prompt>" in three chunks
 //
 // Every session's prompts, mode, config and MCP servers are kept in
@@ -35,6 +37,7 @@ package acptest
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +47,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jm2/switchyard/internal/attach"
+	"github.com/jm2/switchyard/internal/codex/codextest"
 )
 
 const (
@@ -57,6 +63,9 @@ const (
 	EnvSlowNew = "SWYD_FAKE_ACP_SLOWNEW"
 	// EnvPidFile makes the fake append its pid to this file at start.
 	EnvPidFile = "SWYD_FAKE_ACP_PIDFILE"
+	// EnvNoImages makes the fake advertise promptCapabilities.image false
+	// (and reject image blocks).
+	EnvNoImages = "SWYD_FAKE_ACP_NOIMAGES"
 )
 
 // Env returns environment overrides that make a re-executed test binary act
@@ -85,6 +94,14 @@ type Session struct {
 	History    [][2]string       `json:"history"` // prompt, reply
 	Loads      int               `json:"loads"`
 	Closed     bool              `json:"closed"`
+	Images     []ImageRec        `json:"images,omitempty"` // image blocks received
+}
+
+// ImageRec records an image block the fake received.
+type ImageRec struct {
+	MIME   string `json:"mime"`
+	Size   int    `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 // ReadSession loads a session's state for test assertions.
@@ -228,8 +245,10 @@ func (a *agent) handle(line []byte) {
 		ConfigID   string          `json:"configId"`
 		Value      string          `json:"value"`
 		Prompt     []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
 		} `json:"prompt"`
 	}
 	_ = json.Unmarshal(m.Params, &p)
@@ -245,6 +264,8 @@ func (a *agent) handle(line []byte) {
 		if os.Getenv(EnvResumeOnly) == "1" {
 			caps = map[string]any{"loadSession": false, "sessionCapabilities": map[string]any{"resume": map[string]any{}}}
 		}
+		// Like goose 1.54: images and embedded context, no audio.
+		caps["promptCapabilities"] = map[string]any{"image": os.Getenv(EnvNoImages) != "1", "audio": false, "embeddedContext": true}
 		a.reply(m.ID, map[string]any{"protocolVersion": 1, "agentCapabilities": caps,
 			"authMethods": []any{}, "agentInfo": map[string]any{"name": "fake-acp", "version": "0.1"}})
 	case "session/new":
@@ -330,14 +351,27 @@ func (a *agent) handle(line []byte) {
 			return
 		}
 		text := ""
+		var images [][]byte
 		for _, b := range p.Prompt {
-			if b.Type == "text" {
+			switch b.Type {
+			case "text":
 				text += b.Text
+			case "image":
+				data, err := base64.StdEncoding.DecodeString(b.Data)
+				if err != nil || os.Getenv(EnvNoImages) == "1" {
+					a.fail(m.ID, -32602, "invalid image block")
+					return
+				}
+				images = append(images, data)
+				s.Images = append(s.Images, ImageRec{MIME: b.MimeType, Size: len(data), SHA256: attach.SHA256(data)})
 			}
+		}
+		if len(images) > 0 {
+			a.save(s)
 		}
 		cancel := make(chan struct{})
 		a.cancel[s.ID] = cancel
-		go a.turn(m.ID, s, text, cancel)
+		go a.turn(m.ID, s, text, images, cancel)
 	default:
 		if len(m.ID) > 0 {
 			a.fail(m.ID, -32601, "method not found: "+m.Method)
@@ -380,7 +414,7 @@ func (a *agent) ask(sid string, toolCall map[string]any, cancel chan struct{}) (
 	}
 }
 
-func (a *agent) turn(id json.RawMessage, s *Session, text string, cancel chan struct{}) {
+func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byte, cancel chan struct{}) {
 	sid := s.ID
 	msg := func(t string) {
 		third := len(t) / 3
@@ -405,7 +439,15 @@ func (a *agent) turn(id json.RawMessage, s *Session, text string, cancel chan st
 			"totalTokens": u, "inputTokens": u - u/10, "outputTokens": u / 10, "cachedReadTokens": u / 4}})
 	}
 	a.update(sid, map[string]any{"sessionUpdate": "usage_update", "used": 10, "size": 128000})
+	seen, withImages := codextest.SeeImages(text, images)
 	switch {
+	case withImages:
+		r := "echo: " + text + seen
+		if strings.Contains(strings.ToLower(text), "code in this image") {
+			r = seen
+		}
+		msg(r)
+		finish("end_turn", r)
 	case strings.Contains(text, "FAIL"):
 		a.mu.Lock()
 		delete(a.cancel, sid)

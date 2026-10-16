@@ -152,9 +152,10 @@ type Turn struct{ p *jsonrpc.Pending }
 
 // Prompt sends a turn's prompt. It returns once the request is written, so
 // a later Cancel is guaranteed to reach the agent after it.
-func (c *Client) Prompt(sessionID, text string) (*Turn, error) {
-	p, err := c.conn.Send(MethodSessionPrompt, PromptRequest{SessionID: sessionID,
-		Prompt: []ContentBlock{{Type: "text", Text: text}}})
+// Extra blocks (images) follow the text.
+func (c *Client) Prompt(sessionID, text string, extra ...ContentBlock) (*Turn, error) {
+	blocks := append([]ContentBlock{{Type: "text", Text: text}}, extra...)
+	p, err := c.conn.Send(MethodSessionPrompt, PromptRequest{SessionID: sessionID, Prompt: blocks})
 	if err != nil {
 		return nil, err
 	}

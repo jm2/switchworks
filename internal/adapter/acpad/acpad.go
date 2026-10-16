@@ -21,6 +21,7 @@ package acpad
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,6 +216,10 @@ type handle struct {
 	ctxWindow  int64
 	lastRep    *acp.Usage // last usage the agent reported
 	total      model.Usage
+	// images: the agent's initialize response advertised
+	// promptCapabilities.image (kept across restarts of the agent).
+	images    bool
+	agentName string
 }
 
 type textItem struct {
@@ -233,7 +238,9 @@ func (h *handle) Ref() model.NativeRef {
 }
 
 func (h *handle) Caps() model.Caps {
-	return model.Caps{Message: true, Interrupt: true, Stop: true, Approve: true}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return model.Caps{Message: true, Interrupt: true, Stop: true, Approve: true, Images: h.images}
 }
 
 func (h *handle) Status() string {
@@ -341,6 +348,8 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 	}
 	h.c = c
 	h.sessionID = setup.SessionID
+	h.images = c.Info.AgentCapabilities.PromptCapabilities.Image
+	h.agentName = c.Info.AgentName()
 	h.mu.Unlock()
 	h.a.cfg.Logf("%s: session %s %s (pid %d, %s)", h.a.cfg.Harness, setup.SessionID,
 		map[bool]string{true: "reopened", false: "started"}[resumed], c.Pid(), c.Info.AgentName())
@@ -525,6 +534,15 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		return err
 	}
 	h.mu.Lock()
+	if len(in.Images) > 0 && !h.images {
+		name := h.agentName
+		h.mu.Unlock()
+		if name == "" {
+			name = h.a.cfg.Harness
+		}
+		return fmt.Errorf("%w: %s does not advertise image prompts (promptCapabilities.image) in its ACP initialize response",
+			adapter.ErrNoImages, name)
+	}
 	if h.turnID != "" {
 		h.mu.Unlock()
 		return adapter.ErrBusy
@@ -537,13 +555,17 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	h.mu.Unlock()
 
 	userItem := model.Item{TurnID: turnID, ItemID: turnID + "-user", ItemType: "userMessage",
-		Raw: model.Marshal(map[string]any{"type": "userMessage", "content": []map[string]string{{"type": "text", "text": in.Text}}})}
+		Raw: model.Marshal(map[string]any{"type": "userMessage", "content": adapter.UserContent(in)})}
+	blocks := make([]acp.ContentBlock, 0, len(in.Images))
+	for _, im := range in.Images {
+		blocks = append(blocks, acp.ContentBlock{Type: "image", Data: base64.StdEncoding.EncodeToString(im.Data), MimeType: im.MIME})
+	}
 	start := time.Now()
 	h.emit(model.KindTurnStarted, model.TurnStarted{TurnID: turnID})
 	h.emit(model.KindItemStarted, userItem)
 	h.emit(model.KindItemCompleted, userItem)
 	h.setStatus(model.StatusActive, "")
-	turn, err := c.Prompt(sid, in.Text)
+	turn, err := c.Prompt(sid, in.Text, blocks...)
 	if err != nil {
 		h.mu.Lock()
 		h.turnID = ""

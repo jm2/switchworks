@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchyard/internal/apiclient"
+	"github.com/jm2/switchyard/internal/attach"
 	"github.com/jm2/switchyard/internal/codex/codextest"
 	"github.com/jm2/switchyard/internal/harness"
 	"github.com/jm2/switchyard/internal/model"
@@ -184,5 +185,25 @@ func TestRealGooseFleet(t *testing.T) {
 	if _, err := c.Send(ctx, lead.ID, "still there?", "queue", ""); err != nil {
 		t.Fatal(err)
 	}
-	wl.waitFor(t, "goose after restart", k, agentSaidAll("mock: still there?"))
+	k = wl.waitFor(t, "goose after restart", k, agentSaidAll("mock: still there?"))
+
+	// An image: goose advertises promptCapabilities.image, gets an ACP
+	// image block, and passes it to the model (the mock's Anthropic
+	// emulation), which reports the digest of what it received.
+	if s, err := c.Session(ctx, lead.ID); err != nil || !s.Caps.Images {
+		t.Fatalf("goose session caps %+v %v", s.Caps, err)
+	}
+	shot := pngImage(t, 32, 24)
+	if _, err := c.Send(ctx, lead.ID, "what is in this screenshot?", "queue", "", model.Attachment{Name: "shot.png", Data: shot}); err != nil {
+		t.Fatal(err)
+	}
+	wl.waitFor(t, "goose passed the image to the model", k, agentSaidAll("mock: what is in this screenshot?", "sha256="+attach.SHA256(shot)))
+	// The Codex helper sends goose an image through the fleet tools.
+	if err := os.WriteFile(filepath.Join(work, "frame.png"), shot, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Send(ctx, helper.ID, call("fleet_send", map[string]any{"to": "devbox/lead", "text": "frame from buildbox", "images": []string{"frame.png"}}), "queue", ""); err != nil {
+		t.Fatal(err)
+	}
+	wl.waitFor(t, "goose got the helper's image", k, agentSaidAll("frame from buildbox", "sha256="+attach.SHA256(shot)))
 }

@@ -46,14 +46,18 @@ type Message struct {
 	ToPath      string `json:"to_path,omitempty"`
 	ToUser      string `json:"to_user,omitempty"` // "user:<name>" for the human inbox
 	Text        string `json:"text"`
-	Mode        string `json:"mode,omitempty"`
-	ReplyTo     string `json:"reply_to,omitempty"` // ask id, for replies
-	ReplyID     string `json:"reply_id,omitempty"` // reply id, on answered asks
-	Group       string `json:"group,omitempty"`    // shared by the messages of one broadcast
-	Hops        int    `json:"hops"`
-	State       string `json:"state"`
-	Error       string `json:"error,omitempty"`
-	Inline      bool   `json:"inline,omitempty"` // reply handed straight to a waiting fleet_ask
+	// Attachments are images sent with the message. A stored record holds
+	// their metadata only (no Data); the coordinator keeps the bytes in its
+	// attachment store while they are needed (see docs/messaging.md).
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Mode        string       `json:"mode,omitempty"`
+	ReplyTo     string       `json:"reply_to,omitempty"` // ask id, for replies
+	ReplyID     string       `json:"reply_id,omitempty"` // reply id, on answered asks
+	Group       string       `json:"group,omitempty"`    // shared by the messages of one broadcast
+	Hops        int          `json:"hops"`
+	State       string       `json:"state"`
+	Error       string       `json:"error,omitempty"`
+	Inline      bool         `json:"inline,omitempty"` // reply handed straight to a waiting fleet_ask
 	// HoldUntil (asks): the asker collects the reply itself until then, so
 	// a reply that arrives earlier is held rather than delivered as a turn.
 	HoldUntil time.Time `json:"hold_until,omitempty"`
@@ -74,6 +78,30 @@ func (m Message) Terminal() bool {
 		return m.Kind != MsgAsk
 	}
 	return false
+}
+
+// Attachment is an image sent with a message or a spawn prompt. Data is
+// base64 in JSON. Records that outlive delivery (events, stored messages)
+// keep only the metadata: name, MIME type, size and SHA-256.
+type Attachment struct {
+	Name   string `json:"name,omitempty"`   // display name only; never used as a path
+	MIME   string `json:"mime,omitempty"`   // sniffed from Data, never taken from the sender
+	Size   int64  `json:"size,omitempty"`   // bytes
+	SHA256 string `json:"sha256,omitempty"` // hex
+	Data   []byte `json:"data,omitempty"`
+}
+
+// MetaOnly returns the attachments without their data.
+func MetaOnly(atts []Attachment) []Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]Attachment, len(atts))
+	for i, a := range atts {
+		a.Data = nil
+		out[i] = a
+	}
+	return out
 }
 
 // KindSessionSettled is emitted by a node when a session has finished all

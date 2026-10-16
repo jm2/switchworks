@@ -3,6 +3,7 @@
 package codextest
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,8 @@ import (
 //     harness), then answer "tool <tool>: <output>"
 //   - a Switchyard ask: answer it with fleet_reply, as for Codex
 //   - anything else: "mock: <message>" in three deltas
+//   - with image blocks (base64 sources): as for the Responses API, the
+//     vision probe's code, or each image's type, size and SHA-256
 //
 // AnthropicHost is the base URL without /v1, as ANTHROPIC_HOST expects.
 func (m *MockProvider) AnthropicHost() string { return strings.TrimSuffix(m.URL, "/v1") }
@@ -37,6 +40,11 @@ type anthBlock struct {
 	Text      string          `json:"text"`
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
+	Source    struct {
+		Type      string `json:"type"` // base64
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	} `json:"source"` // image
 }
 
 type anthTool struct {
@@ -91,14 +99,22 @@ func (m *MockProvider) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 
 	// The last user message is either text (a new prompt) or tool results.
 	lastUser, sawOutput, output := "", false, ""
+	var images [][]byte
 	for _, msg := range body.Messages {
 		if msg.Role != "user" {
 			continue
 		}
 		var texts []string
+		var imgs [][]byte
 		results := false
 		for _, b := range blocks(msg.Content) {
 			switch b.Type {
+			case "image":
+				if b.Source.Type == "base64" {
+					if d, err := base64.StdEncoding.DecodeString(b.Source.Data); err == nil {
+						imgs = append(imgs, d)
+					}
+				}
 			case "text":
 				// Harnesses append their own context (goose: a
 				// <turn-context> block); the script reads the user's words.
@@ -117,9 +133,12 @@ func (m *MockProvider) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 		if results {
 			sawOutput = true
 		} else if len(texts) > 0 {
-			lastUser, sawOutput = strings.Join(texts, "\n"), false
+			lastUser, sawOutput, images = strings.Join(texts, "\n"), false, imgs
+		} else if len(imgs) > 0 {
+			images = append(images, imgs...)
 		}
 	}
+	seen, withImages := SeeImages(lastUser, images)
 
 	type toolCall struct {
 		name  string
@@ -174,8 +193,10 @@ func (m *MockProvider) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 		text = "tool " + callM[1] + ": " + output
 	case sawOutput:
 		text = "Command finished."
+	case withImages && strings.Contains(strings.ToLower(lastUser), "code in this image"):
+		text = seen
 	default:
-		text = "mock: " + lastUser
+		text = "mock: " + lastUser + seen
 	}
 
 	model := body.Model

@@ -75,10 +75,19 @@ type McpCapabilities struct {
 	SSE  bool `json:"sse"`
 }
 
+// PromptCapabilities says which content an agent accepts in session/prompt
+// besides text (goose 1.54: image and embeddedContext).
+type PromptCapabilities struct {
+	Image           bool `json:"image"`
+	Audio           bool `json:"audio"`
+	EmbeddedContext bool `json:"embeddedContext"`
+}
+
 type AgentCapabilities struct {
 	LoadSession         bool                `json:"loadSession"`
 	McpCapabilities     McpCapabilities     `json:"mcpCapabilities"`
 	SessionCapabilities SessionCapabilities `json:"sessionCapabilities"`
+	PromptCapabilities  PromptCapabilities  `json:"promptCapabilities"`
 }
 
 type AuthMethod struct {
@@ -258,12 +267,15 @@ type SetConfigOptionResponse struct {
 
 // --- prompt turn ---
 
-// ContentBlock is a content block; only text is produced by Switchyard.
+// ContentBlock is a content block. Switchyard produces text, and image
+// blocks for agents that advertise promptCapabilities.image.
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	URI  string `json:"uri,omitempty"`  // resource_link
-	Name string `json:"name,omitempty"` // resource_link
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	URI      string `json:"uri,omitempty"`      // resource_link
+	Name     string `json:"name,omitempty"`     // resource_link
+	Data     string `json:"data,omitempty"`     // image: base64
+	MimeType string `json:"mimeType,omitempty"` // image
 }
 
 type PromptRequest struct {
