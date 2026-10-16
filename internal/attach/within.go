@@ -98,10 +98,19 @@ func relInside(name, dir, realDir string) (string, bool) {
 		rel := filepath.Clean(name)
 		return rel, rel != "." && !escapes(rel)
 	}
-	for _, base := range []string{dir, realDir} {
-		rel, err := filepath.Rel(base, filepath.Clean(name))
-		if err == nil && rel != "." && !escapes(rel) && !filepath.IsAbs(rel) {
-			return rel, true
+	names := []string{filepath.Clean(name)}
+	// The name may reach the directory through a different symlink
+	// (/var vs /private/var on macOS): compare its resolved parent too.
+	// What it resolves to is checked again, and opened through os.Root.
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(name)); err == nil {
+		names = append(names, filepath.Join(parent, filepath.Base(name)))
+	}
+	for _, n := range names {
+		for _, base := range []string{dir, realDir} {
+			rel, err := filepath.Rel(base, n)
+			if err == nil && rel != "." && !escapes(rel) && !filepath.IsAbs(rel) {
+				return rel, true
+			}
 		}
 	}
 	return "", false
