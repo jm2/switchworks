@@ -170,17 +170,24 @@ func (s *Server) requireAuth(api *http.ServeMux, scopes map[string]scope) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		var g grant
+		var still func(time.Time) bool // whether the credential is still good
 		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			if g, ok = s.bearerGrant(tok, now); !ok {
 				writeErr(w, http.StatusUnauthorized, errors.New("invalid token"))
 				return
 			}
+			still = func(t time.Time) bool { return s.grantLive(g, t) }
 		} else if cg, ok := s.cookieGrant(r); ok {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(csrfHeader) != "1" {
 				writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
 				return
 			}
 			g = cg
+			c, _ := r.Cookie(cookieName)
+			still = func(t time.Time) bool {
+				cg, ok := s.web.validCookie(c.Value, t)
+				return ok && cg == g && s.grantLive(g, t)
+			}
 		} else {
 			writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid token"))
 			return
@@ -192,7 +199,10 @@ func (s *Server) requireAuth(api *http.ServeMux, scopes map[string]scope) http.H
 				return
 			}
 		}
-		api.ServeHTTP(w, r.WithContext(withGrant(r.Context(), g)))
+		// Streams and long waits end when the credential stops being good.
+		ctx, done := s.auth.watch(withGrant(r.Context(), g), still)
+		defer done()
+		api.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -212,6 +222,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := model.ValidateName("token", body.Name); err != nil {
 		writeErr(w, 400, err)
+		return
+	}
+	if ulid.Valid(strings.ToUpper(body.Name)) {
+		// `swyd token rm` takes a name or an id: a name shaped like an id
+		// could revoke the wrong token.
+		writeErr(w, 400, errors.New("a token name cannot look like a token id"))
 		return
 	}
 	if _, ok := parseScope(body.Scope); !ok {
@@ -266,9 +282,14 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteAPIToken(target.ID); err != nil {
-		writeErr(w, 404, err)
+		status := 500
+		if errors.Is(err, store.ErrNotFound) {
+			status = 404
+		}
+		writeErr(w, status, err)
 		return
 	}
+	s.auth.recheck()
 	s.logf("revoked API token %s (%s)", target.Name, target.ID)
 	writeJSON(w, 200, map[string]any{"ok": true, "id": target.ID, "name": target.Name})
 }

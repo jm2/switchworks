@@ -76,9 +76,14 @@ func (b *blobStore) put(data []byte) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
-	if _, err := os.Stat(p); err == nil {
+	if old, err := os.ReadFile(p); err == nil && attach.SHA256(old) == sum {
 		_ = os.Chtimes(p, now, now)
 		return sum, nil
+	} else if err == nil {
+		// Torn by a crash (renamed before its data reached the disk):
+		// write it again.
+		b.total -= int64(len(old))
+		_ = os.Remove(p)
 	}
 	if b.total+int64(len(data)) > blobHardMax {
 		return "", errBlobStoreFull
@@ -89,6 +94,9 @@ func (b *blobStore) put(data []byte) (string, error) {
 	}
 	tmp := f.Name()
 	_, werr := f.Write(data)
+	if werr == nil {
+		werr = f.Sync()
+	}
 	cerr := f.Close()
 	if werr != nil || cerr != nil {
 		_ = os.Remove(tmp)

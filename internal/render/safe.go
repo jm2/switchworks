@@ -2,7 +2,11 @@
 
 package render
 
-import "io"
+import (
+	"fmt"
+	"io"
+	"unicode/utf8"
+)
 
 // Safe wraps a terminal writer so text from agents and models cannot
 // control the terminal or disguise itself: it drops escape and other
@@ -64,6 +68,33 @@ func (s *safeWriter) Write(p []byte) (int, error) {
 		i += n
 	}
 	if _, err := s.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// JSONSafe wraps the writer of a JSON encoder (itself usually under Safe).
+// It writes the C1 controls and bidirectional overrides as \u escapes,
+// which mean the same in JSON, so Safe has nothing to drop and the data
+// comes through unchanged. Each Write must hold whole characters, as
+// json.Encoder's do.
+func JSONSafe(w io.Writer) io.Writer { return jsonSafe{w} }
+
+type jsonSafe struct{ w io.Writer }
+
+func (j jsonSafe) Write(p []byte) (int, error) {
+	out := make([]byte, 0, len(p))
+	for i := 0; i < len(p); {
+		n, remove, _ := drop(p[i:])
+		if remove && n > 1 {
+			r, _ := utf8.DecodeRune(p[i : i+n])
+			out = fmt.Appendf(out, `\u%04x`, r)
+		} else {
+			out = append(out, p[i:i+n]...)
+		}
+		i += n
+	}
+	if _, err := j.w.Write(out); err != nil {
 		return 0, err
 	}
 	return len(p), nil

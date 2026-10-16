@@ -116,6 +116,7 @@ type session struct {
 
 	mu         sync.Mutex
 	rec        record
+	localReqs  int // local API requests in progress (local.go)
 	h          adapter.Handle
 	seq        int64         // last assigned seq
 	unacked    []model.Event // seq > rec.AckedSeq

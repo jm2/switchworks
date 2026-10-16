@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jm2/switchyard/internal/adapter"
 	"github.com/jm2/switchyard/internal/attach"
@@ -56,11 +57,11 @@ func (n *Node) storeImages(id string, images []model.Attachment) ([]model.Attach
 			return nil, errors.New("image without a valid digest")
 		}
 		p := filepath.Join(dir, im.SHA256)
-		if _, err := os.Stat(p); err == nil {
-			continue
+		if old, err := os.ReadFile(p); err == nil && attach.SHA256(old) == im.SHA256 {
+			continue // a torn file (crash before its data was on disk) is rewritten
 		}
 		tmp := p + ".tmp"
-		if err := os.WriteFile(tmp, im.Data, 0o600); err != nil {
+		if err := paths.WriteFile(tmp, im.Data, 0o600); err != nil {
 			return nil, err
 		}
 		if err := os.Rename(tmp, p); err != nil {
@@ -133,8 +134,15 @@ func (n *Node) resolveImages(s *session, body []byte) ([]byte, error) {
 	if json.Unmarshal(body, &raw) != nil {
 		return body, nil // the coordinator reports bad arguments
 	}
-	if _, ok := raw["attachments"]; ok {
-		return nil, errors.New(`attach images by file path, in "images"`)
+	// The coordinator matches field names without regard to case, so
+	// "Attachments" counts too.
+	for k := range raw {
+		if strings.EqualFold(k, "attachments") {
+			return nil, errors.New(`attach images by file path, in "images"`)
+		}
+		if strings.EqualFold(k, "images") && k != "images" {
+			return nil, errors.New(`spell it "images"`)
+		}
 	}
 	imgRaw, ok := raw["images"]
 	if !ok {

@@ -142,19 +142,37 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	stopped := s.rec.Stopped
+	stopped, busy := s.rec.Stopped, s.localReqs >= maxSessionReqs
+	if !stopped && !busy {
+		s.localReqs++
+	}
 	s.mu.Unlock()
 	if stopped {
 		writeLocal(w, 409, LocalResponse{Error: "session is stopped"})
 		return
 	}
+	if busy {
+		// One session's waiting asks cannot use up the host's share.
+		writeLocal(w, 429, LocalResponse{Error: fmt.Sprintf("this session already has %d fleet operations in progress", maxSessionReqs), Transient: true})
+		return
+	}
+	defer func() {
+		s.mu.Lock()
+		s.localReqs--
+		s.mu.Unlock()
+	}()
 	op, ok := localOps[r.PathValue("op")]
 	if !ok {
 		writeLocal(w, 404, LocalResponse{Error: "unknown operation"})
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeLocal(w, 413, LocalResponse{Error: "request body over 1 MiB"})
+			return
+		}
 		writeLocal(w, 400, LocalResponse{Error: err.Error()})
 		return
 	}
@@ -249,7 +267,10 @@ func (n *Node) failRequests() {
 
 // maxLocalConns caps open connections to the local API. Anything on the host
 // can connect to it, token or not.
-const maxLocalConns = 64
+const maxLocalConns = 512
+
+// maxSessionReqs bounds one session's fleet operations in progress.
+const maxSessionReqs = 8
 
 // capListener closes new connections at once while limit are open.
 func capListener(ln net.Listener, limit int) net.Listener {

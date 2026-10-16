@@ -69,6 +69,8 @@ func TestResolveImages(t *testing.T) {
 		`{"images":"shot.png"}`:                      "list of file paths",
 		`{"images":["a","b","c","d","e"]}`:           "at most 4",
 		`{"attachments":[{"data":"AAAA"}]}`:          "by file path",
+		`{"Attachments":[{"data":"AAAA"}]}`:          "by file path",
+		`{"IMAGES":["shot.png"]}`:                    `spell it "images"`,
 	} {
 		if _, err := n.resolveImages(s, []byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", body, err, want)

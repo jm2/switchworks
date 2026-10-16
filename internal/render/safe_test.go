@@ -4,6 +4,8 @@ package render
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +35,20 @@ func TestSafeBidi(t *testing.T) {
 	}
 	if got, want := b.String(), "safe evil x \u2014 ok"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestJSONSafe(t *testing.T) {
+	in := map[string]string{"text": "a\u009bb‮c⁦d é ✓"}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(JSONSafe(Safe(&buf))).Encode(in); err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil || out["text"] != in["text"] {
+		t.Fatalf("round trip: %q %v", buf.String(), err)
+	}
+	if strings.ContainsAny(buf.String(), "\u009b‮⁦") {
+		t.Fatalf("raw controls in output: %q", buf.String())
 	}
 }

@@ -407,3 +407,46 @@ func TestGrantLiveChecksScope(t *testing.T) {
 		t.Fatal("an empty grant is live")
 	}
 }
+
+// Revoking a token, or signing out, ends streams opened before it.
+func TestRevocationEndsStreams(t *testing.T) {
+	e := newWebEnv(t)
+	admin := map[string]string{"Authorization": "Bearer " + e.token}
+	ends := func(name string, r *http.Response, revoke func()) {
+		t.Helper()
+		if r.StatusCode != 200 {
+			t.Fatalf("%s: stream: %d", name, r.StatusCode)
+		}
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, r.Body)
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Fatalf("%s: stream ended before the revocation", name)
+		case <-time.After(200 * time.Millisecond):
+		}
+		revoke()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: stream still open after the revocation", name)
+		}
+	}
+
+	tok := e.createToken(t, "phone", "read", 0)
+	ends("token", e.do(t, "GET", "/v1/stream", "", map[string]string{"Authorization": "Bearer " + tok.Secret}), func() {
+		if r := e.do(t, "DELETE", "/v1/tokens/phone", "", admin); r.StatusCode != 200 {
+			t.Fatalf("revoke: %d", r.StatusCode)
+		}
+	})
+
+	tok = e.createToken(t, "tablet", "read", 0)
+	ck := cookieHeader(t, e.do(t, "POST", "/ui/login", `{"token":"`+tok.Secret+`"}`, nil))
+	ends("cookie", e.do(t, "GET", "/v1/stream", "", ck), func() {
+		if r := e.do(t, "POST", "/ui/logout", "", ck); r.StatusCode != 200 {
+			t.Fatalf("sign out: %d", r.StatusCode)
+		}
+	})
+}

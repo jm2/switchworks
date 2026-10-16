@@ -279,8 +279,12 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 			if err := s.imagesRefusal(spec.Host, spec.Harness, nil); err != nil {
 				return fleet.SpawnResult{}, err
 			}
-			if _, err := attach.Normalize(a.Attachments); err != nil {
+			imgs, err := attach.Normalize(a.Attachments)
+			if err != nil {
 				return fleet.SpawnResult{}, err
+			}
+			if !s.router.allowN("img|"+from.sess.ID, agentImageBytesPerMinute, float64(attach.TotalBytes(imgs))) {
+				return fleet.SpawnResult{}, fmt.Errorf("%w: agents may send at most %d MiB of images a minute", ErrRateLimit, agentImageBytesPerMinute>>20)
 			}
 		}
 	}

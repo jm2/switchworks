@@ -96,7 +96,10 @@ The browser gets a 30-day session cookie, or shorter if its token expires
 sooner. Signing out from the top bar revokes that cookie on the server too,
 so a copy of it stops working. `swyd token rm <name>` signs out every
 browser that token signed in, directly or through a link, and voids its
-unused links. To sign every browser out, delete `ui.key` in the
+unused links. Pages and streams already open end within seconds of a
+sign-out or `swyd token rm`, and within 15 seconds of an expiry. Each
+token may have 20 unused links at a time (a new one replaces the oldest)
+and sign in 20 times a minute. To sign every browser out, delete `ui.key` in the
 coordinator directory and restart the coordinator.
 
 ## Security model
@@ -106,6 +109,8 @@ coordinator directory and restart the coordinator.
   is needed. The signed payload holds its expiry, a random id (for
   sign-out), its scope and the id of the API token behind it; each request
   checks that token still exists, so revoking the token ends the cookie.
+  Open streams check again every 15 seconds, and at once after a sign-out
+  or revocation.
 - A cookie-authenticated request that changes anything must also send
   `X-Swyd-CSRF: 1`. A cross-site page cannot add that header without a CORS
   preflight, and the server never answers one.

@@ -285,10 +285,16 @@ func (s *FileStore) Close() error {
 func (s *FileStore) msgPath() string { return filepath.Join(s.dir, "messages.jsonl") }
 
 func (s *FileStore) openMessages() error {
+	torn := false
 	if f, err := os.Open(s.msgPath()); err == nil {
 		br := bufio.NewReaderSize(f, 1<<20)
 		for {
 			line, err := br.ReadBytes('\n')
+			if len(line) > 0 && line[len(line)-1] != '\n' {
+				// A crash mid-append. Appending after it would glue the
+				// next record onto it, so the file is rewritten below.
+				torn = true
+			}
 			if len(line) > 0 && line[len(line)-1] == '\n' {
 				var m model.Message
 				if json.Unmarshal(line, &m) == nil && m.ID != "" {
@@ -312,7 +318,7 @@ func (s *FileStore) openMessages() error {
 		}
 	}
 	// Compact: rewrite one line per live message.
-	if s.msgLines > len(s.msgs) {
+	if s.msgLines > len(s.msgs) || torn {
 		var buf bytes.Buffer
 		ids := make([]string, 0, len(s.msgs))
 		for id := range s.msgs {

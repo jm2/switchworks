@@ -127,7 +127,7 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(sessions)
+		_ = json.NewEncoder(render.JSONSafe(stdout)).Encode(sessions)
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
@@ -469,7 +469,7 @@ func cmdEvents(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 1
 	}
-	enc := json.NewEncoder(stdout)
+	enc := json.NewEncoder(render.JSONSafe(stdout))
 	for {
 		ctx, cancel := ctxTimeout()
 		evs, err := c.Events(ctx, s.ID, *after, 5000)
