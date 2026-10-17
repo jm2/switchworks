@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `swk service install` again after updating.
 - **Harnesses in `~/.local/bin` on Linux** — `swk service install` gives the node's user unit
   your login shell's `PATH`, so codex, goose and agy installed there are found.
+- **Node dropped while connecting** — A command sent to a node in the moment between its
+  connection and the coordinator's welcome no longer ends the connection.
 
 ## [0.1.0] — 2026-10-17
 
