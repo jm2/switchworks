@@ -244,7 +244,7 @@ func installSystem(exe string, noStart bool, out io.Writer) error {
 	}
 	switch {
 	case !configured:
-		fmt.Fprintf(out, `Enabled %s; it starts at boot. Next, set it up and start it:
+		fmt.Fprintf(out, `Enabled %s; it starts at boot once it is set up. Next, set it up and start it:
   sudo %s --system coordinator init --host <names nodes dial>
   sudo %s service start --system coordinator
 `, systemUnitName, version.Bin, version.Bin)
