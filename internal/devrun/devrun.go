@@ -47,7 +47,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	gooseBin := fs.String("goose-bin", "", "goose binary (default: goose on PATH)")
 	acpBin := fs.String("acp-bin", "", "run -harness NAME as an ACP agent with this binary (e.g. -harness opencode -acp-bin opencode -acp-args acp)")
 	acpArgs := fs.String("acp-args", "acp", "space-separated arguments for -acp-bin")
-	record := fs.String("record", "", "write the raw protocol stream to this file (JSONL: {dir, line})")
+	record := fs.String("record", "", "write the raw protocol stream to this file (JSONL: {dir, line}; mode 0600, on Windows its folder's permissions)")
 	autoApprove := fs.String("auto-approve", "", "answer every approval with this decision instead of asking (e.g. accept, cancel)")
 	verbose := fs.Bool("v", false, "verbose: show every event")
 	logs := fs.Bool("logs", false, "show harness stderr")

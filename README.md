@@ -522,7 +522,8 @@ swk dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 `swk dev run` drives one turn of any harness directly, without a node or
 coordinator: a quick check that a harness works on a machine. With
 `--record FILE` it captures the raw protocol stream, in a file only you
-can read (0600). Like the fleet commands, it strips terminal escapes and
+can read (0600; on Windows the file takes its folder's permissions, so
+keep it in your profile). Like the fleet commands, it strips terminal escapes and
 invisible characters from what agents and harnesses print, so a command
 in an approval prompt shows as it would run.
 

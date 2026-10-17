@@ -7,7 +7,10 @@ package proc
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -68,5 +71,37 @@ func TestStopEndsChildrenOfExitedLeader(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
 		t.Fatalf("child %d still running after Stop (kill 0: %v)", pid, err)
+	}
+}
+
+// A group whose only member has exited but is not yet reaped (a zombie)
+// counts as gone on Linux, so endTree does not wait out its grace for it.
+func TestGroupAliveIgnoresZombies(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("zombies are told apart through /proc")
+	}
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Wait()
+	pid := cmd.Process.Pid
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err == nil && strings.Contains(string(b), ") Z ") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no zombie: %s %v", b, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if syscall.Kill(-pid, 0) != nil {
+		t.Skip("kill(-pgid, 0) already ignores zombies here")
+	}
+	if groupAlive(pid) {
+		t.Fatal("a zombie-only group counted as alive")
 	}
 }

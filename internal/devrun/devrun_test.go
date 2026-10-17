@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -46,7 +47,8 @@ func TestMainFiltersAgentText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := fi.Mode().Perm(); m != 0o600 {
+	// Windows has no Unix modes; the file is private to its user there.
+	if m := fi.Mode().Perm(); runtime.GOOS != "windows" && m != 0o600 {
 		t.Fatalf("record mode %o, want 600", m)
 	}
 }

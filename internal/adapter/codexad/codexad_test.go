@@ -298,14 +298,18 @@ func TestStopWhileAppServerRestarts(t *testing.T) {
 	var mu sync.Mutex
 	var h adapter.Handle
 	stopped := make(chan error, 1)
+	var once sync.Once
 	sink := func(e adapter.Event) {
 		col.sink(e)
-		// Stop right when the crash is noticed, before the restart.
+		// Stop right when the crash is noticed, before the restart; only
+		// once, so a later error status cannot block the emitting goroutine.
 		if p, ok := e.Payload.(model.SessionStatus); ok && p.Status == model.StatusError {
-			mu.Lock()
-			hh := h
-			mu.Unlock()
-			stopped <- hh.Stop(ctx)
+			once.Do(func() {
+				mu.Lock()
+				hh := h
+				mu.Unlock()
+				stopped <- hh.Stop(ctx)
+			})
 		}
 	}
 	hh, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, sink)

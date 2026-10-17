@@ -5,6 +5,8 @@ package e2e
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,7 +346,11 @@ func TestSpawnCwdSymlinkSwaps(t *testing.T) {
 	}
 	say(c3.ID, "write here")
 	w3.waitFor(t, "turn refused after the swap", 0, func(e model.Event) bool {
-		return e.Kind == model.KindMessageFailed && strings.Contains(string(e.Payload), `cwd \"`+sub)
+		var p struct {
+			Error string `json:"error"`
+		}
+		return e.Kind == model.KindMessageFailed && json.Unmarshal(e.Payload, &p) == nil &&
+			strings.Contains(p.Error, fmt.Sprintf("cwd %q", sub))
 	})
 	if countAgent(w3, agentSaid("write here")) != 0 {
 		t.Fatal("the turn ran in the swapped cwd")
