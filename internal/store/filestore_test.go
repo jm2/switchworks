@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -269,5 +270,44 @@ func TestDeleteSession(t *testing.T) {
 	defer s.Close()
 	if all := s.Sessions(); len(all) != 1 || all[0].ID != s2 {
 		t.Fatalf("after reopen: %+v", all)
+	}
+}
+
+// A deletion that cannot be saved leaves the session in place, with its
+// history, so a retry finds it.
+func TestDeleteSessionSaveFails(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a directory the test cannot write to")
+	}
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(model.Session{ID: s1, Path: "devbox/a", Status: model.StatusError}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvents([]model.Event{ev(s1, 1, "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	err = s.DeleteSession(s1)
+	_ = os.Chmod(dir, 0o700)
+	if err == nil {
+		t.Fatal("delete saved into a read-only directory")
+	}
+	if _, ok := s.Session(s1); !ok {
+		t.Fatal("session gone after a failed save")
+	}
+	if evs, _ := s.Events(s1, 0, 10); len(evs) != 1 {
+		t.Fatalf("history after a failed save: %d events", len(evs))
+	}
+	if err := s.DeleteSession(s1); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := s.Session(s1); ok {
+		t.Fatal("retry did not delete")
 	}
 }

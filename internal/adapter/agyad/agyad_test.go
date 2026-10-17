@@ -979,3 +979,23 @@ func TestFleetToolsRestoreReplacedEntry(t *testing.T) {
 		t.Fatalf("entry not restored: %s", b)
 	}
 }
+
+// An entry the user changed while the session ran is theirs: stopping
+// leaves it as it is.
+func TestFleetToolsKeepEditedEntry(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: filepath.Join(t.TempDir(), "settings.json")})
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	cfgPath := filepath.Join(repo, ".agents", "mcp_config.json")
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := `{"mcpServers":{"swk":{"command":"/usr/local/bin/swk","args":["mcp"],"disabledTools":["fleet_spawn"]}}}`
+	_ = os.WriteFile(cfgPath, []byte(edited), 0o644)
+	_ = h.Stop(ctx)
+	if b, _ := os.ReadFile(cfgPath); string(b) != edited {
+		t.Fatalf("edited entry changed on stop: %s", b)
+	}
+}

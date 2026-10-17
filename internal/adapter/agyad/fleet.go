@@ -26,6 +26,7 @@ const workspaceMCP = ".agents/mcp_config.json"
 type fleetSetup struct {
 	cwd, name     string
 	fileCreated   bool           // the config file did not exist before
+	installed     map[string]any // the entry it wrote
 	previous      map[string]any // the entry it replaced, restored on cleanup
 	exclude, line string         // .git/info/exclude and the line added to it, if any
 }
@@ -55,12 +56,14 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string)
 	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	created, added, previous, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, map[string]any{"command": cmd, "args": args})
+	server := map[string]any{"command": cmd, "args": args}
+	created, added, previous, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, server)
 	if err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
 	if added || previous != nil {
-		made = &fleetSetup{cwd: cwd, name: m.Name, fileCreated: created, previous: previous}
+		// server is what was written, the user's extra fields included.
+		made = &fleetSetup{cwd: cwd, name: m.Name, fileCreated: created, installed: server, previous: previous}
 	}
 	if created {
 		if made.exclude, made.line, err = gitExclude(cwd, workspaceMCP); err != nil {
@@ -90,7 +93,8 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string)
 
 // removeFleetTools undoes what setupFleetTools recorded in f: the server
 // entry (and the file and .agents directory once empty) and the exclude
-// line. Anything else in those files stays.
+// line. Anything else in those files stays, and so does an entry that was
+// changed since setup.
 func removeFleetTools(f *fleetSetup) error {
 	root, err := os.OpenRoot(f.cwd)
 	if err != nil {
@@ -109,7 +113,11 @@ func removeFleetTools(f *fleetSetup) error {
 		return fmt.Errorf("%s is no longer valid JSON; leaving it: %v", workspaceMCP, err)
 	}
 	servers, _ := doc["mcpServers"].(map[string]any)
-	if _, ok := servers[f.name]; ok {
+	if cur, ok := servers[f.name]; ok {
+		if !sameJSON(cur, f.installed) {
+			// Changed since setup, by the user or another tool: theirs now.
+			return nil
+		}
 		if f.previous != nil {
 			servers[f.name] = f.previous // the entry it replaced
 		} else {
@@ -248,6 +256,14 @@ func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, adde
 		return false, false, nil, err
 	}
 	return created, !existed, previous, writeAtomicIn(root, rel, append(out, '\n'))
+}
+
+// sameJSON reports whether a and b encode to the same JSON (a value read
+// from a file and one written as Go maps and slices compare equal).
+func sameJSON(a, b any) bool {
+	ja, err1 := json.Marshal(a)
+	jb, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
 }
 
 func asStrings(v any) []string {
