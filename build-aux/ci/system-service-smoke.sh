@@ -96,9 +96,27 @@ wait_for() {
 
 "$swk" version
 admin service install --system coordinator || fail "service install --system coordinator"
+# Before init it does not start: not from swk, and not at boot.
+if admin service start --system coordinator 2>"$work/start.err"; then
+  fail "service start --system started a coordinator that is not set up"
+fi
+grep -q 'not set up' "$work/start.err" || fail "service start before init: $(cat "$work/start.err")"
+if [ $os = linux ]; then
+  # What boot would do: the unit's condition skips it, without a failure.
+  ${as_admin[@]+"${as_admin[@]}"} systemctl start swk-coordinator.service
+  [ "$(systemctl show --property=ConditionResult --value swk-coordinator.service)" = no ] ||
+    fail "the unit ran without its config"
+  [ "$(systemctl show --property=Result --value swk-coordinator.service)" = success ] ||
+    fail "the skipped unit counts as failed"
+else
+  sc.exe qc swk-coordinator | grep -q DEMAND_START || fail "the service starts at boot before it is set up"
+fi
 admin --system coordinator init --host 127.0.0.1 || fail "swk --system coordinator init"
 admin service start --system coordinator || fail "service start --system coordinator"
 wait_for 60 "the coordinator to answer" admin --system coordinator health
+if [ $os = windows ]; then
+  sc.exe qc swk-coordinator | grep -q AUTO_START || fail "the started service does not start at boot"
+fi
 
 # It runs as its own account, never root, SYSTEM or this user. (The
 # PowerShell code is single-quoted so that bash leaves its $ alone.)

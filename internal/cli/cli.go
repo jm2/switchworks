@@ -49,6 +49,7 @@ var commands = map[string]command{
 	"interrupt": cmdInterrupt,
 	"approve":   cmdApprove,
 	"stop":      cmdStop,
+	"rm":        cmdRm,
 	"events":    cmdEvents,
 }
 
@@ -429,6 +430,7 @@ func simple(name string, fn func(context.Context, *apiclient.Client, string) err
 
 var cmdInterrupt = simple("interrupt", func(ctx context.Context, c *apiclient.Client, id string) error { return c.Interrupt(ctx, id) })
 var cmdStop = simple("stop", func(ctx context.Context, c *apiclient.Client, id string) error { return c.Stop(ctx, id) })
+var cmdRm = simple("rm", func(ctx context.Context, c *apiclient.Client, id string) error { return c.RemoveSession(ctx, id) })
 
 func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 3 {

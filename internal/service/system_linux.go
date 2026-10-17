@@ -244,7 +244,7 @@ func installSystem(exe string, noStart bool, out io.Writer) error {
 	}
 	switch {
 	case !configured:
-		fmt.Fprintf(out, `Enabled %s; it starts at boot. Next, set it up and start it:
+		fmt.Fprintf(out, `Enabled %s; it starts at boot once it is set up. Next, set it up and start it:
   sudo %s --system coordinator init --host <names nodes dial>
   sudo %s service start --system coordinator
 `, systemUnitName, version.Bin, version.Bin)
@@ -283,9 +283,23 @@ To delete them too: sudo rm -rf %s && sudo userdel %s
 	return nil
 }
 
-func startSystem() error   { _, err := systemctlSystem("start", systemUnitName); return err }
+func startSystem() error   { return runSystem("start") }
 func stopSystem() error    { _, err := systemctlSystem("stop", systemUnitName); return err }
-func restartSystem() error { _, err := systemctlSystem("restart", systemUnitName); return err }
+func restartSystem() error { return runSystem("restart") }
+
+// runSystem starts or restarts the unit. systemd skips it, and still
+// reports success, while its config is missing (ConditionPathExists),
+// which a user who cannot look into its directory would not otherwise
+// learn.
+func runSystem(verb string) error {
+	if _, err := systemctlSystem(verb, systemUnitName); err != nil {
+		return err
+	}
+	if v, err := systemctlSystem("show", "--property=ConditionResult", "--value", systemUnitName); err == nil && strings.TrimSpace(v) == "no" {
+		return errSystemNotSetUp
+	}
+	return nil
+}
 
 // systemEnv is the environment a command run as the service account gets:
 // the locale and terminal from the caller, nothing else of theirs.

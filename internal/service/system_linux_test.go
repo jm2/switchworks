@@ -27,6 +27,8 @@ func TestSystemUnitText(t *testing.T) {
 		"CapabilityBoundingSet=\n",
 		"ProtectHome=yes\n",
 		"WantedBy=multi-user.target\n",
+		// Boot skips it until init has run.
+		"ConditionPathExists=" + systemHomeDir + "/coordinator/coordinator.json\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("system unit lacks %q:\n%s", want, s)

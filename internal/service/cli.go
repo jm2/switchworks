@@ -197,8 +197,10 @@ func Describe(in Info) string {
 		parts = append(parts, "stopped")
 	}
 	switch {
-	case in.Installed && in.System:
+	case in.Installed && in.System && in.Enabled:
 		parts = append(parts, in.Manager+" system service "+in.Unit+", as its own account (starts at boot)")
+	case in.Installed && in.System:
+		parts = append(parts, in.Manager+" system service "+in.Unit+", as its own account (starts at boot once started)")
 	case in.Installed && in.Enabled:
 		parts = append(parts, in.Manager+" "+in.Unit+" (starts at login)")
 	case in.Installed:

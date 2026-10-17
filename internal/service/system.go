@@ -107,9 +107,26 @@ func checkSystemInstalled(role string) error {
 	return nil
 }
 
-// StartSystem starts the system coordinator.
+// errSystemNotSetUp refuses to start a system coordinator that has no
+// configuration yet.
+var errSystemNotSetUp = fmt.Errorf("the system coordinator is not set up yet: run `%s --system coordinator init --host <names nodes dial>` first", version.Bin)
+
+// checkSystemSetUp refuses to start the system coordinator before init. A
+// directory this user cannot look into is left to the service manager.
+func checkSystemSetUp() error {
+	if _, err := os.Stat(filepath.Join(systemDir(), "coordinator.json")); errors.Is(err, os.ErrNotExist) {
+		return errSystemNotSetUp
+	}
+	return nil
+}
+
+// StartSystem starts the system coordinator (and on Windows has it start
+// at boot from then on).
 func StartSystem(role string) error {
 	if err := checkSystemInstalled(role); err != nil {
+		return err
+	}
+	if err := checkSystemSetUp(); err != nil {
 		return err
 	}
 	return startSystem()
@@ -126,6 +143,9 @@ func StopSystem(role string) error {
 // RestartSystem restarts the system coordinator, starting it if stopped.
 func RestartSystem(role string) error {
 	if err := checkSystemInstalled(role); err != nil {
+		return err
+	}
+	if err := checkSystemSetUp(); err != nil {
 		return err
 	}
 	return restartSystem()

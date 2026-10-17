@@ -65,6 +65,7 @@ var (
 	procOpenSCManagerW       = advapi32.NewProc("OpenSCManagerW")
 	procOpenServiceW         = advapi32.NewProc("OpenServiceW")
 	procQueryServiceStatus   = advapi32.NewProc("QueryServiceStatus")
+	procQueryServiceConfigW  = advapi32.NewProc("QueryServiceConfigW")
 	procCloseServiceHandle   = advapi32.NewProc("CloseServiceHandle")
 	procCheckTokenMembershp  = advapi32.NewProc("CheckTokenMembership")
 	procGetNamedSecurityInfo = advapi32.NewProc("GetNamedSecurityInfoW")
@@ -91,7 +92,9 @@ func owner(path string) (string, error) {
 
 const (
 	scManagerConnect     = 0x0001
+	serviceQueryConfig   = 0x0001
 	serviceQueryStatus   = 0x0004
+	serviceAutoStart     = 2
 	errServiceNotExist   = syscall.Errno(1060)
 	serviceStopped       = 1
 	serviceStartPending  = 2
@@ -107,36 +110,49 @@ const (
 // serviceState asks the service control manager for the service's state
 // (0 when it does not exist).
 func serviceState() (uint32, error) {
+	s, _, err := serviceInfo()
+	return s, err
+}
+
+// serviceInfo returns the service's state (0 when it does not exist) and
+// whether it starts at boot.
+func serviceInfo() (uint32, bool, error) {
 	m, _, err := procOpenSCManagerW.Call(0, 0, scManagerConnect)
 	if m == 0 {
-		return 0, err
+		return 0, false, err
 	}
 	defer procCloseServiceHandle.Call(m)
 	name, _ := syscall.UTF16PtrFromString(systemUnitName)
-	h, _, err := procOpenServiceW.Call(m, uintptr(unsafe.Pointer(name)), serviceQueryStatus)
+	h, _, err := procOpenServiceW.Call(m, uintptr(unsafe.Pointer(name)), serviceQueryStatus|serviceQueryConfig)
 	if h == 0 {
 		if errors.Is(err, errServiceNotExist) {
-			return 0, nil
+			return 0, false, nil
 		}
-		return 0, err
+		return 0, false, err
 	}
 	defer procCloseServiceHandle.Call(h)
 	var st [serviceStatusDWORDs]uint32
 	if r, _, err := procQueryServiceStatus.Call(h, uintptr(unsafe.Pointer(&st[0]))); r == 0 {
-		return 0, err
+		return 0, false, err
 	}
-	return st[1], nil // dwCurrentState
+	// QUERY_SERVICE_CONFIGW, whose second DWORD is dwStartType; 8 KiB is
+	// the most it can take.
+	buf := make([]uint32, 2048)
+	var need uint32
+	auto := false
+	if r, _, _ := procQueryServiceConfigW.Call(h, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)*4), uintptr(unsafe.Pointer(&need))); r != 0 {
+		auto = buf[1] == serviceAutoStart
+	}
+	return st[1], auto, nil // dwCurrentState
 }
 
 func querySystem() (state, error) {
 	var st state
-	s, err := serviceState()
+	s, auto, err := serviceInfo()
 	if err != nil || s == 0 {
 		return st, err
 	}
-	// It is registered to start automatically; disabling it by hand is
-	// not told apart.
-	st.installed, st.enabled = true, true
+	st.installed, st.enabled = true, auto
 	st.active = s == serviceRunning || s == serviceStartPending || s == serviceContinuePend
 	return st, nil
 }
@@ -278,9 +294,15 @@ func installSystem(exe string, noStart bool, out io.Writer) error {
 	if exists {
 		verb = "config"
 	}
+	// It starts at boot only once it is set up (swk service start
+	// --system turns that on), so a reboot before init does not fail.
+	start := "demand"
+	if systemConfigured(false) {
+		start = "auto"
+	}
 	if _, err := sc(verb, systemUnitName,
 		"binPath=", serviceCommand(bin),
-		"start=", "auto",
+		"start=", start,
 		"obj=", SystemAccount,
 		"DisplayName=", "Switchworks coordinator"); err != nil {
 		return err
@@ -319,7 +341,7 @@ func installSystem(exe string, noStart bool, out io.Writer) error {
 	configured := systemConfigured(false)
 	switch {
 	case !configured:
-		fmt.Fprintf(out, `It starts at boot. Next, from this elevated prompt, set it up and start it:
+		fmt.Fprintf(out, `It will start at boot once it is set up and started. Next, from this elevated prompt:
   %s --system coordinator init --host <names nodes dial>
   %s service start --system coordinator
 `, version.Bin, version.Bin)
@@ -367,6 +389,11 @@ func startSystem() error {
 	}
 	if !waitState(serviceRunning, 30*time.Second) {
 		return errors.New("the coordinator service did not start within 30 seconds (see its log)")
+	}
+	// It runs: from now on it starts at boot too (not before, so a
+	// coordinator that cannot start is not retried at every boot).
+	if _, err := sc("config", systemUnitName, "start=", "auto"); err != nil {
+		return fmt.Errorf("the coordinator service is running, but could not be set to start at boot: %w (run `%s service start --system coordinator` again)", err, version.Bin)
 	}
 	return nil
 }

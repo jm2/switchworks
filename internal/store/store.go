@@ -25,7 +25,13 @@ var (
 	ErrNoSuchHost   = errors.New("unknown host")
 	ErrBadSessionID = errors.New("invalid session id")
 	ErrNameInUse    = errors.New("name already in use")
+	ErrRetired      = errors.New("session was removed")
 )
+
+// Ended reports whether a session has stopped or gone from its node.
+func Ended(s model.Session) bool {
+	return s.Status == model.StatusStopped || s.Status == model.StatusGone
+}
 
 // APIToken is a named, scoped API credential. Only a hash of its secret is
 // kept; the secret is shown once, when the token is created.
@@ -59,6 +65,18 @@ type Store interface {
 	// DeleteSession forgets a session and its event log (a spawn that
 	// failed, so it never ran).
 	DeleteSession(id string) error
+	// RetireSessions deletes sessions for good, in one save: their records
+	// and event logs, leaving a tombstone for each id so that a node
+	// cannot bring one back (CreateSession refuses it) until the tombstone
+	// expires. It returns the ids it removed.
+	RetireSessions(ids []string) ([]string, error)
+	// Retired reports whether id belongs to a session RetireSessions
+	// removed.
+	Retired(id string) bool
+	// RemoveDeletedLogs tries again to remove the event logs of deleted
+	// sessions that DeleteSession or RetireSessions could not, returning
+	// how many remain, and expires old tombstones.
+	RemoveDeletedLogs() int
 	Session(id string) (model.Session, bool)
 	SessionByPath(path string) (model.Session, bool)
 	Sessions() []model.Session

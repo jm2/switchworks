@@ -65,8 +65,10 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
 
-		// admin: change who is in the fleet and who may use it.
+		// admin: change who is in the fleet and who may use it, and erase
+		// history.
 		{"DELETE /v1/hosts/{id}", scopeAdmin, s.handleRemoveHost},
+		{"DELETE /v1/sessions/{id}", scopeAdmin, s.handleRemoveSession},
 		{"POST /v1/enroll-tokens", scopeAdmin, s.handleEnrollToken},
 		{"POST /v1/tokens", scopeAdmin, s.handleCreateToken},
 		{"GET /v1/tokens", scopeAdmin, s.handleListTokens},
@@ -152,6 +154,20 @@ func (s *Server) handleRemoveHost(w http.ResponseWriter, r *http.Request) {
 	s.fleetPublish("host_removed", map[string]string{"id": host})
 	s.logf("removed host %s", host)
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleRemoveSession forgets an ended session: its record and event log.
+func (s *Server) handleRemoveSession(w http.ResponseWriter, r *http.Request) {
+	switch err := s.RemoveSession(r.PathValue("id")); {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, 404, err)
+	case errors.Is(err, errLive):
+		writeErr(w, 409, err)
+	case err != nil:
+		writeErr(w, 500, err)
+	default:
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	}
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
