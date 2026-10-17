@@ -5,8 +5,11 @@
 package service
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUnitText(t *testing.T) {
@@ -67,6 +70,25 @@ func TestLoginPATH(t *testing.T) {
 	t.Setenv("PATH", ".:bin:/custom/bin::/usr/bin")
 	got := loginPATH("/usr/local/bin:/usr/bin")
 	if got != "/custom/bin:/usr/bin:/home/dev/.local/bin:/usr/local/bin" {
+		t.Fatalf("loginPATH = %q", got)
+	}
+}
+
+// A profile that leaves a process holding stdout does not hang the install
+// or lose the PATH.
+func TestLoginPATHHeldPipe(t *testing.T) {
+	sh := filepath.Join(t.TempDir(), "sh")
+	script := "#!/bin/sh\nsleep 30 &\nPATH=/from/profile:$PATH\nexec /bin/sh \"$@\"\n"
+	if err := os.WriteFile(sh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", sh)
+	start := time.Now()
+	got := loginPATH("/usr/bin")
+	if time.Since(start) > 4*time.Second {
+		t.Fatalf("loginPATH took %v", time.Since(start))
+	}
+	if !strings.HasPrefix(got, "/from/profile:") {
 		t.Fatalf("loginPATH = %q", got)
 	}
 }

@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,9 +37,14 @@ func loginPATH(fallback string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		// A marker separates PATH from anything the profile prints.
 		const mark = "__SWK_PATH__="
-		out, err := exec.CommandContext(ctx, sh, "-l", "-c", `printf '\n`+mark+`%s\n' "$PATH"`).Output()
+		cmd := exec.CommandContext(ctx, sh, "-l", "-c", `printf '\n`+mark+`%s\n' "$PATH"`)
+		// A background process the profile starts can hold stdout open
+		// after the shell exits; stop waiting for it, and keep what the
+		// shell printed.
+		cmd.WaitDelay = time.Second
+		out, err := cmd.Output()
 		cancel()
-		if i := strings.LastIndex(string(out), mark); err == nil && i >= 0 {
+		if i := strings.LastIndex(string(out), mark); (err == nil || errors.Is(err, exec.ErrWaitDelay)) && i >= 0 {
 			add(strings.TrimSpace(string(out[i+len(mark):])))
 		}
 	}

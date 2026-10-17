@@ -172,6 +172,12 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Never replace a drop-in someone else wrote under this name.
+	if b, err := os.ReadFile(dropIn); err == nil && !bytes.HasPrefix(b, []byte(generatedMarker)) {
+		return fmt.Errorf("%s was not written by swk service install; move it away first", dropIn)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {
 		return err
 	}
