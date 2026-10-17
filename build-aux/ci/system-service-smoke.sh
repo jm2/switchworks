@@ -38,19 +38,26 @@ trap cleanup EXIT
 stop_node() {
   [ -n "$nodepid" ] || return 0
   if [ $os = windows ]; then
-    # Git Bash has no /proc/<pid>/winpid, and `taskkill /IM swk.exe` would
-    # stop the coordinator's service too: stop the swk.exe running this
-    # node, found by its command line.
+    # Git Bash's $! is not the Windows pid, and `taskkill /IM swk.exe`
+    # would stop the coordinator's service too: stop the one swk.exe whose
+    # command line names this run's node directory.
     cat >"$work/stop-node.ps1" <<'PS'
-Get-CimInstance Win32_Process -Filter "Name = 'swk.exe'" |
-  Where-Object { $_.CommandLine -match ' node run' } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+param([string]$Dir)
+$p = @(Get-CimInstance Win32_Process -Filter "Name = 'swk.exe'" |
+  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($Dir) })
+if ($p.Count -ne 1) { Write-Error "found $($p.Count) node processes for $Dir"; exit 1 }
+Stop-Process -Id $p[0].ProcessId -Force
 PS
-    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$work/stop-node.ps1")" || true
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$work/stop-node.ps1")" -Dir "$nodedir_win" ||
+      echo "::warning title=system service smoke::could not stop the test node"
   else
     kill "$nodepid" 2>/dev/null || true
   fi
-  wait "$nodepid" 2>/dev/null || true
+  # Bounded: a node that did not stop must not hang the job.
+  for ((i = 0; i < 15; i++)); do
+    kill -0 "$nodepid" 2>/dev/null || break
+    sleep 1
+  done
   nodepid=
 }
 
@@ -130,7 +137,10 @@ export SWK_CLI_CONFIG=$work/cli.json
 # A node running as this user, enrolled through the system coordinator.
 token=$(admin --system coordinator enroll-token "$host") || fail "enroll-token"
 echo "$token" | SWK_HOME="$work/node-home" "$swk" node enroll - || fail "node enroll"
-SWK_HOME="$work/node-home" "$swk" node run >"$work/node.log" 2>&1 &
+nodedir=$work/node-home/node
+nodedir_win=$nodedir
+[ $os = windows ] && nodedir_win=$(cygpath -w "$nodedir")
+SWK_HOME="$work/node-home" "$swk" node run --dir "$nodedir_win" >"$work/node.log" 2>&1 &
 nodepid=$!
 online() { "$swk" hosts | grep -E "^$host +online"; }
 wait_for 60 "the node to come online" online
