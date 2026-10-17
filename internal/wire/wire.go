@@ -133,6 +133,9 @@ type SpawnResult struct {
 	NativeRef      *model.NativeRef `json:"native_ref,omitempty"`
 	ApprovalPolicy string           `json:"approval_policy,omitempty"`
 	Sandbox        string           `json:"sandbox,omitempty"`
+	// Cwd is the directory the session runs in, after the node expanded a
+	// leading "~".
+	Cwd string `json:"cwd,omitempty"`
 }
 
 type MessageCmd struct {

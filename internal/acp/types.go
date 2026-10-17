@@ -35,6 +35,10 @@ const (
 const (
 	MethodSessionUpdate     = "session/update" // notification
 	MethodRequestPermission = "session/request_permission"
+
+	// MethodGooseSessionUpdate is goose's own session update notification
+	// (goose 1.55), sent only to clients that opt in with GooseCapsMeta.
+	MethodGooseSessionUpdate = "_goose/unstable/session/update"
 )
 
 // --- initialize ---
@@ -53,6 +57,14 @@ type FileSystemCapabilities struct {
 type ClientCapabilities struct {
 	FS       FileSystemCapabilities `json:"fs"`
 	Terminal bool                   `json:"terminal"`
+	Meta     map[string]any         `json:"_meta,omitempty"`
+}
+
+// GooseCapsMeta asks goose for its custom notifications, the only place
+// it reports a session's accumulated token usage. Other agents ignore
+// _meta keys they do not know.
+func GooseCapsMeta() map[string]any {
+	return map[string]any{"goose": map[string]any{"customNotifications": true}}
 }
 
 type InitializeRequest struct {
@@ -333,6 +345,29 @@ const (
 	UpdateCompaction        = "compaction_update"
 	UpdateCompactionSummary = "compaction_summary_chunk"
 )
+
+// GooseSessionNotification is a _goose/unstable/session/update
+// notification; Update is tagged by sessionUpdate like ACP's own.
+type GooseSessionNotification struct {
+	SessionID string          `json:"sessionId"`
+	Update    json.RawMessage `json:"update"`
+}
+
+// GooseUpdateUsage is the sessionUpdate tag of GooseUsageUpdate.
+const GooseUpdateUsage = "usage_update"
+
+// GooseUsageUpdate is goose's usage_update. Used is the last model
+// request's tokens (the context in use); the accumulated figures sum every
+// model request of the session, subagents included, and are kept in
+// goose's session store, so they continue across session/load.
+type GooseUsageUpdate struct {
+	SessionUpdate           string   `json:"sessionUpdate"`
+	Used                    int64    `json:"used"`
+	ContextLimit            int64    `json:"contextLimit"`
+	AccumulatedInputTokens  int64    `json:"accumulatedInputTokens"`
+	AccumulatedOutputTokens int64    `json:"accumulatedOutputTokens"`
+	AccumulatedCost         *float64 `json:"accumulatedCost,omitempty"`
+}
 
 type SessionNotification struct {
 	SessionID string          `json:"sessionId"`

@@ -214,8 +214,13 @@ type handle struct {
 	thought    *textItem             // reasoning being streamed
 	diffs      []string              // unified diffs of this turn's edits
 	ctxWindow  int64
-	lastRep    *acp.Usage // last usage the agent reported
+	lastRep    *model.Usage // last usage the agent reported
 	total      model.Usage
+	// gooseAcc is goose's accumulated session usage from its custom
+	// usage_update, and gooseSent the figure the last usage event was
+	// based on (or the first one seen, if none was sent yet).
+	gooseAcc  *model.Usage
+	gooseSent *model.Usage
 	// images: the agent's initialize response advertised
 	// promptCapabilities.image (kept across restarts of the agent).
 	images    bool
@@ -644,8 +649,16 @@ func mapStop(r string) (status, errText string) {
 }
 
 // usage turns the agent's report into a Switchworks usage event. The spec
-// says the figures are cumulative for the session; some agents report the
-// last request instead. A report that did not grow is taken as per-turn.
+// says the figures are cumulative for the session; some agents report
+// something else. Goose 1.55 reports its last model request (the context
+// in use), not the turn's sum; its accumulated session usage comes in its
+// _goose/unstable/session/update notification (OnGooseUpdate), which is
+// used whenever goose sends it. Without it, goose's report is taken as is
+// and a multi-request turn counts only its final request. For other
+// agents a report is taken as cumulative (the previous one subtracted)
+// only when no field shrank; otherwise it is this turn's own. Total counts
+// from this agent process only (it restarts from zero when the session is
+// reopened); the coordinator keeps the session's running sum.
 func (h *handle) usage(turnID string, u *acp.Usage) {
 	if u == nil {
 		return
@@ -661,21 +674,33 @@ func (h *handle) usage(turnID string, u *acp.Usage) {
 		rep.TotalTokens = rep.InputTokens + rep.OutputTokens
 	}
 	h.mu.Lock()
+	if acc := h.gooseAcc; acc != nil {
+		// goose's accumulated usage: the whole session's, all requests.
+		// Total continues across reopens, which the coordinator expects
+		// of a Total that only grows.
+		last := rep
+		if sent := h.gooseSent; sent != nil && covers(*acc, *sent) {
+			last = model.Usage{InputTokens: acc.InputTokens - sent.InputTokens,
+				OutputTokens: acc.OutputTokens - sent.OutputTokens, TotalTokens: acc.TotalTokens - sent.TotalTokens}
+		}
+		cur := *acc
+		h.gooseSent = &cur
+		h.lastRep = &rep
+		h.total = cur
+		ev := model.UsageEvent{TurnID: turnID, Model: h.modelName, Provider: h.provider, Last: last, Total: cur, ContextWindow: h.ctxWindow}
+		h.mu.Unlock()
+		h.emit(model.KindUsage, ev)
+		return
+	}
 	last := rep
-	if p := h.lastRep; p != nil && u.TotalTokens > p.TotalTokens {
+	if p := h.lastRep; p != nil && !reportsLastRequest(h.agentName) && rep.TotalTokens > p.TotalTokens && covers(rep, *p) {
 		last = model.Usage{
-			InputTokens: rep.InputTokens - p.InputTokens, OutputTokens: rep.OutputTokens - p.OutputTokens,
+			InputTokens: rep.InputTokens - p.InputTokens, CachedInputTokens: rep.CachedInputTokens - p.CachedInputTokens,
+			OutputTokens: rep.OutputTokens - p.OutputTokens, ReasoningTokens: rep.ReasoningTokens - p.ReasoningTokens,
 			TotalTokens: rep.TotalTokens - p.TotalTokens,
 		}
-		if p.CachedReadTokens != nil {
-			last.CachedInputTokens = rep.CachedInputTokens - *p.CachedReadTokens
-		}
-		if p.ThoughtTokens != nil {
-			last.ReasoningTokens = rep.ReasoningTokens - *p.ThoughtTokens
-		}
 	}
-	cp := *u
-	h.lastRep = &cp
+	h.lastRep = &rep
 	h.total.InputTokens += last.InputTokens
 	h.total.CachedInputTokens += last.CachedInputTokens
 	h.total.OutputTokens += last.OutputTokens
@@ -684,6 +709,47 @@ func (h *handle) usage(turnID string, u *acp.Usage) {
 	ev := model.UsageEvent{TurnID: turnID, Model: h.modelName, Provider: h.provider, Last: last, Total: h.total, ContextWindow: h.ctxWindow}
 	h.mu.Unlock()
 	h.emit(model.KindUsage, ev)
+}
+
+// OnGooseUpdate reads goose's accumulated session usage, sent after
+// session/new and session/load, after each model request and at the end of
+// each turn.
+func (h *handle) OnGooseUpdate(n acp.GooseSessionNotification) {
+	var u acp.GooseUsageUpdate
+	if json.Unmarshal(n.Update, &u) != nil || u.SessionUpdate != acp.GooseUpdateUsage {
+		return
+	}
+	acc := model.Usage{InputTokens: u.AccumulatedInputTokens, OutputTokens: u.AccumulatedOutputTokens,
+		TotalTokens: u.AccumulatedInputTokens + u.AccumulatedOutputTokens}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n.SessionID != h.sessionID && h.sessionID != "" {
+		return
+	}
+	h.gooseAcc = &acc
+	if h.gooseSent == nil {
+		base := acc
+		h.gooseSent = &base
+	}
+	if u.ContextLimit > 0 {
+		h.ctxWindow = u.ContextLimit
+	}
+}
+
+// reportsLastRequest: the agent's PromptResponse usage is its last model
+// request, never cumulative (goose: build_prompt_usage copies the session's
+// current-request usage), so it must not be differenced.
+func reportsLastRequest(agentName string) bool {
+	name, _, _ := strings.Cut(strings.ToLower(agentName), " ")
+	return name == "goose"
+}
+
+// covers reports whether every field of a is at least b's: only then can a
+// be a later cumulative report than b.
+func covers(a, b model.Usage) bool {
+	return a.InputTokens >= b.InputTokens && a.CachedInputTokens >= b.CachedInputTokens &&
+		a.OutputTokens >= b.OutputTokens && a.ReasoningTokens >= b.ReasoningTokens &&
+		a.TotalTokens >= b.TotalTokens
 }
 
 // Interrupt cancels the running turn. Pending permission prompts are

@@ -229,3 +229,45 @@ func TestTornMessageTail(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteSession(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(model.Session{ID: s1, Path: "devbox/a", Status: model.StatusStarting}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvents([]model.Event{ev(s1, 1, "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(s1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(s1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
+	}
+	if _, ok := s.Session(s1); ok || len(s.Sessions()) != 0 {
+		t.Fatal("session still listed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "events", s1+".jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event log kept: %v", err)
+	}
+	if evs, _ := s.Events(s1, 0, 0); len(evs) != 0 || s.LastSeq(s1) != 0 {
+		t.Fatalf("events kept: %+v", evs)
+	}
+	// The path is free, and the deletion survives a reopen.
+	if err := s.CreateSession(model.Session{ID: s2, Path: "devbox/a", Status: model.StatusStarting}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if all := s.Sessions(); len(all) != 1 || all[0].ID != s2 {
+		t.Fatalf("after reopen: %+v", all)
+	}
+}

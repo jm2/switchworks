@@ -225,3 +225,29 @@ func TestProbeRealGoose(t *testing.T) {
 		t.Fatalf("goose probe: %+v %v", res, err)
 	}
 }
+
+// A failed answer that is one character off the code says the image arrived
+// and was misread; an answer with no resemblance keeps the "did not read"
+// hint. The near misses are answers real models gave.
+func TestPrintProbeNearMiss(t *testing.T) {
+	for _, c := range []struct {
+		code, answer string
+		near         bool
+	}{
+		{"PEUXCR", "FELXCR", true},
+		{"KMARA9", "K4MARA9", true},
+		{"LTYVFM", "`LTYUFM`", true},
+		{"XKLNF9", "The code is XKLMF9.", true},
+		{"7LV7LU", "I can't see the image — this session doesn't support vision on my end.", false},
+		{"W4TTCH", "", false},
+	} {
+		var out bytes.Buffer
+		res := ProbeResult{Harness: "fake", Code: c.code, Answer: c.answer}
+		if printProbe(&out, io.Discard, res, nil) != 1 {
+			t.Fatalf("%q: want exit 1", c.answer)
+		}
+		if got := strings.Contains(out.String(), "misread"); got != c.near {
+			t.Errorf("%q vs %s: near miss %v, want %v\n%s", c.answer, c.code, got, c.near, out.String())
+		}
+	}
+}

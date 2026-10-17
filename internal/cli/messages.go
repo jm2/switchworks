@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchworks/internal/apiclient"
+	attachpkg "github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/fleet"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/render"
@@ -189,6 +190,20 @@ func oneLine(s string, n int) string {
 	return s
 }
 
+// attachmentsLabel names a message's images and their sizes, like
+// "[test.png 589 KiB, b.jpg 1.2 MiB]".
+func attachmentsLabel(atts []model.Attachment) string {
+	parts := make([]string, len(atts))
+	for i, a := range atts {
+		name := a.Name
+		if name == "" {
+			name = "image"
+		}
+		parts[i] = name + " " + attachpkg.HumanSize(a.Size)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 func printMessages(stdout io.Writer, msgs []model.Message) {
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "AGE\tKIND\tFROM\tTO\tSTATE\tTEXT\tID")
@@ -202,8 +217,8 @@ func printMessages(stdout io.Writer, msgs []model.Message) {
 			state += " (inline)"
 		}
 		text := m.Text
-		if n := len(m.Attachments); n > 0 {
-			text = fmt.Sprintf("[%d image%s] %s", n, map[bool]string{true: "", false: "s"}[n == 1], text)
+		if len(m.Attachments) > 0 {
+			text = attachmentsLabel(m.Attachments) + " " + text
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, oneLine(text, 60), m.ID)
 	}

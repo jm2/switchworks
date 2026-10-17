@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jm2/switchworks/internal/acp"
 	"github.com/jm2/switchworks/internal/acp/acptest"
 	"github.com/jm2/switchworks/internal/adapter"
 	"github.com/jm2/switchworks/internal/model"
@@ -678,4 +679,122 @@ func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
 		t.Fatalf("a person's spawn: %v", err)
 	}
 	_ = h.Stop(context.Background())
+}
+
+// usageSeq feeds reports to a bare handle's usage and returns its events.
+func usageSeq(t *testing.T, agentName string, reps ...acp.Usage) []model.UsageEvent {
+	t.Helper()
+	r := newRec()
+	h := &handle{a: New(Config{}), sink: r.sink, agentName: agentName}
+	for i := range reps {
+		h.usage("t"+strconv.Itoa(i), &reps[i])
+	}
+	var out []model.UsageEvent
+	for _, e := range r.all() {
+		if p, ok := e.Payload.(model.UsageEvent); ok {
+			out = append(out, p)
+		}
+	}
+	if len(out) != len(reps) {
+		t.Fatalf("%d usage events for %d reports", len(out), len(reps))
+	}
+	for _, ev := range out {
+		for _, v := range []int64{ev.Last.InputTokens, ev.Last.CachedInputTokens, ev.Last.OutputTokens,
+			ev.Last.ReasoningTokens, ev.Last.TotalTokens, ev.Total.InputTokens, ev.Total.OutputTokens, ev.Total.TotalTokens} {
+			if v < 0 {
+				t.Fatalf("negative usage %+v", ev)
+			}
+		}
+	}
+	return out
+}
+
+// Goose 1.55's PromptResponse usage, as recorded in a fleet test: each is
+// its last model request, so none is differenced against the one before
+// (which gave turn 2 an output of -35).
+func TestUsageGooseLastRequest(t *testing.T) {
+	reps := []acp.Usage{
+		{InputTokens: 8484, OutputTokens: 57, TotalTokens: 8541},
+		{InputTokens: 8788, OutputTokens: 22, TotalTokens: 8810},
+		{InputTokens: 8903, OutputTokens: 137, TotalTokens: 9040},
+	}
+	evs := usageSeq(t, "goose 1.55.0", reps...)
+	for i, ev := range evs {
+		if want := (model.Usage{InputTokens: reps[i].InputTokens, OutputTokens: reps[i].OutputTokens, TotalTokens: reps[i].TotalTokens}); ev.Last != want {
+			t.Fatalf("turn %d last %+v, want %+v", i+1, ev.Last, want)
+		}
+	}
+	if got := evs[2].Total; got != (model.Usage{InputTokens: 26175, OutputTokens: 216, TotalTokens: 26391}) {
+		t.Fatalf("total %+v", got)
+	}
+}
+
+// For other agents a report is differenced only when no field shrank.
+func TestUsageCumulativeOnlyWhenEveryFieldGrew(t *testing.T) {
+	evs := usageSeq(t, "other-agent 1.0",
+		acp.Usage{InputTokens: 8484, OutputTokens: 57, TotalTokens: 8541},
+		acp.Usage{InputTokens: 8788, OutputTokens: 22, TotalTokens: 8810},  // output shrank: per-turn
+		acp.Usage{InputTokens: 9000, OutputTokens: 100, TotalTokens: 9100}, // grew: cumulative
+	)
+	want := []model.Usage{
+		{InputTokens: 8484, OutputTokens: 57, TotalTokens: 8541},
+		{InputTokens: 8788, OutputTokens: 22, TotalTokens: 8810},
+		{InputTokens: 212, OutputTokens: 78, TotalTokens: 290},
+	}
+	for i, ev := range evs {
+		if ev.Last != want[i] {
+			t.Fatalf("turn %d last %+v, want %+v", i+1, ev.Last, want[i])
+		}
+	}
+	if got := evs[2].Total; got != (model.Usage{InputTokens: 17484, OutputTokens: 157, TotalTokens: 17641}) {
+		t.Fatalf("total %+v", got)
+	}
+}
+
+// An agent that reports goose's accumulated usage (opted in through
+// initialize's _meta) gives each turn its whole sum and a session Total that
+// continues when the session is reopened by another process.
+func TestGooseAccumulatedUsage(t *testing.T) {
+	a, state := testAdapter(t, map[string]string{acptest.EnvGooseUsage: "1"})
+	h, r := start(t, a, adapter.StartSpec{})
+	r.turn(t, h, "one")
+	r.turn(t, h, "two")
+	evs := usageEvents(r.all())
+	want := []model.UsageEvent{
+		{Last: model.Usage{InputTokens: 1000, OutputTokens: 50, TotalTokens: 1050}, Total: model.Usage{InputTokens: 1000, OutputTokens: 50, TotalTokens: 1050}},
+		{Last: model.Usage{InputTokens: 1000, OutputTokens: 50, TotalTokens: 1050}, Total: model.Usage{InputTokens: 2000, OutputTokens: 100, TotalTokens: 2100}},
+	}
+	if len(evs) != 2 || evs[0].Last != want[0].Last || evs[0].Total != want[0].Total || evs[1].Last != want[1].Last || evs[1].Total != want[1].Total {
+		t.Fatalf("usage %+v", evs)
+	}
+	if evs[1].ContextWindow != 128000 {
+		t.Fatalf("context window %d", evs[1].ContextWindow)
+	}
+	ref := h.Ref()
+	cwd := r.waitFor(t, "registered", kind(model.KindSessionRegistered)).Payload.(model.SessionRegistered).Cwd
+	_ = a.Close()
+
+	a2 := New(Config{Harness: "fake", Bin: os.Args[0], Env: mergeEnv(acptest.Env(state), acptest.EnvGooseUsage), Logf: t.Logf})
+	t.Cleanup(func() { _ = a2.Close() })
+	r2 := newRec()
+	h2, err := a2.Resume(context.Background(), ref, adapter.StartSpec{Cwd: cwd}, r2.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.turn(t, h2, "three")
+	evs = usageEvents(r2.all())
+	if len(evs) != 1 || evs[0].Last != want[0].Last ||
+		evs[0].Total != (model.Usage{InputTokens: 3000, OutputTokens: 150, TotalTokens: 3150}) {
+		t.Fatalf("usage after reopen %+v", evs)
+	}
+}
+
+func usageEvents(evs []adapter.Event) []model.UsageEvent {
+	var out []model.UsageEvent
+	for _, e := range evs {
+		if p, ok := e.Payload.(model.UsageEvent); ok {
+			out = append(out, p)
+		}
+	}
+	return out
 }

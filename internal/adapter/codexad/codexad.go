@@ -313,6 +313,10 @@ type handle struct {
 	home       string
 	closed     bool
 
+	// commandItems are the commandExecution item ids of each running
+	// turn, so an interrupt can stop the commands that turn left running.
+	commandItems map[string][]string
+
 	// Image files written for localImage inputs, by turn id; removed when
 	// the turn completes (app-server has read them by then) or the
 	// session stops. imageMeta maps each file to its attachment, so the
@@ -479,6 +483,7 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 			}
 			done := h.files[n.Turn.ID]
 			delete(h.files, n.Turn.ID)
+			delete(h.commandItems, n.Turn.ID)
 			h.mu.Unlock()
 			h.removeFiles(done)
 			tc := model.TurnCompleted{TurnID: n.Turn.ID, Status: n.Turn.Status}
@@ -497,6 +502,14 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 		}
 		var hdr codex.ItemHeader
 		_ = json.Unmarshal(n.Item, &hdr)
+		if method == codex.NoteItemStarted && hdr.Type == "commandExecution" && n.TurnID != "" {
+			h.mu.Lock()
+			if h.commandItems == nil {
+				h.commandItems = map[string][]string{}
+			}
+			h.commandItems[n.TurnID] = append(h.commandItems[n.TurnID], hdr.ID)
+			h.mu.Unlock()
+		}
 		it := model.Item{TurnID: n.TurnID, ItemID: hdr.ID, ItemType: hdr.Type, Raw: n.Item}
 		if hdr.Type == "userMessage" {
 			it.Raw = h.userItem(n.Item)
@@ -723,7 +736,10 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	}
 }
 
-// Interrupt cancels the active turn.
+// Interrupt cancels the active turn. app-server keeps a command the turn
+// was running alive as a background terminal, so the commands this turn
+// started are stopped too; ones from earlier turns (a dev server, say)
+// keep running.
 func (h *handle) Interrupt(ctx context.Context) error {
 	c, err := h.client()
 	if err != nil {
@@ -731,11 +747,43 @@ func (h *handle) Interrupt(ctx context.Context) error {
 	}
 	h.mu.Lock()
 	active := h.activeTurn
+	items := append([]string(nil), h.commandItems[active]...)
 	h.mu.Unlock()
 	if active == "" {
 		return adapter.ErrNotActive
 	}
-	return c.TurnInterrupt(ctx, h.threadID, active)
+	if err := c.TurnInterrupt(ctx, h.threadID, active); err != nil {
+		return err
+	}
+	if len(items) > 0 {
+		go h.stopTurnCommands(c, items)
+	}
+	return nil
+}
+
+// stopTurnCommands terminates the background terminals started by the
+// given commandExecution items. A command becomes a background terminal
+// as the turn winds down, so the list is checked twice. Older app-servers
+// without the background terminal methods are left as they are.
+func (h *handle) stopTurnCommands(c *codex.Client, items []string) {
+	for _, wait := range []time.Duration{500 * time.Millisecond, 3 * time.Second} {
+		time.Sleep(wait)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		terms, err := c.BackgroundTerminals(ctx, h.threadID)
+		if err != nil {
+			cancel()
+			h.a.cfg.Logf("codex: list background terminals of %s: %v", h.threadID, err)
+			return
+		}
+		for _, bt := range terms {
+			if containsStr(items, bt.ItemID) {
+				if err := c.TerminateBackgroundTerminal(ctx, h.threadID, bt.ProcessID); err != nil {
+					h.a.cfg.Logf("codex: stop interrupted command %q: %v", bt.Command, err)
+				}
+			}
+		}
+		cancel()
+	}
 }
 
 // Stop interrupts any active turn and unsubscribes from the thread.
@@ -747,6 +795,10 @@ func (h *handle) Stop(ctx context.Context) error {
 		h.mu.Unlock()
 		if active != "" {
 			_ = c.TurnInterrupt(ctx, h.threadID, active)
+		}
+		// Nothing the session started should outlive it.
+		if err := c.CleanBackgroundTerminals(ctx, h.threadID); err != nil {
+			h.a.cfg.Logf("codex: clean background terminals of %s: %v", h.threadID, err)
 		}
 		_ = c.ThreadUnsubscribe(ctx, h.threadID)
 	}

@@ -570,6 +570,25 @@ func (s *FileStore) UpdateSession(id string, fn func(*model.Session)) (model.Ses
 	return *sess, nil
 }
 
+func (s *FileStore) DeleteSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.sessions, id)
+	if l, ok := s.logs[id]; ok {
+		_ = l.f.Close()
+		delete(s.logs, id)
+	}
+	// The id is a stored session's, which only a canonical ULID can be.
+	if err := os.Remove(filepath.Join(s.dir, "events", id+".jsonl")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	s.dirty = true
+	return s.saveLocked()
+}
+
 func (s *FileStore) Session(id string) (model.Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

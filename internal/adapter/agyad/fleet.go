@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,12 +21,22 @@ import (
 // workspaceMCP is agy's per-workspace MCP config, relative to the cwd.
 const workspaceMCP = ".agents/mcp_config.json"
 
+// fleetSetup records what setupFleetTools created in a workspace, so an
+// explicit Stop can take it out again.
+type fleetSetup struct {
+	cwd, name     string
+	exclude, line string // .git/info/exclude and the line added to it, if any
+}
+
 // setupFleetTools makes the fleet tools available to agy sessions in
-// spec.Cwd and returns warnings for anything it could not do. It never
-// removes or rewrites other entries, and never writes credentials to disk.
-func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
+// spec.Cwd and returns warnings for anything it could not do, plus a record
+// of the workspace entry when it created the config file (nil otherwise).
+// It never removes or rewrites other entries, and never writes credentials
+// to disk.
+func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string) {
 	m := spec.MCP
 	var warns []string
+	var made *fleetSetup
 	cwd := spec.Cwd
 	if cwd == "" {
 		cwd = "."
@@ -39,18 +50,19 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
 		args = []string{}
 	}
 	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
-		return append(warns, "fleet tools unavailable: "+err.Error())
+		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
 	created, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, map[string]any{"command": cmd, "args": args})
 	if err != nil {
-		return append(warns, "fleet tools unavailable: "+err.Error())
+		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
 	if created {
-		if err := gitExclude(cwd, workspaceMCP); err != nil {
+		made = &fleetSetup{cwd: cwd, name: m.Name}
+		if made.exclude, made.line, err = gitExclude(cwd, workspaceMCP); err != nil {
 			warns = append(warns, "could not add "+workspaceMCP+" to .git/info/exclude: "+err.Error())
 		}
 	}
-	if spec.Sandbox != "danger-full-access" {
+	if !skipsPermissions(spec) {
 		path := cfg.Options.SettingsPath
 		if path == "" {
 			home := cfg.Env["HOME"]
@@ -60,11 +72,80 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) []string {
 			path = filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
 		}
 		rule := fmt.Sprintf("mcp(%s/*)", m.Name)
-		if err := addAllowRule(path, rule); err != nil {
+		added, err := addAllowRule(path, rule)
+		if err != nil {
 			warns = append(warns, fmt.Sprintf("could not add %s to %s (agy will soft-deny the fleet tools): %v", rule, path, err))
+		} else if added {
+			// A global file: say so, since it outlives the session.
+			warns = append(warns, fmt.Sprintf("added %q to permissions.allow in %s (agy's global settings; left in place)", rule, path))
 		}
 	}
-	return warns
+	return made, warns
+}
+
+// removeFleetTools undoes what setupFleetTools recorded in f: the server
+// entry (and the file and .agents directory once empty) and the exclude
+// line. Anything else in those files stays.
+func removeFleetTools(f *fleetSetup) error {
+	root, err := os.OpenRoot(f.cwd)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	b, err := root.ReadFile(workspaceMCP)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return errors.Join(err, removeExcludeLine(f.exclude, f.line))
+	}
+	doc := map[string]any{}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return fmt.Errorf("%s is no longer valid JSON; leaving it: %v", workspaceMCP, err)
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if _, ok := servers[f.name]; ok {
+		delete(servers, f.name)
+		if len(servers) == 0 && len(doc) == 1 {
+			err = root.Remove(workspaceMCP)
+			_ = root.Remove(filepath.Dir(workspaceMCP)) // only if now empty
+		} else {
+			var out []byte
+			if out, err = json.MarshalIndent(doc, "", "  "); err == nil {
+				err = writeAtomicIn(root, workspaceMCP, append(out, '\n'))
+			}
+		}
+	}
+	return errors.Join(err, removeExcludeLine(f.exclude, f.line))
+}
+
+// removeExcludeLine drops line, which gitExclude added, from the exclude
+// file ex.
+func removeExcludeLine(ex, line string) error {
+	if ex == "" {
+		return nil
+	}
+	fi, err := os.Lstat(ex)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", ex)
+	}
+	cur, err := os.ReadFile(ex)
+	if err != nil {
+		return err
+	}
+	lines := strings.SplitAfter(string(cur), "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) == line {
+			return writeAtomic(ex, []byte(strings.Join(append(lines[:i:i], lines[i+1:]...), "")))
+		}
+	}
+	return nil
 }
 
 // insideWorkspace refuses to write rel under cwd when the workspace (which
@@ -164,50 +245,52 @@ func asStrings(v any) []string {
 	return out
 }
 
-// addAllowRule adds rule to permissions.allow in agy's settings.json.
-func addAllowRule(path, rule string) error {
+// addAllowRule adds rule to permissions.allow in agy's settings.json and
+// reports whether it changed the file.
+func addAllowRule(path, rule string) (bool, error) {
 	doc := map[string]any{}
 	b, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
 	case err != nil:
-		return err
+		return false, err
 	case len(bytes.TrimSpace(b)) > 0:
 		if err := json.Unmarshal(b, &doc); err != nil {
-			return fmt.Errorf("not valid JSON; not touching it: %v", err)
+			return false, fmt.Errorf("not valid JSON; not touching it: %v", err)
 		}
 	}
 	perms, _ := doc["permissions"].(map[string]any)
 	if perms == nil {
 		if _, exists := doc["permissions"]; exists {
-			return fmt.Errorf("permissions is not an object; not touching it")
+			return false, fmt.Errorf("permissions is not an object; not touching it")
 		}
 		perms = map[string]any{}
 	}
 	allow, _ := perms["allow"].([]any)
 	for _, r := range allow {
 		if r == rule || r == "mcp(*)" {
-			return nil
+			return false, nil
 		}
 	}
 	perms["allow"] = append(allow, rule)
 	doc["permissions"] = perms
 	out, err := json.MarshalIndent(doc, "", "    ")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return false, err
 	}
-	return writeAtomic(path, append(out, '\n'))
+	return true, writeAtomic(path, append(out, '\n'))
 }
 
 // gitExclude lists rel in the enclosing repository's .git/info/exclude so a
-// file Switchworks created does not show up in git status.
-func gitExclude(cwd, rel string) error {
+// file Switchworks created does not show up in git status. It returns the
+// exclude file and the line when it added one.
+func gitExclude(cwd, rel string) (string, string, error) {
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	for {
 		gitDir := filepath.Join(dir, ".git")
@@ -217,7 +300,7 @@ func gitExclude(cwd, rel string) error {
 				// A worktree or submodule: .git is a "gitdir: <path>" file.
 				b, err := os.ReadFile(gitDir)
 				if err != nil {
-					return err
+					return "", "", err
 				}
 				p := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
 				if !filepath.IsAbs(p) {
@@ -229,7 +312,7 @@ func gitExclude(cwd, rel string) error {
 			// really a git directory; a worktree's excludes live in its
 			// common directory.
 			if !isGitDir(gitDir) {
-				return fmt.Errorf("%s is not a git directory", gitDir)
+				return "", "", fmt.Errorf("%s is not a git directory", gitDir)
 			}
 			if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
 				c := strings.TrimSpace(string(b))
@@ -242,40 +325,42 @@ func gitExclude(cwd, rel string) error {
 			}
 			r, err := filepath.Rel(dir, filepath.Join(cwd, rel))
 			if err != nil {
-				return err
+				return "", "", err
 			}
 			r = "/" + filepath.ToSlash(r)
 			ex := filepath.Join(gitDir, "info", "exclude")
 			cur, _ := os.ReadFile(ex)
 			for _, l := range strings.Split(string(cur), "\n") {
 				if strings.TrimSpace(l) == r {
-					return nil
+					return "", "", nil
 				}
 			}
 			if err := os.Mkdir(filepath.Dir(ex), 0o755); err != nil && !os.IsExist(err) {
-				return err
+				return "", "", err
 			}
 			if fi, err := os.Lstat(filepath.Dir(ex)); err != nil || !fi.IsDir() {
-				return fmt.Errorf("%s is not a directory", filepath.Dir(ex))
+				return "", "", fmt.Errorf("%s is not a directory", filepath.Dir(ex))
 			}
 			if fi, err := os.Lstat(ex); err == nil && !fi.Mode().IsRegular() {
-				return fmt.Errorf("%s is not a regular file", ex)
+				return "", "", fmt.Errorf("%s is not a regular file", ex)
 			}
 			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY|oNoFollow, 0o644)
 			if err != nil {
-				return err
+				return "", "", err
 			}
 			defer f.Close()
 			prefix := ""
 			if len(cur) > 0 && !bytes.HasSuffix(cur, []byte("\n")) {
 				prefix = "\n"
 			}
-			_, err = fmt.Fprintf(f, "%s%s\n", prefix, r)
-			return err
+			if _, err := fmt.Fprintf(f, "%s%s\n", prefix, r); err != nil {
+				return "", "", err
+			}
+			return ex, r, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil // not in a repository
+			return "", "", nil // not in a repository
 		}
 		dir = parent
 	}

@@ -577,6 +577,9 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if sandbox == "" {
 		sandbox = n.cfg.DefaultSandbox
 	}
+	if spec.Cwd, err = expandHome(spec.Cwd); err != nil {
+		return nil, err
+	}
 	if fi, err := os.Stat(spec.Cwd); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("cwd %q is not a directory on %s", spec.Cwd, n.cfg.Host)
 	}
@@ -619,11 +622,21 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	startSpec.ScratchDir = n.scratchDir(s.rec.ID)
 	h, err := a.Start(ctx, startSpec, s.sink)
 	failStart := func(err error) (json.RawMessage, error) {
-		s.emit(model.KindError, model.ErrorEvent{Message: "start: " + err.Error()})
-		s.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusError, Detail: "start failed"})
+		// The coordinator forgets a session whose spawn fails, so
+		// nothing of it is kept here either: no record, spool or images
+		// (which would otherwise be resent, and adopted, forever).
+		n.mu.Lock()
+		delete(n.sessions, s.rec.ID)
+		n.mu.Unlock()
 		s.mu.Lock()
 		s.rec.Stopped = true
+		s.unacked = nil
+		if s.spool != nil {
+			_ = s.spool.Close()
+			s.spool = nil
+		}
 		s.mu.Unlock()
+		_ = os.Remove(s.spoolPath())
 		_ = n.saveState()
 		n.dropImages(s.rec.ID)
 		return nil, err
@@ -660,7 +673,20 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 // approval policy and sandbox it actually runs with (after node defaults),
 // which the coordinator gives to sessions it spawns.
 func spawnResult(ref *model.NativeRef, sp adapter.StartSpec) json.RawMessage {
-	return model.Marshal(wire.SpawnResult{NativeRef: ref, ApprovalPolicy: sp.ApprovalPolicy, Sandbox: sp.Sandbox})
+	return model.Marshal(wire.SpawnResult{NativeRef: ref, ApprovalPolicy: sp.ApprovalPolicy, Sandbox: sp.Sandbox, Cwd: sp.Cwd})
+}
+
+// expandHome replaces a leading "~" (alone or before a separator) in a
+// spawn's cwd with this user's home directory. "~user" is left as it is.
+func expandHome(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !(runtime.GOOS == "windows" && strings.HasPrefix(p, `~\`)) {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cwd %q: %w", p, err)
+	}
+	return filepath.Join(home, p[1:]), nil
 }
 
 func (n *Node) session(id string) (*session, error) {

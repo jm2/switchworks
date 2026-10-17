@@ -21,6 +21,7 @@ import (
 	"github.com/jm2/switchworks/internal/apiclient"
 	"github.com/jm2/switchworks/internal/codex/codextest"
 	"github.com/jm2/switchworks/internal/coord"
+	"github.com/jm2/switchworks/internal/harness"
 	"github.com/jm2/switchworks/internal/mcp"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/node"
@@ -124,6 +125,10 @@ func startNode(t *testing.T, dir, fakeState string) *runningNode {
 	}
 	cfg.Codex.Bin = os.Args[0]
 	cfg.Codex.Args = []string{"app-server"}
+	// Only the fake codex: an agy or goose installed on the test machine
+	// must not join the fleet.
+	cfg.Agy.Bin = "/nonexistent/agy"
+	cfg.ACP = map[string]harness.ACPAgent{"goose": {Disabled: true}}
 	hopts, err := node.HarnessOptions(dir, cfg, func(f string, a ...any) { t.Logf("node: "+f, a...) })
 	if err != nil {
 		t.Fatal(err)

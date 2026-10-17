@@ -346,8 +346,60 @@ func printProbe(stdout, stderr io.Writer, res ProbeResult, err error) int {
 	}
 	fmt.Fprintf(stdout, "%s  %s\n      code %s, answer %q (%.1fs)\n", verdict, who, res.Code, strings.TrimSpace(res.Answer), res.Duration.Seconds())
 	if !res.Pass {
-		fmt.Fprintln(stdout, "      the model did not read the code: it may not take images, or the provider endpoint may drop them")
+		if d := closestEdit(normalizeAnswer(res.Answer), res.Code); d >= 0 && d <= len(res.Code)/3 {
+			fmt.Fprintf(stdout, "      the image reached the model, but it misread %d of %d characters; run the probe again to tell a one-off from a weak reader\n", d, len(res.Code))
+		} else {
+			fmt.Fprintln(stdout, "      the model did not read the code: it may not take images, or the provider endpoint may drop them")
+		}
 		return 1
 	}
 	return 0
+}
+
+// closestEdit is the smallest edit distance between code and any stretch of
+// ans about as long as code, or -1 when ans is empty: how far an answer that
+// failed the exact match was from reading the image right.
+func closestEdit(ans, code string) int {
+	if ans == "" {
+		return -1
+	}
+	best := -1
+	for n := len(code) - 1; n <= len(code)+1; n++ {
+		if n <= 0 {
+			continue
+		}
+		if n > len(ans) {
+			n = len(ans)
+		}
+		for i := 0; i+n <= len(ans); i++ {
+			if d := editDistance(ans[i:i+n], code); best < 0 || d < best {
+				best = d
+			}
+		}
+		if n == len(ans) {
+			break
+		}
+	}
+	return best
+}
+
+// editDistance is the Levenshtein distance between two ASCII strings.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
 }

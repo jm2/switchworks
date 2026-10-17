@@ -16,8 +16,9 @@ by the tools you already use, under your own sign-ins.
 
 ![A session waiting for approval](docs/img/web-ui.png)
 
-> **Pre-release.** Switchworks is tested on Linux; the macOS and Windows builds, and the
-> packages for them, have had little real use. Per-area status and how each part was verified
+> **Pre-release.** Switchworks is tested on Linux, and nodes built from source have run on
+> macOS and Windows in a five-host fleet test; the macOS and Windows packages have had
+> little real use. Per-area status and how each part was verified
 > are in [`docs/status.md`](docs/status.md).
 
 ## Features
@@ -27,7 +28,7 @@ by the tools you already use, under your own sign-ins.
 | Codex sessions through `codex app-server` | ✅ |
 | Goose sessions through the Agent Client Protocol (`goose acp`) | ✅ |
 | Other ACP agents, configured by name | ⚠️ Experimental |
-| Antigravity `agy` sessions through its headless mode | ⚠️ Experimental; not yet run against a real `agy` |
+| Antigravity `agy` sessions through its headless mode | ⚠️ Experimental; run against agy 1.4.0, needs allow rules or full access to run commands |
 | One fleet view of every session on every host | ✅ |
 | Start, stop, interrupt and resume sessions on any host | ✅ Sessions resume after a node or coordinator restart |
 | Approval prompts relayed to the web UI and CLI | ✅ Codex, Goose and other ACP agents |
@@ -101,8 +102,8 @@ sessions get your sign-ins, repositories and toolchains.
 | Platform | Architectures | Coordinator | Node | Packages |
 | ---------- | --------------- | ------------- | ------ | ---------- |
 | Linux | x86_64, ARM64 | ✅ | ✅ | `.deb`, `.rpm` (both architectures); Arch package (x86_64) |
-| macOS | Apple silicon | 🚧 Little real use yet | 🚧 Little real use yet | `.dmg` with the menu-bar app (macOS 13 or later) |
-| Windows | x86_64 | 🚧 | 🚧 Not yet tested on real hardware | Per-user installer (`.exe`) |
+| macOS | Apple silicon | 🚧 Little real use yet | 🚧 Built from source and run in a fleet test; needs Local Network permission | `.dmg` with the menu-bar app (macOS 13 or later) |
+| Windows | x86_64 (ARM64 from source) | 🚧 | 🚧 Built from source and run in a fleet test on x86_64 and ARM64 | Per-user installer (`.exe`) |
 
 ### Fedora (COPR)
 
@@ -214,7 +215,8 @@ on each machine's `PATH`, for example `~/.local/bin/swk` on Linux and macOS or
 
 ### Prerequisites
 
-- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.2, if yours is older)
+- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.2, if yours is older;
+  Fedora's `golang` package sets `GOTOOLCHAIN=local`, so build there with `GOTOOLCHAIN=auto make build`)
 - `make` (optional; the targets are short `go build` commands)
 
 ```bash
@@ -320,6 +322,21 @@ swk node run
 
 `swk hosts` on the coordinator should now show the machine as online,
 with the harnesses it found.
+
+`swk node enroll` checks the coordinator's CA against the fingerprint in
+the token, so a mismatch fails there. To compare by hand, hash the
+certificate itself rather than its PEM file: `openssl x509 -in ca.crt
+-noout -fingerprint -sha256` on Linux and macOS, or in PowerShell
+`(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ca.crt).GetCertHashString('SHA256')`
+(`certutil -hashfile` hashes the PEM text, which never matches).
+
+> **macOS note:** macOS's Local Network privacy setting blocks LAN
+> connections from programs it has not approved, and `swk node enroll` or
+> `swk node run` then fails with `connect: no route to host` even though
+> `ping` and `curl` work. Allow the terminal app (or Switchworks) under
+> System Settings, Privacy & Security, Local Network. A
+> long-lived tmux server can keep the denial after you allow the terminal;
+> start the node from a new terminal window instead.
 
 ### 3. The CLI on other machines
 
@@ -463,15 +480,19 @@ the node's `node.json` (in `~/.config/swk/node/` on Linux,
 
 - **Codex**: `codex` on `PATH` and signed in, or with providers configured
   in its `config.toml`. Codex only accepts providers that speak the OpenAI
-  Responses API.
+  Responses API; DeepSeek and MiMo do. On Windows, `winget install
+  OpenAI.Codex` may not create the `codex` command alias; add it if
+  `codex` is not found.
 - **Goose**: `goose` on `PATH` with a provider configured (`goose
   configure`, or environment variables in `node.json`). DeepSeek, GLM and
-  MiMo work directly through their Anthropic-compatible endpoints.
+  MiMo work directly. Goose does not run on Windows on ARM.
 - **Other ACP agents**: add them by name, for example
   `"acp": {"opencode": {"bin": "opencode", "args": ["acp"]}}`.
 - **agy** (experimental): `agy` on `PATH`, signed in once interactively.
-  Headless agy cannot ask for approval, so allow tools in its settings or
-  spawn with sandbox `danger-full-access`.
+  Headless agy cannot ask for approval: the approval policy picks its
+  mode, and commands and fleet tools need allow rules in its settings
+  unless the session runs with approval `never` or sandbox
+  `danger-full-access`. See [docs/harnesses.md](docs/harnesses.md#agy-antigravity-cli).
 
 [docs/harnesses.md](docs/harnesses.md) covers each one: approvals, models
 and providers, fleet tools, and what each supports.

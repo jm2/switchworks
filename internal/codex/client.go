@@ -160,6 +160,24 @@ func (c *Client) ThreadUnsubscribe(ctx context.Context, threadID string) error {
 	return c.call(ctx, MethodThreadUnsubscribe, ThreadUnsubscribeParams{ThreadID: threadID}, nil)
 }
 
+// BackgroundTerminals lists the thread's commands that are still running.
+func (c *Client) BackgroundTerminals(ctx context.Context, threadID string) ([]BackgroundTerminal, error) {
+	var r BackgroundTerminalsListResponse
+	if err := c.call(ctx, MethodBackgroundTerminalsList, BackgroundTerminalsListParams{ThreadID: threadID}, &r); err != nil {
+		return nil, err
+	}
+	return r.Data, nil
+}
+
+func (c *Client) TerminateBackgroundTerminal(ctx context.Context, threadID, processID string) error {
+	return c.call(ctx, MethodBackgroundTerminalsTerminate, BackgroundTerminalsTerminateParams{ThreadID: threadID, ProcessID: processID}, nil)
+}
+
+// CleanBackgroundTerminals stops every command still running for the thread.
+func (c *Client) CleanBackgroundTerminals(ctx context.Context, threadID string) error {
+	return c.call(ctx, MethodBackgroundTerminalsClean, BackgroundTerminalsCleanParams{ThreadID: threadID}, nil)
+}
+
 func (c *Client) TurnStart(ctx context.Context, p TurnStartParams) (*TurnStartResponse, error) {
 	var r TurnStartResponse
 	if err := c.call(ctx, MethodTurnStart, p, &r); err != nil {

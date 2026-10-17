@@ -50,6 +50,7 @@ type Server struct {
 	web    *webAuth
 	auth   authWatch  // ends open requests whose credential was revoked
 	blobs  *blobStore // image attachments (blobs.go)
+	usage  usageBook  // adapters' last usage totals (usage.go)
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup
@@ -113,6 +114,7 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 		return nil, fmt.Errorf("attachment store: %w", err)
 	}
 	s.router = newRouter(s, cfg.Guards)
+	s.purgeFailedSpawns()
 	s.rebuildActivity()
 	return s, nil
 }
@@ -342,11 +344,16 @@ func (s *Server) pinger(n *nodeConn) {
 
 func (s *Server) readNode(n *nodeConn) {
 	defer n.close()
+	seen := time.Now() // connecting set the host's LastSeen
 	for {
 		_ = n.raw.SetReadDeadline(time.Now().Add(75 * time.Second))
 		env, err := n.conn.Recv()
 		if err != nil {
 			return
+		}
+		if now := time.Now(); now.Sub(seen) >= lastSeenEvery {
+			seen = now
+			s.touchHost(n, now)
 		}
 		switch env.Type {
 		case wire.TEvents:
@@ -390,6 +397,23 @@ func (s *Server) readNode(n *nodeConn) {
 		default:
 			s.logf("node %s: unexpected %q", n.host, env.Type)
 		}
+	}
+}
+
+// lastSeenEvery is how often a connected host's LastSeen is brought up to
+// date from its traffic (at least the pongs to pinger's pings).
+const lastSeenEvery = time.Minute
+
+// touchHost records that n, if still its host's connection, was heard from.
+func (s *Server) touchHost(n *nodeConn, now time.Time) {
+	s.hostMu.Lock()
+	defer s.hostMu.Unlock()
+	if cur, ok := s.node(n.host); !ok || cur != n {
+		return
+	}
+	if h, ok := s.store.Host(n.host); ok {
+		h.LastSeen = now
+		_ = s.store.UpsertHost(h)
 	}
 }
 
@@ -504,6 +528,14 @@ func (s *Server) project(ev model.Event) {
 			s.store.AddDailyTokens(time.Now().UTC().Format("2006-01-02"), tokenDelta)
 		}
 	}()
+	var usage model.UsageEvent
+	var added *model.Usage
+	if ev.Kind == model.KindUsage && json.Unmarshal(ev.Payload, &usage) == nil {
+		prev, known := s.usage.prev(s.store, ev.SessionID, ev.Seq)
+		a := usageAdded(prev, known, usage)
+		added = &a
+		s.usage.record(ev.SessionID, usage.Total)
+	}
 	_, _ = s.store.UpdateSession(ev.SessionID, func(sess *model.Session) {
 		sess.UpdatedAt = ev.TS
 		switch ev.Kind {
@@ -532,16 +564,18 @@ func (s *Server) project(ev model.Event) {
 				sess.Status = p.Status
 			}
 		case model.KindUsage:
-			var p model.UsageEvent
-			if json.Unmarshal(ev.Payload, &p) == nil {
-				u := p.Total
-				tokenDelta = u.TotalTokens
-				if sess.Usage != nil && sess.Usage.TotalTokens <= u.TotalTokens {
-					tokenDelta = u.TotalTokens - sess.Usage.TotalTokens
+			// The session's usage is the sum of what each event added
+			// (usage.go), so it survives the adapter's Total starting over.
+			if added != nil {
+				var u model.Usage
+				if sess.Usage != nil {
+					u = *sess.Usage
 				}
+				addUsageTo(&u, *added)
 				sess.Usage = &u
-				if p.Model != "" {
-					sess.Model = p.Model
+				tokenDelta = added.TotalTokens
+				if usage.Model != "" {
+					sess.Model = usage.Model
 				}
 			}
 		}
@@ -721,8 +755,16 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	res, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID,
 		Spawn: &wire.SpawnCmd{Session: sess, Spec: spec}}, 2*time.Minute)
 	if err != nil {
-		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusError })
-		s.publishSession(sess.ID)
+		if rej := (*errRejected)(nil); errors.As(err, &rej) {
+			// The node refused (e.g. no such cwd), so nothing ran: forget
+			// the session rather than leave a dead row on its path.
+			s.forgetSession(sess.ID)
+		} else {
+			// No answer (timeout, disconnect): the node may have started
+			// it, and its events will bring the record up to date.
+			_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusError })
+			s.publishSession(sess.ID)
+		}
 		return model.Session{}, fmt.Errorf("spawn on %s: %w", spec.Host, err)
 	}
 	var sr wire.SpawnResult
@@ -730,6 +772,10 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		// What the coordinator asked for stands; the node's answer only
 		// fills in its defaults, and is marked as reported.
 		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) {
+			// Except a cwd under "~", which only the node can expand.
+			if sr.Cwd != "" && strings.HasPrefix(spec.Cwd, "~") {
+				x.Cwd = sr.Cwd
+			}
 			if spec.ApprovalPolicy == "" {
 				x.ApprovalPolicy, x.PoliciesReported = sr.ApprovalPolicy, true
 			} else {
@@ -742,8 +788,39 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 			}
 		})
 	}
+	s.publishSession(sess.ID)
 	out, _ := s.store.Session(sess.ID)
 	return out, nil
+}
+
+// forgetSession deletes a session that never ran, with its events and
+// activity, and tells the fleet views to drop it.
+func (s *Server) forgetSession(id string) {
+	if err := s.store.DeleteSession(id); err != nil {
+		s.logf("forget session %s: %v", id, err)
+		return
+	}
+	s.mu.Lock()
+	delete(s.acts, id)
+	s.mu.Unlock()
+	s.usage.forget(id)
+	s.fleetPublish("session_removed", map[string]string{"id": id})
+}
+
+// purgeFailedSpawns removes sessions left behind by spawns that failed
+// before this coordinator forgot them: in error, never registered by a
+// harness, and without a single event. A node that did start one after
+// all reports it again and it is adopted.
+func (s *Server) purgeFailedSpawns() {
+	for _, sess := range s.store.Sessions() {
+		if sess.Status == model.StatusError && sess.NativeRef == nil && s.store.LastSeq(sess.ID) == 0 {
+			if err := s.store.DeleteSession(sess.ID); err != nil {
+				s.logf("purge failed spawn %s: %v", sess.Path, err)
+				continue
+			}
+			s.logf("removed %s (%s): its spawn failed", sess.Path, sess.ID)
+		}
+	}
 }
 
 // SessionCommand forwards an operation on an existing session.

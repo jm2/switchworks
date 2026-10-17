@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package coord
+
+import (
+	"context"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jm2/switchworks/internal/apiclient"
+	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/wire"
+)
+
+// fakeNode connects host to s over a pipe and answers its commands.
+func fakeNode(t *testing.T, s *Server, host string, answer func(wire.Cmd) wire.Result) {
+	t.Helper()
+	a, b := net.Pipe()
+	n := &nodeConn{host: host, conn: wire.NewConn(a), raw: a, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
+		reqs: make(chan struct{}, 1), hello: wire.Hello{Host: host, Adapters: []string{"codex"}}}
+	s.mu.Lock()
+	s.nodes[host] = n
+	s.mu.Unlock()
+	go s.readNode(n)
+	nc := wire.NewConn(b)
+	go func() {
+		for {
+			env, err := nc.Recv()
+			if err != nil {
+				return
+			}
+			if env.Type == wire.TCmd {
+				cmd, _ := wire.Decode[wire.Cmd](env)
+				_ = nc.Send(wire.TResult, "", env.ID, answer(cmd))
+			}
+		}
+	}()
+	t.Cleanup(func() { n.close(); b.Close() })
+}
+
+// A spawn the node refuses leaves no session behind (and says so on the
+// fleet stream); a "~" cwd is recorded as the node expanded it.
+func TestSpawnFailureForgetsSession(t *testing.T) {
+	s := testServer(t, Guards{})
+	fleetCh := make(chan FleetEvent, 16)
+	s.fleet[fleetCh] = struct{}{}
+	refuse := true
+	fakeNode(t, s, "devbox", func(cmd wire.Cmd) wire.Result {
+		if refuse {
+			return wire.Result{Error: `cwd "~/nope" is not a directory on devbox`}
+		}
+		return wire.Result{OK: true, Data: model.Marshal(wire.SpawnResult{Cwd: "/home/jm/switchworks", Sandbox: "workspace-write"})}
+	})
+	ctx := context.Background()
+
+	_, err := s.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "sw", Cwd: "~/nope"})
+	if err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("spawn: %v", err)
+	}
+	if all := s.store.Sessions(); len(all) != 0 {
+		t.Fatalf("failed spawn kept: %+v", all)
+	}
+	var created, removed string
+	for len(fleetCh) > 0 {
+		ev := <-fleetCh
+		switch ev.Type {
+		case "session":
+			created = ev.Data.(apiclient.SessionView).ID
+		case "session_removed":
+			removed = ev.Data.(map[string]string)["id"]
+		}
+	}
+	if removed == "" || removed != created {
+		t.Fatalf("published %q, removed %q", created, removed)
+	}
+
+	refuse = false
+	sess, err := s.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "sw", Cwd: "~/switchworks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Cwd != "/home/jm/switchworks" {
+		t.Fatalf("cwd %q", sess.Cwd)
+	}
+	if all := s.store.Sessions(); len(all) != 1 || all[0].Path != "devbox/sw" {
+		t.Fatalf("sessions %+v", all)
+	}
+	// Only a "~" cwd takes the node's word.
+	sess, err = s.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "abs", Cwd: "/srv/x"})
+	if err != nil || sess.Cwd != "/srv/x" {
+		t.Fatalf("absolute cwd: %q %v", sess.Cwd, err)
+	}
+}
+
+// A connected host's LastSeen follows its traffic; a replaced connection's
+// does not count.
+func TestTouchHost(t *testing.T) {
+	s := testServer(t, Guards{})
+	start := time.Now().Add(-time.Hour)
+	if err := s.store.UpsertHost(model.Host{ID: "devbox", LastSeen: start}); err != nil {
+		t.Fatal(err)
+	}
+	fakeNode(t, s, "devbox", func(wire.Cmd) wire.Result { return wire.Result{OK: true} })
+	n, _ := s.node("devbox")
+	s.touchHost(&nodeConn{host: "devbox"}, time.Now())
+	if h, _ := s.store.Host("devbox"); !h.LastSeen.Equal(start) {
+		t.Fatalf("stale connection moved LastSeen to %v", h.LastSeen)
+	}
+	now := time.Now()
+	s.touchHost(n, now)
+	if h, _ := s.store.Host("devbox"); !h.LastSeen.Equal(now) {
+		t.Fatalf("LastSeen %v, want %v", h.LastSeen, now)
+	}
+}
+
+// Sessions orphaned by failed spawns before failures were forgotten are
+// removed at startup; an errored session a harness registered stays.
+func TestPurgeFailedSpawns(t *testing.T) {
+	s := testServer(t, Guards{})
+	orphan := addSession(t, s, "antec", "switchworks", func(x *model.Session) { x.Status = model.StatusError })
+	real := addSession(t, s, "antec", "crashed", func(x *model.Session) {
+		x.Status = model.StatusError
+		x.NativeRef = &model.NativeRef{Harness: "agy", ID: "c1"}
+	})
+	live := addSession(t, s, "antec", "live")
+	s.purgeFailedSpawns()
+	if _, ok := s.store.Session(orphan.ID); ok {
+		t.Fatal("failed spawn kept")
+	}
+	for _, sess := range []model.Session{real, live} {
+		if _, ok := s.store.Session(sess.ID); !ok {
+			t.Fatalf("%s removed", sess.Path)
+		}
+	}
+}

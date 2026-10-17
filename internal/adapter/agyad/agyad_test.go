@@ -101,6 +101,13 @@ func fakeAgy() {
 		case strings.Contains(prompt, "SLOW"):
 			text("working")
 			time.Sleep(30 * time.Second)
+		case strings.Contains(prompt, "CANCEL"):
+			// Like real agy: a closed stdin cancels the turn, which still
+			// ends with a result.
+			text("working")
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			result("ERROR", "", "interrupted")
+			return true
 		case strings.Contains(prompt, "NORESULT"):
 			os.Exit(2)
 		case strings.Contains(prompt, "FAIL"):
@@ -291,7 +298,8 @@ func TestStreamModeTurnsAndUsage(t *testing.T) {
 	}
 
 	// The second turn goes to the same process; agy's usage is cumulative
-	// there, so the turn's own figures are the difference.
+	// there, so the turn's own figures are the difference. Input includes
+	// cache reads (agy reports them apart), and so does the total.
 	col.turn(t, h, "again", "completed")
 	var us []model.UsageEvent
 	for _, e := range col.all() {
@@ -299,8 +307,8 @@ func TestStreamModeTurnsAndUsage(t *testing.T) {
 			us = append(us, u)
 		}
 	}
-	if len(us) != 2 || us[0].Total.TotalTokens != 14 || us[1].Last.TotalTokens != 14 || us[1].Total.TotalTokens != 28 ||
-		us[1].Total.InputTokens != 20 || us[1].Total.CachedInputTokens != 8 || us[1].Total.ReasoningTokens != 2 || us[1].Model != "gemini-3-pro" {
+	if len(us) != 2 || us[0].Total.TotalTokens != 18 || us[1].Last.TotalTokens != 18 || us[1].Total.TotalTokens != 36 ||
+		us[1].Total.InputTokens != 28 || us[1].Total.CachedInputTokens != 8 || us[1].Total.ReasoningTokens != 2 || us[1].Model != "gemini-3-pro" {
 		t.Fatalf("usage %+v", us)
 	}
 	inv := invocations(t, log)
@@ -400,7 +408,7 @@ func TestPerTurnMode(t *testing.T) {
 			last = u
 		}
 	}
-	if last.Last.TotalTokens != 14 || last.Total.TotalTokens != 28 {
+	if last.Last.TotalTokens != 18 || last.Total.TotalTokens != 36 {
 		t.Fatalf("usage %+v", last)
 	}
 }
@@ -645,7 +653,7 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: "+target+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := gitExclude(repo, workspaceMCP); err == nil {
+	if _, _, err := gitExclude(repo, workspaceMCP); err == nil {
 		t.Fatal("followed a gitdir that is not a git directory")
 	}
 	if _, err := os.Stat(filepath.Join(target, "info")); err == nil {
@@ -659,7 +667,7 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 	if err := os.Symlink(trap, filepath.Join(gd, ".git", "info")); err != nil {
 		t.Fatal(err)
 	}
-	if err := gitExclude(gd, workspaceMCP); err == nil {
+	if _, _, err := gitExclude(gd, workspaceMCP); err == nil {
 		t.Fatal("wrote through a symlinked info directory")
 	}
 	if _, err := os.Stat(filepath.Join(trap, "exclude")); err == nil {
@@ -677,10 +685,251 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(wt, "commondir"), []byte("../..\n"), 0o644)
 	work := t.TempDir()
 	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+wt+"\n"), 0o644)
-	if err := gitExclude(work, workspaceMCP); err != nil {
+	if _, _, err := gitExclude(work, workspaceMCP); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(main, "info", "exclude")); !strings.Contains(string(b), "/.agents/mcp_config.json") {
 		t.Fatalf("worktree exclude: %q", b)
+	}
+}
+
+func TestApprovalPolicyModes(t *testing.T) {
+	for _, tc := range []struct {
+		policy, sandbox string
+		extra           []string
+		want, notWant   []string
+	}{
+		{policy: "", notWant: []string{"--mode", "--dangerously-skip-permissions"}},
+		{policy: "untrusted", notWant: []string{"--mode", "--dangerously-skip-permissions"}},
+		{policy: "on-request", want: []string{"--mode accept-edits"}, notWant: []string{"--dangerously-skip-permissions"}},
+		{policy: "on-failure", sandbox: "workspace-write", want: []string{"--sandbox", "--mode accept-edits"}},
+		{policy: "never", sandbox: "workspace-write", want: []string{"--sandbox", "--dangerously-skip-permissions"}, notWant: []string{"--mode"}},
+		{policy: "never", sandbox: "danger-full-access", want: []string{"--dangerously-skip-permissions"}, notWant: []string{"--mode", "--sandbox"}},
+		{policy: "on-request", extra: []string{"--mode=plan"}, want: []string{"--mode=plan"}, notWant: []string{"--mode"}},
+		{policy: "on-request", extra: []string{"--mode", "auto"}, want: []string{"--mode auto"}, notWant: []string{"accept-edits"}},
+	} {
+		a, log := newAdapter(t, Options{})
+		a.cfg.ExtraArgs = tc.extra
+		col := &collector{}
+		h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: t.TempDir(), ApprovalPolicy: tc.policy, Sandbox: tc.sandbox}, col.sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		col.turn(t, h, "hi", "completed")
+		inv := invocations(t, log)
+		if len(inv) != 1 {
+			t.Fatalf("%+v: invocations %+v", tc, inv)
+		}
+		argv := inv[0].Argv
+		for _, w := range tc.want {
+			if !hasArgs(argv, strings.Fields(w)...) {
+				t.Errorf("%+v: missing %q in %v", tc, w, argv)
+			}
+		}
+		for _, nw := range tc.notWant {
+			if hasArgs(argv, strings.Fields(nw)...) {
+				t.Errorf("%+v: unexpected %q in %v", tc, nw, argv)
+			}
+		}
+		if strings.Count(strings.Join(argv, " "), "--dangerously-skip-permissions") > 1 {
+			t.Errorf("%+v: --dangerously-skip-permissions twice in %v", tc, argv)
+		}
+		if strings.Count(strings.Join(argv, " "), "--mode") > 1 {
+			t.Errorf("%+v: --mode twice in %v", tc, argv)
+		}
+	}
+}
+
+// In stream-input mode agy's duration_seconds covers the whole process, so
+// the turn's own duration is measured; per turn, agy's figure is the turn's.
+func TestTurnDuration(t *testing.T) {
+	for _, perTurn := range []bool{false, true} {
+		a, _ := newAdapter(t, Options{PerTurn: perTurn})
+		col := &collector{}
+		h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: t.TempDir()}, col.sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := col.turn(t, h, "hi", "completed")
+		d := col.all()[i].Payload.(model.TurnCompleted).DurationMs
+		if perTurn && d != 1500 || !perTurn && d >= 1500 {
+			t.Fatalf("per turn %v: duration %dms (agy reported 1500ms)", perTurn, d)
+		}
+	}
+}
+
+// agy ends a cancelled turn with a result of its own; during an interrupt
+// that is an interrupted turn, not a failure, and the next turn is normal.
+func TestInterruptWithResult(t *testing.T) {
+	a, log := newAdapter(t, Options{})
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: t.TempDir()}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Deliver(ctx, adapter.Input{Text: "CANCEL"}, adapter.DeliverQueue); err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "cancel turn streaming", func(e adapter.Event) bool {
+		d, ok := e.Payload.(model.ItemDelta)
+		return ok && d.Text == "wor"
+	})
+	if err := h.Interrupt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	i := col.waitFor(t, 0, "interrupted", turnDone("interrupted"))
+	if tc := col.all()[i].Payload.(model.TurnCompleted); tc.Error != "" {
+		t.Fatalf("interrupted turn %+v", tc)
+	}
+	waitIdle(t, h)
+	n := len(col.all())
+	col.turn(t, h, "after", "completed")
+	for _, e := range col.all() {
+		if tc, ok := e.Payload.(model.TurnCompleted); ok && tc.Status == "failed" {
+			t.Fatalf("failed turn reported:%s", dump(col.all()))
+		}
+	}
+	if inv := invocations(t, log); len(inv) != 2 {
+		t.Fatalf("want a new process after the interrupt, got %d", len(inv))
+	}
+	// The new process's usage starts again: the turn's own, not negative
+	// or counted twice.
+	var us []model.UsageEvent
+	for _, e := range col.all()[n:] {
+		if u, ok := e.Payload.(model.UsageEvent); ok {
+			us = append(us, u)
+		}
+	}
+	if len(us) != 1 || us[0].Last.TotalTokens != 18 || us[0].Total.TotalTokens != 36 {
+		t.Fatalf("usage after interrupt %+v", us)
+	}
+}
+
+// agy reports input_tokens without cache reads; Switchworks's input
+// includes them.
+func TestUsageNormalization(t *testing.T) {
+	u := normUsage(234_000, 1_800_000, 50_000, 0, 0)
+	if u.InputTokens != 2_034_000 || u.CachedInputTokens != 1_800_000 || u.OutputTokens != 50_000 || u.TotalTokens != 2_084_000 {
+		t.Fatalf("usage %+v", u)
+	}
+	u = normUsage(10, 4, 3, 1, 14)
+	if u.InputTokens != 14 || u.ReasoningTokens != 1 || u.TotalTokens != 18 {
+		t.Fatalf("usage %+v", u)
+	}
+	// A total that already covers more is kept.
+	if u = normUsage(10, 4, 3, 1, 25); u.TotalTokens != 25 {
+		t.Fatalf("usage %+v", u)
+	}
+}
+
+// Resuming may attach to a user's own conversation in their own repository:
+// nothing is written there or to agy's settings, but the credentials still
+// reach agy.
+func TestFleetToolsNotSetUpOnResume(t *testing.T) {
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	a, log := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	repo := t.TempDir()
+	fakeGitDir(t, filepath.Join(repo, ".git"))
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}, Env: map[string]string{"SWK_TOKEN": "tok"}}
+	col := &collector{}
+	h, err := a.Resume(context.Background(), model.NativeRef{Harness: "agy", ID: "conv-9"}, adapter.StartSpec{Cwd: repo, MCP: mcp}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.turn(t, h, "hi", "completed")
+	if _, err := os.Stat(filepath.Join(repo, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("workspace touched on resume: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "info", "exclude")); !os.IsNotExist(err) {
+		t.Fatalf("exclude touched on resume: %v", err)
+	}
+	if _, err := os.Stat(settings); !os.IsNotExist(err) {
+		t.Fatalf("settings touched on resume: %v", err)
+	}
+	if inv := invocations(t, log); len(inv) != 1 || inv[0].Token != "tok" {
+		t.Fatalf("invocations %+v", inv)
+	}
+}
+
+// An explicit Stop takes out what the session's setup created, and only
+// that; the global allow rule stays (with a warning when it was added).
+func TestFleetToolsCleanupOnStop(t *testing.T) {
+	ctx := context.Background()
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	fakeGitDir(t, filepath.Join(repo, ".git"))
+	exFile := filepath.Join(repo, ".git", "info", "exclude")
+	_ = os.MkdirAll(filepath.Dir(exFile), 0o755)
+	_ = os.WriteFile(exFile, []byte("*.log\n"), 0o644)
+	cfgPath := filepath.Join(repo, ".agents", "mcp_config.json")
+
+	col := &collector{}
+	h1, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "settings warning", func(e adapter.Event) bool {
+		w, ok := e.Payload.(model.ErrorEvent)
+		return ok && e.Kind == model.KindWarning && strings.Contains(w.Message, settings) && strings.Contains(w.Message, "mcp(swk/*)")
+	})
+	// A second session in the workspace takes over the cleanup when the
+	// first stops.
+	h2, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h1.Stop(ctx)
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config removed while another session uses it: %v", err)
+	}
+	_ = h2.Stop(ctx)
+	if _, err := os.Stat(filepath.Join(repo, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf(".agents left behind: %v", err)
+	}
+	if b, _ := os.ReadFile(exFile); string(b) != "*.log\n" {
+		t.Fatalf("exclude %q", b)
+	}
+	if b, _ := os.ReadFile(settings); !strings.Contains(string(b), "mcp(swk/*)") {
+		t.Fatalf("global allow rule removed: %s", b)
+	}
+
+	// Servers the user added meanwhile stay.
+	h3, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfgPath)
+	var doc map[string]any
+	_ = json.Unmarshal(b, &doc)
+	doc["mcpServers"].(map[string]any)["mine"] = map[string]any{"command": "mine"}
+	b, _ = json.Marshal(doc)
+	_ = os.WriteFile(cfgPath, b, 0o644)
+	_ = h3.Stop(ctx)
+	b, _ = os.ReadFile(cfgPath)
+	if !strings.Contains(string(b), `"mine"`) || strings.Contains(string(b), `"swk"`) {
+		t.Fatalf("config after stop %s", b)
+	}
+
+	// A config the session did not create is left alone, and so is
+	// everything on a node shutdown (Close).
+	before, _ := os.ReadFile(cfgPath)
+	h4, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h4.Stop(ctx)
+	if after, _ := os.ReadFile(cfgPath); !strings.Contains(string(after), `"swk"`) || !strings.Contains(string(after), `"mine"`) {
+		t.Fatalf("config not created by the session changed:\n%s\nwas:\n%s", after, before)
+	}
+	fresh := t.TempDir()
+	if _, err := a.Start(ctx, adapter.StartSpec{Cwd: fresh, MCP: mcp}, (&collector{}).sink); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	if _, err := os.Stat(filepath.Join(fresh, workspaceMCP)); err != nil {
+		t.Fatalf("config removed on shutdown: %v", err)
 	}
 }

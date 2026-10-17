@@ -300,6 +300,12 @@ function connectFleet() {
     S.hosts.delete(d.id);
     changed('host', d);
   });
+  // A session whose spawn failed: the coordinator forgot it.
+  fleetES.addEventListener('session_removed', (e) => {
+    const d = JSON.parse(e.data);
+    S.sessions.delete(d.id);
+    changed('session', d);
+  });
   fleetES.onerror = () => {
     setConn(false);
     if (fleetES.readyState === EventSource.CLOSED) {
