@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Switchworks is pre-release. Security fixes land on `main` and are included in the next tagged
-release. Report vulnerabilities in `main` and the latest release.
+Switchworks is alpha software (v0.1). Security fixes land on `main` and are included in the
+next tagged release. Report vulnerabilities in `main` and the latest release.
 
 ## Reporting a vulnerability
 

@@ -16,10 +16,11 @@ by the tools you already use, under your own sign-ins.
 
 ![A session waiting for approval](docs/img/web-ui.png)
 
-> **Pre-release.** Switchworks is tested on Linux, and nodes built from source have run on
+> **v0.1.0 alpha.** Switchworks is tested on Linux, and nodes built from source have run on
 > macOS and Windows in a five-host fleet test; the macOS and Windows packages have had
-> little real use. Per-area status and how each part was verified
-> are in [`docs/status.md`](docs/status.md).
+> little real use. Pre-built packages are on the
+> [Releases](https://github.com/jm2/switchworks/releases) page; per-area status and how each
+> part was verified are in [`docs/status.md`](docs/status.md).
 
 ## Features
 
@@ -48,7 +49,8 @@ by the tools you already use, under your own sign-ins.
 | Runs as your user at login: `swk service install` (systemd user unit, LaunchAgent, logon task) | ✅ Linux; 🚧 macOS, Windows |
 | Tray icon (Linux, Windows) and menu-bar app (macOS) | 🚧 Status, web UI, start/stop/restart, logs; little real use yet |
 | Push notifications | 🚧 Not yet; the tab title and inbox count show what needs you |
-| Event log retention | 🚧 Session logs are kept indefinitely |
+| Coordinator as a system service under its own account | ✅ Linux; 🚧 Windows; ❌ macOS |
+| Session retention: ended sessions deleted after 90 days by default (`session_retention_days`), `swk rm` | ✅ Running sessions keep their whole log |
 | Observing sessions started outside Switchworks | 🚧 Future release |
 
 ---
