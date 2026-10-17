@@ -109,3 +109,17 @@ func TestUsageCodexTotals(t *testing.T) {
 		t.Fatalf("daily tokens %d", d)
 	}
 }
+
+// A new agent process whose first report equals the old process's Total
+// is new usage when marked Restarted, not a repeat.
+func TestUsageRestartedEqualTotal(t *testing.T) {
+	s := testServer(t, Guards{})
+	sess := addSession(t, s, "h1", "agy", func(x *model.Session) { x.ID = ulid.New() })
+	feed(t, s, sess.ID,
+		model.UsageEvent{Last: tok(60, 5, 65), Total: tok(60, 5, 65), Restarted: true},
+		model.UsageEvent{Last: tok(40, 5, 45), Total: tok(100, 10, 110)},
+		model.UsageEvent{Last: tok(100, 10, 110), Total: tok(100, 10, 110), Restarted: true})
+	if got := sessionUsage(t, s, sess.ID); got != tok(200, 20, 220) {
+		t.Fatalf("usage %+v", got)
+	}
+}

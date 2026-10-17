@@ -798,3 +798,21 @@ func usageEvents(evs []adapter.Event) []model.UsageEvent {
 	}
 	return out
 }
+
+// goose's accumulated usage is reported even when the prompt response
+// leaves its own usage out.
+func TestGooseUsageWithoutPromptUsage(t *testing.T) {
+	r := newRec()
+	h := &handle{a: New(Config{}), sink: r.sink, agentName: "goose", sessionID: "s1"}
+	update := func(in, out int64) {
+		b, _ := json.Marshal(acp.GooseUsageUpdate{SessionUpdate: acp.GooseUpdateUsage, AccumulatedInputTokens: in, AccumulatedOutputTokens: out})
+		h.OnGooseUpdate(acp.GooseSessionNotification{SessionID: "s1", Update: b})
+	}
+	update(0, 0)
+	update(3000, 120)
+	h.usage("t1", nil)
+	evs := usageEvents(r.all())
+	if len(evs) != 1 || evs[0].Last != (model.Usage{InputTokens: 3000, OutputTokens: 120, TotalTokens: 3120}) || evs[0].Restarted {
+		t.Fatalf("usage %+v", evs)
+	}
+}

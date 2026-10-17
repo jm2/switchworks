@@ -913,16 +913,32 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 		t.Fatalf("config after stop %s", b)
 	}
 
-	// A config the session did not create is left alone, and so is
-	// everything on a node shutdown (Close).
-	before, _ := os.ReadFile(cfgPath)
+	// An entry added to a config the session did not create is removed
+	// again, and the file with the user's entries stays.
 	h4, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if b, _ := os.ReadFile(cfgPath); !strings.Contains(string(b), `"swk"`) {
+		t.Fatalf("entry not added to an existing config: %s", b)
+	}
 	_ = h4.Stop(ctx)
-	if after, _ := os.ReadFile(cfgPath); !strings.Contains(string(after), `"swk"`) || !strings.Contains(string(after), `"mine"`) {
-		t.Fatalf("config not created by the session changed:\n%s\nwas:\n%s", after, before)
+	if after, _ := os.ReadFile(cfgPath); strings.Contains(string(after), `"swk"`) || !strings.Contains(string(after), `"mine"`) {
+		t.Fatalf("config after stop:\n%s", after)
+	}
+
+	// An swk entry that was there before the session is not the session's
+	// to remove.
+	doc["mcpServers"].(map[string]any)["swk"] = map[string]any{"command": os.Args[0], "args": []string{"mcp"}}
+	b, _ = json.Marshal(doc)
+	_ = os.WriteFile(cfgPath, b, 0o644)
+	h5, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h5.Stop(ctx)
+	if after, _ := os.ReadFile(cfgPath); !strings.Contains(string(after), `"swk"`) {
+		t.Fatalf("pre-existing entry removed:\n%s", after)
 	}
 	fresh := t.TempDir()
 	if _, err := a.Start(ctx, adapter.StartSpec{Cwd: fresh, MCP: mcp}, (&collector{}).sink); err != nil {

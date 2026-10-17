@@ -251,3 +251,13 @@ func TestPrintProbeNearMiss(t *testing.T) {
 		}
 	}
 }
+
+// An exact code inside a reply too long to pass is neither a misread nor
+// a failure to see the image.
+func TestPrintProbeOverlongExact(t *testing.T) {
+	var out bytes.Buffer
+	res := ProbeResult{Harness: "fake", Code: "PEUXCR", Answer: "The image shows a white background with the code PEUXCR written in large black blocky capital letters across the middle."}
+	if printProbe(&out, io.Discard, res, nil) != 1 || !strings.Contains(out.String(), "answered at length") || strings.Contains(out.String(), "misread") {
+		t.Fatalf("report %q", out.String())
+	}
+}

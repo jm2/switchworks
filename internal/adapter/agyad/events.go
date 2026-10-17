@@ -336,12 +336,13 @@ func (h *handle) usage(turnID string, rep model.Usage) {
 	}
 	cp := rep
 	h.lastRep = &cp
+	restarted := h.total == (model.Usage{}) // this handle's first report
 	h.total.InputTokens += last.InputTokens
 	h.total.CachedInputTokens += last.CachedInputTokens
 	h.total.OutputTokens += last.OutputTokens
 	h.total.ReasoningTokens += last.ReasoningTokens
 	h.total.TotalTokens += last.TotalTokens
-	ev := model.UsageEvent{TurnID: turnID, Model: h.spec.Model, Last: last, Total: h.total}
+	ev := model.UsageEvent{TurnID: turnID, Model: h.spec.Model, Last: last, Total: h.total, Restarted: restarted}
 	h.mu.Unlock()
 	h.emit(model.KindUsage, ev)
 }

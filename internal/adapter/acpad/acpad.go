@@ -660,20 +660,22 @@ func mapStop(r string) (status, errText string) {
 // from this agent process only (it restarts from zero when the session is
 // reopened); the coordinator keeps the session's running sum.
 func (h *handle) usage(turnID string, u *acp.Usage) {
-	if u == nil {
-		return
-	}
-	rep := model.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
-	if u.CachedReadTokens != nil {
-		rep.CachedInputTokens = *u.CachedReadTokens
-	}
-	if u.ThoughtTokens != nil {
-		rep.ReasoningTokens = *u.ThoughtTokens
-	}
-	if rep.TotalTokens == 0 {
-		rep.TotalTokens = rep.InputTokens + rep.OutputTokens
+	var rep model.Usage
+	if u != nil {
+		rep = model.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+		if u.CachedReadTokens != nil {
+			rep.CachedInputTokens = *u.CachedReadTokens
+		}
+		if u.ThoughtTokens != nil {
+			rep.ReasoningTokens = *u.ThoughtTokens
+		}
+		if rep.TotalTokens == 0 {
+			rep.TotalTokens = rep.InputTokens + rep.OutputTokens
+		}
 	}
 	h.mu.Lock()
+	// goose may leave the prompt response's usage out; its accumulated
+	// figures still count.
 	if acc := h.gooseAcc; acc != nil {
 		// goose's accumulated usage: the whole session's, all requests.
 		// Total continues across reopens, which the coordinator expects
@@ -685,11 +687,17 @@ func (h *handle) usage(turnID string, u *acp.Usage) {
 		}
 		cur := *acc
 		h.gooseSent = &cur
-		h.lastRep = &rep
+		if u != nil {
+			h.lastRep = &rep
+		}
 		h.total = cur
 		ev := model.UsageEvent{TurnID: turnID, Model: h.modelName, Provider: h.provider, Last: last, Total: cur, ContextWindow: h.ctxWindow}
 		h.mu.Unlock()
 		h.emit(model.KindUsage, ev)
+		return
+	}
+	if u == nil {
+		h.mu.Unlock()
 		return
 	}
 	last := rep
@@ -701,12 +709,14 @@ func (h *handle) usage(turnID string, u *acp.Usage) {
 		}
 	}
 	h.lastRep = &rep
+	restarted := h.total == (model.Usage{}) // this handle's first report
 	h.total.InputTokens += last.InputTokens
 	h.total.CachedInputTokens += last.CachedInputTokens
 	h.total.OutputTokens += last.OutputTokens
 	h.total.ReasoningTokens += last.ReasoningTokens
 	h.total.TotalTokens += last.TotalTokens
-	ev := model.UsageEvent{TurnID: turnID, Model: h.modelName, Provider: h.provider, Last: last, Total: h.total, ContextWindow: h.ctxWindow}
+	ev := model.UsageEvent{TurnID: turnID, Model: h.modelName, Provider: h.provider, Last: last, Total: h.total,
+		ContextWindow: h.ctxWindow, Restarted: restarted}
 	h.mu.Unlock()
 	h.emit(model.KindUsage, ev)
 }

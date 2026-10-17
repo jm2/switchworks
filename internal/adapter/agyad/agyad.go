@@ -98,6 +98,31 @@ type Adapter struct {
 	cfg Config
 	mu  sync.Mutex
 	hs  map[*handle]bool
+
+	// fleetMu serializes fleet tool setup and cleanup; owners maps a
+	// workspace's swk entry to what this adapter added and the sessions
+	// using it.
+	fleetMu sync.Mutex
+	owners  map[string]*fleetOwner
+}
+
+// fleetOwner is a workspace entry this adapter added, and the number of
+// live sessions there that use it. The last one to stop removes it.
+type fleetOwner struct {
+	setup *fleetSetup
+	refs  int
+}
+
+// fleetKey identifies a server entry in a workspace.
+func fleetKey(cwd, name string) string {
+	if cwd == "" {
+		cwd = "."
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = cwd
+	}
+	return abs + "\x00" + name
 }
 
 // New returns an adapter.
@@ -138,9 +163,29 @@ func (a *Adapter) open(spec adapter.StartSpec, sink adapter.Sink, convID string)
 	// Only a new session gets the fleet tools set up: a resumed one may be a
 	// user's own conversation in their own repository, and keeps whatever
 	// its workspace already has (the credentials still reach it via env).
-	if convID == "" && spec.MCP != nil && a.cfg.Options.FleetTools {
-		made, warns := setupFleetTools(spec, a.cfg)
-		h.fleet = made
+	if spec.MCP != nil && a.cfg.Options.FleetTools {
+		key := fleetKey(spec.Cwd, spec.MCP.Name)
+		var warns []string
+		a.fleetMu.Lock()
+		o := a.owners[key]
+		if o == nil && convID == "" {
+			var made *fleetSetup
+			made, warns = setupFleetTools(spec, a.cfg)
+			if made != nil {
+				o = &fleetOwner{setup: made}
+				if a.owners == nil {
+					a.owners = map[string]*fleetOwner{}
+				}
+				a.owners[key] = o
+			}
+		}
+		if o != nil {
+			// Resumed sessions there count too: the entry stays while any
+			// session in the workspace runs.
+			o.refs++
+			h.fleetKey = key
+		}
+		a.fleetMu.Unlock()
 		for _, w := range warns {
 			a.cfg.Logf("agy: %s", w)
 			h.emit(model.KindWarning, model.ErrorEvent{Message: w})
@@ -180,7 +225,7 @@ type handle struct {
 	lastRep      *model.Usage // last cumulative usage agy reported
 	total        model.Usage
 	deniedSeen   map[string]bool
-	fleet        *fleetSetup // what setupFleetTools created, removed on Stop
+	fleetKey     string // the workspace entry this session holds (Adapter.owners)
 }
 
 func (h *handle) emit(kind string, p any) { h.sink(adapter.Event{Kind: kind, Payload: p}) }
@@ -468,8 +513,8 @@ func (h *handle) shutdown(announce bool) {
 	}
 	h.stopped = true
 	p := h.p
-	fleet := h.fleet
-	h.fleet = nil
+	key := h.fleetKey
+	h.fleetKey = ""
 	h.mu.Unlock()
 	if p != nil {
 		_ = p.Stdin.Close() // a clean end for stream-input mode
@@ -477,43 +522,27 @@ func (h *handle) shutdown(announce bool) {
 	}
 	h.a.mu.Lock()
 	delete(h.a.hs, h)
-	if fleet != nil && announce {
-		// Another live session in the same workspace still uses the
-		// entry: it takes over the cleanup.
-		for o := range h.a.hs {
-			o.mu.Lock()
-			if o.fleet == nil && !o.stopped && o.spec.MCP != nil && o.spec.MCP.Name == fleet.name && sameDir(o.spec.Cwd, fleet.cwd) {
-				o.fleet, fleet = fleet, nil
-			}
-			o.mu.Unlock()
-			if fleet == nil {
-				break
-			}
-		}
-	}
 	h.a.mu.Unlock()
-	// Only an explicit Stop cleans up; a node shutdown leaves the entry for
-	// the sessions it will resume.
-	if fleet != nil && announce {
-		if err := removeFleetTools(fleet); err != nil {
-			h.a.cfg.Logf("agy: removing fleet tools from %s: %v", fleet.cwd, err)
+	if key != "" {
+		h.a.fleetMu.Lock()
+		if o := h.a.owners[key]; o != nil {
+			o.refs--
+			// Only the last explicit Stop cleans up; a node shutdown leaves
+			// the entry for the sessions it will resume.
+			if o.refs <= 0 {
+				delete(h.a.owners, key)
+				if announce {
+					if err := removeFleetTools(o.setup); err != nil {
+						h.a.cfg.Logf("agy: removing fleet tools from %s: %v", o.setup.cwd, err)
+					}
+				}
+			}
 		}
+		h.a.fleetMu.Unlock()
 	}
 	if announce {
 		h.setStatus(model.StatusStopped, "")
 	}
-}
-
-func sameDir(a, b string) bool {
-	if a == "" {
-		a = "."
-	}
-	if b == "" {
-		b = "."
-	}
-	a, _ = filepath.Abs(a)
-	b, _ = filepath.Abs(b)
-	return a == b
 }
 
 // --- stderr ---

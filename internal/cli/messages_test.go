@@ -18,3 +18,14 @@ func TestPrintMessagesAttachments(t *testing.T) {
 		t.Fatalf("table lacks %q:\n%s", want, b.String())
 	}
 }
+
+// A long label is not cut by the text's limit: every attachment shows.
+func TestPrintMessagesLongAttachmentNames(t *testing.T) {
+	var b bytes.Buffer
+	long := strings.Repeat("screenshot-", 6) + "1.png"
+	printMessages(&b, []model.Message{{ID: "m1", Kind: model.MsgNotify, From: "user:cli", To: "h/a", Text: strings.Repeat("word ", 30),
+		Attachments: []model.Attachment{{Name: long, Size: 1 << 10}, {Name: "second.png", Size: 2 << 10}}}})
+	if !strings.Contains(b.String(), "second.png 2 KiB]") || !strings.Contains(b.String(), "…") {
+		t.Fatalf("table:\n%s", b.String())
+	}
+}

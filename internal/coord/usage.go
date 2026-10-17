@@ -79,12 +79,13 @@ func (b *usageBook) record(sessionID string, total model.Usage) {
 
 // usageAdded is what a usage event adds to its session, given the
 // adapter's previous Total (known says there was one). A Total that grew
-// in every field adds its growth; one that shrank, or that equals the
-// event's Last (the first report of a new agent process), started over and
-// adds all of itself.
+// in every field adds its growth; one that shrank, that equals the event's
+// Last, or that is marked Restarted (the first report of a new agent
+// process) started over and adds all of itself.
 func usageAdded(prev model.Usage, known bool, ev model.UsageEvent) model.Usage {
 	cur := ev.Total
 	switch {
+	case ev.Restarted:
 	case known && cur == prev:
 		return model.Usage{} // a repeat
 	case known && usageCovers(cur, prev) && (cur != ev.Last || prev == model.Usage{}):

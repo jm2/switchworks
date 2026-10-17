@@ -346,7 +346,11 @@ func printProbe(stdout, stderr io.Writer, res ProbeResult, err error) int {
 	}
 	fmt.Fprintf(stdout, "%s  %s\n      code %s, answer %q (%.1fs)\n", verdict, who, res.Code, strings.TrimSpace(res.Answer), res.Duration.Seconds())
 	if !res.Pass {
-		if d := closestEdit(normalizeAnswer(res.Answer), res.Code); d >= 0 && d <= len(res.Code)/3 {
+		ans := normalizeAnswer(res.Answer)
+		if ans != "" && strings.Contains(ans, res.Code) {
+			// Probe fails an exact code buried in a long reply.
+			fmt.Fprintln(stdout, "      the model read the code but answered at length; the probe wants only the code")
+		} else if d := closestEdit(ans, res.Code); d >= 0 && d <= len(res.Code)/3 {
 			fmt.Fprintf(stdout, "      the image reached the model, but it misread %d of %d characters; run the probe again to tell a one-off from a weak reader\n", d, len(res.Code))
 		} else {
 			fmt.Fprintln(stdout, "      the model did not read the code: it may not take images, or the provider endpoint may drop them")

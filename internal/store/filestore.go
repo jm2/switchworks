@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -581,12 +582,15 @@ func (s *FileStore) DeleteSession(id string) error {
 		_ = l.f.Close()
 		delete(s.logs, id)
 	}
+	// Save the removal first, so a log that cannot be removed does not
+	// leave the session in state.json.
+	s.dirty = true
+	saveErr := s.saveLocked()
 	// The id is a stored session's, which only a canonical ULID can be.
 	if err := os.Remove(filepath.Join(s.dir, "events", id+".jsonl")); err != nil && !os.IsNotExist(err) {
-		return err
+		return errors.Join(saveErr, err)
 	}
-	s.dirty = true
-	return s.saveLocked()
+	return saveErr
 }
 
 func (s *FileStore) Session(id string) (model.Session, bool) {

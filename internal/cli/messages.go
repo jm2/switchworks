@@ -216,11 +216,12 @@ func printMessages(stdout io.Writer, msgs []model.Message) {
 		if m.Inline {
 			state += " (inline)"
 		}
-		text := m.Text
+		// The 60-rune limit is the text's; the attachments are shown whole.
+		text := oneLine(m.Text, 60)
 		if len(m.Attachments) > 0 {
-			text = attachmentsLabel(m.Attachments) + " " + text
+			text = strings.TrimSpace(oneLine(attachmentsLabel(m.Attachments), 1<<16) + " " + text)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, oneLine(text, 60), m.ID)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, text, m.ID)
 	}
 	tw.Flush()
 }
