@@ -37,7 +37,9 @@ or tailnet:
 - The coordinator's directory (CA key, `coordinator.json`, the admin `cli.json`) is readable
   by anything running as its user. Do not run agents as that user on the coordinator's
   machine. A rootless container under the same user is not a boundary (`podman unshare` and
-  `podman exec` reach its volume); a separate account is.
+  `podman exec` reach its volume); a separate account is, and on Linux and Windows `swk
+  service install --system coordinator` sets one up. Anyone with root or administrator rights
+  on that machine can still read it.
 - The coordinator and the admin token control every node: whoever has either can start
   sessions and run commands, through the harnesses, on all enrolled hosts.
 

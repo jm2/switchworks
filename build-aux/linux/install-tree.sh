@@ -4,12 +4,16 @@
 #
 #   <prefix>/bin/swk, <prefix>/bin/swk-tray
 #   <prefix>/lib/systemd/user/swk-node.service, swk-coordinator.service
+#   <prefix>/lib/systemd/system/swk-coordinator.service
+#   <prefix>/lib/sysusers.d/switchworks.conf
 #   <prefix>/share/applications/io.github.jm2.Switchworks.desktop (the tray)
 #   <prefix>/share/icons/hicolor/*/apps/io.github.jm2.Switchworks.{png,svg}
 #
-# The units are *user* units. Nothing here enables them, creates a system
-# service or a system user: each person turns the node on for themselves
-# with `swk service install` (or `systemctl --user enable --now swk-node`).
+# The node and coordinator *user* units run as whoever enables them: each
+# person turns the node on for themselves with `swk service install`. The
+# *system* unit runs the coordinator as the unprivileged switchworks
+# account, which sysusers.d creates at install; nothing enables it (`sudo
+# swk service install --system coordinator` does).
 #
 #   build-aux/linux/install-tree.sh <destdir> <dir with swk and swk-tray> [prefix]
 set -eu
@@ -33,6 +37,12 @@ for role in node coordinator; do
   sed "s|@SWK@|$prefix/bin/swk|" "$root/internal/service/units/swk-$role.service" > "$unit"
   chmod 0644 "$unit"
 done
+
+unit="$dest$prefix/lib/systemd/system/swk-coordinator.service"
+mkdir -p "$(dirname "$unit")"
+sed "s|@SWK@|$prefix/bin/swk|" "$root/internal/service/units/system/swk-coordinator.service" > "$unit"
+chmod 0644 "$unit"
+install -Dm644 "$root/internal/service/units/switchworks.sysusers" "$dest$prefix/lib/sysusers.d/switchworks.conf"
 
 install -Dm644 "$root/data/$app.desktop" "$dest$prefix/share/applications/$app.desktop"
 for icon in "$root"/data/icons/hicolor/*/apps/"$app".*; do

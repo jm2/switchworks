@@ -132,6 +132,42 @@ jobs:
           if ($p.HasExited) { throw 'the first tray exited' }
           Stop-Process -Id $p.Id
 
+  # The coordinator as a system service under its own account (Linux and
+  # Windows): installed, initialized and checked to run as that account,
+  # with its files kept from the runner's user, which gets an operate token
+  # and runs a node; then restarted and removed.
+  system-service-smoke:
+    name: System service (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        shell: bash
+        run: |
+          mkdir -p bin
+          exe=swk
+          [ "$RUNNER_OS" = Windows ] && exe=swk.exe
+          CGO_ENABLED=0 go build -o "bin/$exe" ./cmd/swk
+
+      - name: Coordinator as a system service
+        shell: bash
+        run: |
+          exe=swk
+          [ "$RUNNER_OS" = Windows ] && exe=swk.exe
+          bash build-aux/ci/system-service-smoke.sh "$PWD/bin/$exe"
+
   container-smoke:
     name: Container (rootless Podman)
     runs-on: ubuntu-24.04
@@ -230,7 +266,7 @@ jobs:
 
       - name: Check scripts and data files
         run: |
-          shellcheck build-aux/linux/*.sh build-aux/macos/*.sh build-aux/winget/*.sh
+          shellcheck build-aux/linux/*.sh build-aux/macos/*.sh build-aux/winget/*.sh build-aux/ci/system-service-smoke.sh
           desktop-file-validate data/io.github.jm2.Switchworks.desktop
           build-aux/winget/render.sh 0.0.0 "$(printf '0%.0s' {1..64})" "$RUNNER_TEMP/winget"
 
@@ -241,8 +277,21 @@ jobs:
           lintian --fail-on error,warning dist/switchworks-amd64.deb
           sudo apt-get install -y ./dist/switchworks-amd64.deb
           swk version
-          systemd-analyze verify /usr/lib/systemd/user/swk-node.service /usr/lib/systemd/user/swk-coordinator.service
-          test -z "$(dpkg-deb --ctrl-tarfile dist/switchworks-amd64.deb | tar -t | grep -E 'postinst|preinst|prerm|postrm' || true)"
+          systemd-analyze verify /usr/lib/systemd/user/swk-node.service /usr/lib/systemd/user/swk-coordinator.service \
+            /usr/lib/systemd/system/swk-coordinator.service
+          systemd-analyze security --no-pager swk-coordinator.service | tail -n 1
+          # The account exists, and nothing is enabled.
+          getent passwd switchworks
+          test "$(systemctl is-enabled swk-coordinator.service || true)" = disabled
+
+      - name: The packaged system coordinator
+        run: |
+          bash build-aux/ci/system-service-smoke.sh /usr/bin/swk
+          sudo apt-get remove -y switchworks
+          test ! -e /usr/lib/systemd/system/swk-coordinator.service
+          # Its account and state are kept (they hold the CA).
+          getent passwd switchworks
+          sudo test -f /var/lib/switchworks/coordinator/coordinator.json
 
   # The same spec COPR builds.
   package-rpm:
@@ -269,7 +318,13 @@ jobs:
           git archive --format=tar.gz --prefix="switchworks-$version/" -o "$top/SOURCES/v$version.tar.gz" HEAD
           rpmbuild --define "_topdir $top" -bb build-aux/rpm/switchworks.spec
           rpm -qlp "$top"/RPMS/*/*.rpm
-          test -z "$(rpm -qp --scripts "$top"/RPMS/*/*.rpm)"
+          rpm -qp --scripts "$top"/RPMS/*/*.rpm | tee scripts.txt
+          # The scripts create the account and handle the system unit, and
+          # enable nothing for users.
+          grep -q 'systemd-sysusers' scripts.txt
+          if grep -q 'user-units\|preset-user' scripts.txt; then exit 1; fi
+          dnf install -y "$top"/RPMS/*/*.rpm
+          getent passwd switchworks
 
   package-arch:
     name: Package (Arch)
@@ -292,7 +347,9 @@ jobs:
           cp build-aux/arch/PKGBUILD /home/builder/switchworks/PKGBUILD
           chown -R builder:builder /home/builder/switchworks
           su builder -c "cd /home/builder/switchworks && SWK_VERSION=v0.0.0-ci makepkg -f --noconfirm"
-          bsdtar -tf /home/builder/switchworks/switchworks-*.pkg.tar.zst
+          bsdtar -tf /home/builder/switchworks/switchworks-*.pkg.tar.zst | tee files.txt
+          grep -qx 'usr/lib/systemd/system/swk-coordinator.service' files.txt
+          grep -qx 'usr/lib/sysusers.d/switchworks.conf' files.txt
 
   # Builds the installer, installs it for the current user without elevation,
   # registers and removes the node's logon task, and uninstalls.

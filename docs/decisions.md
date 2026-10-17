@@ -68,6 +68,27 @@ credential can do, not who it is. Tokens live in the coordinator store as a
 SHA-256 hash, like enrollment tokens (they are 256-bit random, so a slow
 hash adds nothing), and are deleted when revoked.
 
+**The coordinator can have an account of its own.** On a machine where
+agents also run, a coordinator running as you is readable by them: its CA
+key signs node certificates and its admin `cli.json` controls the fleet.
+A rootless container under the same account does not help (`podman
+unshare` reaches its volume). So on Linux and Windows `swk service install
+--system coordinator` makes it a system service under a dedicated
+unprivileged account: `switchworks`, declared in a sysusers.d file the
+packages ship (so the package manager creates it), or Windows' virtual
+account `NT SERVICE\swk-coordinator`, which needs no password and runs only
+that service. Root or an administrator sets it up; the coordinator never
+runs as either. Its unit is sandboxed (no capabilities, read-only system,
+no home directories, system-call filter), which a system unit can do
+without the user namespaces a user unit would need. The service never runs
+a binary a non-administrator could replace: a `swk` outside root-only
+directories is copied to one. `swk --system <command>` runs coordinator
+and CLI commands as the account (on Linux, in a child process with only
+its user and group; on Windows, from the elevated prompt, whose files in
+the coordinator's folder inherit its permissions), never the node or the
+MCP server. The node stays a user service: sessions need your sign-ins.
+macOS waits for a signed installer package that can create the account.
+
 `operate` includes spawning. A person's spawn is not confined like an
 agent's, so an operate token can start an agent with any prompt and any
 sandbox on any host. Leaving spawn out would make operate tokens useless

@@ -10,10 +10,11 @@
 //   - Windows: a Task Scheduler task that starts at logon in the user's
 //     session, with least privilege ("Switchworks node (<user>, <SID>)").
 //
-// Everything runs as the user who installs it: nothing here asks for root or
-// administrator rights, or creates a system service or a system user. The
-// node must run as you, so sessions get your sign-ins, repositories and
-// toolchains.
+// These run as the user who installs them and need no root or administrator
+// rights. The node must run as you, so sessions get your sign-ins,
+// repositories and toolchains. The coordinator can instead be a system
+// service under an account of its own (see system.go), which root or an
+// administrator sets up; it still never runs as root or SYSTEM.
 package service
 
 import (
@@ -49,8 +50,11 @@ var ErrNotInstalled = errors.New("service is not installed")
 // Info describes one role on this machine.
 type Info struct {
 	Role    string `json:"role"`
-	Manager string `json:"manager"` // systemd, launchd, task-scheduler, or none
-	Unit    string `json:"unit"`    // unit name, launchd label or task name
+	Manager string `json:"manager"` // systemd, launchd, task-scheduler, scm, or none
+	Unit    string `json:"unit"`    // unit name, launchd label, task or service name
+	// System: the coordinator's system service, under its own account,
+	// rather than one that runs as this user.
+	System bool `json:"system,omitempty"`
 	// Configured: node.json or coordinator.json exists (enrolled / initialized).
 	Configured bool `json:"configured"`
 	Installed  bool `json:"installed"` // registered with the service manager
@@ -121,6 +125,12 @@ func Query(role string) Info {
 	if s, err := runstatus.Read(in.Dir); err == nil && s.Fresh(time.Now()) {
 		in.Status = &s
 		in.Running = true
+	}
+	// With no coordinator of this user's own, report the system one.
+	if role == Coordinator && !in.Installed && !in.Running {
+		if sys, ok := querySystemInfo(); ok {
+			return sys
+		}
 	}
 	return in
 }
@@ -205,21 +215,8 @@ func Install(role, exe string, noStart bool, out io.Writer) error {
 	if err := checkRole(role); err != nil {
 		return err
 	}
-	if exe == "" {
-		var err error
-		if exe, err = Executable(); err != nil {
-			return err
-		}
-	}
-	exe, err := filepath.Abs(exe)
+	exe, err := resolveExe(exe)
 	if err != nil {
-		return err
-	}
-	// Check (and register) where it really is, not a symlink to it.
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	if err := checkExecutable(exe); err != nil {
 		return err
 	}
 	return install(role, exe, noStart, out)

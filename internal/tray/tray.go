@@ -169,10 +169,16 @@ func hostOnly(hostport string) string {
 }
 
 func coordLine(in service.Info) string {
+	state := "stopped"
 	if in.Running {
-		return "Coordinator: running"
+		state = "running"
 	}
-	return "Coordinator: stopped"
+	if in.System {
+		// Under its own account: started and stopped as root or an
+		// administrator (swk service start --system), not from here.
+		return "Coordinator: " + state + " (system service)"
+	}
+	return "Coordinator: " + state
 }
 
 func iconFor(o service.Overview) Icon {
@@ -193,6 +199,9 @@ func iconFor(o service.Overview) Icon {
 
 func roleItems(a *App, in service.Info, title string, busy bool) []Item {
 	r := in.Role
+	if in.System {
+		return nil
+	}
 	if !in.Configured {
 		hint := "Enroll with: swk node enroll <token>"
 		if r == service.Coordinator {
@@ -240,7 +249,7 @@ func (a *App) view(o service.Overview) View {
 	}
 
 	logs, cfg := o.Node.LogDir, o.ConfigDir
-	if !o.Node.Configured && o.Coordinator.Configured {
+	if !o.Node.Configured && o.Coordinator.Configured && !o.Coordinator.System {
 		logs = o.Coordinator.LogDir
 	}
 	v.Items = append(v.Items, sep,

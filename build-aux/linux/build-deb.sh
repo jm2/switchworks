@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Builds a .deb from prebuilt binaries with dpkg-deb (no debhelper: nothing is
-# enabled or started at install, and there are no maintainer scripts).
+# Builds a .deb from prebuilt binaries with dpkg-deb (no debhelper). Nothing
+# is enabled or started at install; the maintainer scripts only create the
+# coordinator's system account and restart its system service on upgrade if
+# it runs, as dh_installsysusers and dh_installsystemd --no-enable would.
 #
 #   build-aux/linux/build-deb.sh <version> <amd64|arm64> <dir with swk and swk-tray> <output .deb>
 #
@@ -82,17 +84,59 @@ Installed-Size: $installed_size
 Section: devel
 Priority: optional
 Homepage: https://github.com/jm2/switchworks
+Depends: systemd | systemd-sysusers | systemd-standalone-sysusers
 Suggests: gnome-shell-extension-appindicator
 Description: control plane for coding agents across your machines
  Switchworks shows every coding-agent session (Codex, Goose and other ACP
  agents) on every host in one place, from a browser, a phone or the swk
  command line, and lets agents on different machines message each other.
  .
- This package installs swk, the swk-tray status icon, and systemd user
- units for the node and the coordinator. Nothing is enabled at install: each
- user runs "swk service install" (or "systemctl --user enable --now
- swk-node") to run the node as themselves.
+ This package installs swk, the swk-tray status icon, systemd user units for
+ the node and the coordinator, and a system unit that runs the coordinator
+ as its own switchworks account. Nothing is enabled at install: each user
+ runs "swk service install" to run the node as themselves, and "sudo swk
+ service install --system coordinator" sets up the system coordinator.
 EOF
+cat > "$stage/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+# The account the coordinator's system service runs as.
+if [ "$1" = configure ]; then
+	systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} switchworks.conf
+fi
+# Nothing is enabled; a coordinator that runs restarts on the new binary.
+if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigure ] || [ "$1" = abort-remove ]; then
+	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+		if [ -n "$2" ]; then
+			deb-systemd-invoke try-restart swk-coordinator.service >/dev/null || true
+		fi
+	fi
+fi
+exit 0
+EOF
+cat > "$stage/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+# Stop and disable the system coordinator when the package goes. Its
+# account and /var/lib/switchworks (the CA and fleet state) are kept.
+if [ "$1" = remove ]; then
+	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+		deb-systemd-invoke stop swk-coordinator.service >/dev/null || true
+	fi
+	deb-systemd-helper disable swk-coordinator.service >/dev/null || true
+fi
+exit 0
+EOF
+cat > "$stage/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+	systemctl --system daemon-reload >/dev/null || true
+fi
+exit 0
+EOF
+chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/prerm" "$stage/DEBIAN/postrm"
 (cd "$stage" && find usr -type f -print0 | LC_ALL=C sort -z | xargs -0 md5sum) > "$stage/DEBIAN/md5sums"
 chmod 0644 "$stage/DEBIAN/control" "$stage/DEBIAN/md5sums"
 

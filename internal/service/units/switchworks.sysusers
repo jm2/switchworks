@@ -1,0 +1,3 @@
+# The account the Switchworks coordinator's system service runs as
+# (swk-coordinator.service). It has no password and no login shell.
+u switchworks - "Switchworks coordinator" /var/lib/switchworks

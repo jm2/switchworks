@@ -22,6 +22,7 @@ import (
 	"github.com/jm2/switchworks/internal/runstatus"
 	"github.com/jm2/switchworks/internal/store"
 	"github.com/jm2/switchworks/internal/version"
+	"github.com/jm2/switchworks/internal/winsvc"
 )
 
 // Config is coordinator.json.
@@ -165,6 +166,11 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 		// To check the CA a phone or browser downloads from /ca.crt.
 		fmt.Fprintf(stdout, "  CA SHA-256 fingerprint (check it when installing ca.crt):\n    %s\n", colonHex(pki.Fingerprint(ca.Cert)))
 	}
+	if os.Getenv("SWK_SYSTEM") == "1" {
+		// `swk --system coordinator init`: the system service's own files.
+		fmt.Fprint(stdout, systemNext)
+		return 0
+	}
 	fmt.Fprintf(stdout, "\nNext: swk coordinator run, then on each workstation:\n  ssh <this host> swk coordinator enroll-token <host> | swk node enroll -\n")
 	fmt.Fprint(stdout, `
 The admin token controls the whole fleet. Keep a copy somewhere safe (a
@@ -181,6 +187,34 @@ and install that file as ~/.config/swk/cli.json there (or --scope read).
 	}
 	return 0
 }
+
+// systemNext is what to do after `swk --system coordinator init` (with sudo
+// on Linux; from an elevated prompt, without it, on Windows).
+const systemNext = `
+This is the system coordinator's account and directory: agents running as
+you on this machine cannot read them. Next:
+
+  sudo swk service start --system coordinator
+
+For the CLI as yourself on this machine, a token that cannot manage tokens
+or hosts:
+
+  mkdir -p ~/.config/swk
+  (umask 077; sudo swk --system token create "$USER" --scope operate --cli-config > ~/.config/swk/cli.json)
+
+To run a node here too, as you:
+
+  sudo swk --system coordinator enroll-token "$(hostname)" | swk node enroll -
+  swk service install
+
+Other workstations enroll the same way, with
+` + "`ssh <this host> sudo swk --system coordinator enroll-token <host> | swk node enroll -`" + `.
+The admin token (` + "`sudo swk --system coordinator cli-config`" + ` prints its cli.json)
+controls the whole fleet: keep a copy in a password manager.
+
+On Windows, run these from an elevated prompt without sudo, and save the
+operate token's cli.json as %AppData%\swk\cli.json from a normal one.
+`
 
 // colonHex formats a hex fingerprint the way certificate viewers show it.
 func colonHex(h string) string {
@@ -200,6 +234,7 @@ func mainRun(args []string, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", paths.CoordinatorDir(), "coordinator directory")
 	logFile := fs.String("log-file", "", "append the coordinator's log to this file instead of stderr")
+	winService := fs.Bool("windows-service", false, "run as the Windows service (swk service install --system registers it so)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -212,25 +247,39 @@ func mainRun(args []string, stderr io.Writer) int {
 		defer f.Close()
 		stderr = f
 	}
+	if *winService {
+		code, err := winsvc.Run(func(ctx context.Context) int { return runCoordinator(ctx, *dir, stderr) })
+		if err != nil {
+			fmt.Fprintln(stderr, "coordinator:", err)
+			return 1
+		}
+		return code
+	}
+	return runCoordinator(context.Background(), *dir, stderr)
+}
+
+// runCoordinator runs the coordinator in dir until parent ends or the
+// process is asked to stop.
+func runCoordinator(parent context.Context, dir string, stderr io.Writer) int {
 	logger := log.New(stderr, "coordinator: ", log.LstdFlags)
-	cfg, err := LoadConfig(*dir)
+	cfg, err := LoadConfig(dir)
 	if err != nil {
 		logger.Printf("load config (run `swk coordinator init` first): %v", err)
 		return 1
 	}
-	lock, err := runstatus.Lock(*dir)
+	lock, err := runstatus.Lock(dir)
 	if err != nil {
 		logger.Print(err)
 		return 1
 	}
 	defer lock.Close()
-	st, err := store.OpenFileStore(filepath.Join(*dir, "data"))
+	st, err := store.OpenFileStore(filepath.Join(dir, "data"))
 	if err != nil {
 		logger.Printf("open store: %v", err)
 		return 1
 	}
 	defer st.Close()
-	srv, err := NewServer(*dir, cfg, st, logger.Printf)
+	srv, err := NewServer(dir, cfg, st, logger.Printf)
 	if err != nil {
 		logger.Print(err)
 		return 1
@@ -245,7 +294,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Print(err)
 		return 1
 	}
-	ctx, cancel := runstatus.StopContext(context.Background(), *dir)
+	ctx, cancel := runstatus.StopContext(parent, dir)
 	defer cancel()
 	go func() {
 		if err := srv.ServeNodes(nodeLn); err != nil && ctx.Err() == nil {
@@ -277,7 +326,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		ui = "https://" + cfg.PublicAPI
 	}
 	logger.Printf("%s %s: API on %s, nodes on %s, web UI at %s", version.Name, version.Version, cfg.APIListen, cfg.NodeListen, ui)
-	status := runstatus.Start(*dir, runstatus.Status{Role: "coordinator", WebUI: strings.TrimSuffix(ui, "/") + "/"})
+	status := runstatus.Start(dir, runstatus.Status{Role: "coordinator", WebUI: strings.TrimSuffix(ui, "/") + "/"})
 	defer status.Stop()
 	if err := srv.ServeAPI(ctx, apiLn); err != nil {
 		logger.Printf("API: %v", err)

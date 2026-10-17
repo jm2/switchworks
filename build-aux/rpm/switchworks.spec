@@ -27,6 +27,9 @@ BuildRequires:  golang >= 1.21
 BuildRequires:  make
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  desktop-file-utils
+# The coordinator's system service and its account.
+%{?systemd_requires}
+Requires(pre):  systemd
 
 # The tray icon needs a StatusNotifierItem host; GNOME has one through the
 # AppIndicator extension.
@@ -37,10 +40,11 @@ Switchworks shows every coding-agent session (Codex, Goose and other ACP
 agents) on every host in one place, from a browser, a phone or the swk
 command line, and lets agents on different machines message each other.
 
-This package installs swk, the swk-tray status icon, and systemd user units
-for the node and the coordinator. Nothing is enabled at install: each user
-runs "swk service install" (or "systemctl --user enable --now swk-node") to
-run the node as themselves.
+This package installs swk, the swk-tray status icon, systemd user units for
+the node and the coordinator, and a system unit that runs the coordinator as
+its own switchworks account. Nothing is enabled at install: each user runs
+"swk service install" to run the node as themselves, and "sudo swk service
+install --system coordinator" sets up the system coordinator.
 
 %prep
 %autosetup -p1 -n %{name}-%{version}
@@ -62,6 +66,25 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jm2.Switchw
 # No %%systemd_user_post: it would enable the units for every user by preset.
 # Each user enables the node for themselves.
 
+# %%pre creates the system coordinator's account from the sysusers.d line
+# this package ships (what %%sysusers_create_compat expands to; newer rpm
+# also creates it from the file itself). The system unit is not enabled by
+# preset (Fedora's presets leave it off); it is restarted on upgrade if it
+# runs, and stopped and disabled on removal.
+%pre
+systemd-sysusers --replace=%{_sysusersdir}/switchworks.conf - <<'EOF' || :
+u switchworks - "Switchworks coordinator" /var/lib/switchworks
+EOF
+
+%post
+%systemd_post swk-coordinator.service
+
+%preun
+%systemd_preun swk-coordinator.service
+
+%postun
+%systemd_postun_with_restart swk-coordinator.service
+
 %files
 %license LICENSE internal/web/assets/fonts/OFL-Onest.txt internal/web/assets/fonts/OFL-JetBrainsMono.txt
 %doc README.md
@@ -69,10 +92,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jm2.Switchw
 %{_bindir}/swk-tray
 %{_userunitdir}/swk-node.service
 %{_userunitdir}/swk-coordinator.service
+%{_unitdir}/swk-coordinator.service
+%{_sysusersdir}/switchworks.conf
 %{_datadir}/applications/io.github.jm2.Switchworks.desktop
 %{_datadir}/icons/hicolor/*/apps/io.github.jm2.Switchworks.png
 %{_datadir}/icons/hicolor/scalable/apps/io.github.jm2.Switchworks.svg
 
 %changelog
 * Thu Oct 15 2026 Switchworks Contributors - 0.1.0-1
-- Initial package: swk, swk-tray, systemd user units.
+- Initial package: swk, swk-tray, systemd user units, and a system unit
+  that runs the coordinator as its own switchworks account.

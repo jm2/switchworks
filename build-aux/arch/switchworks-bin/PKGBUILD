@@ -1,13 +1,15 @@
 # Maintainer: Switchworks Contributors <https://github.com/jm2/switchworks>
 #
 # AUR package: the prebuilt release, repackaged from the release's .deb files
-# (static Go binaries, systemd user units, desktop entry and icons). To
-# update: set pkgver, run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`,
-# and check the sums against the release's SHA256SUMS.txt.
+# (static Go binaries, systemd units, the sysusers.d entry for the
+# coordinator's system account, which pacman's hooks create, desktop entry
+# and icons). To update: set pkgver, run `updpkgsums` and `makepkg
+# --printsrcinfo > .SRCINFO`, and check the sums against the release's
+# SHA256SUMS.txt.
 pkgname=switchworks-bin
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Control plane for coding agents across your machines (swk, tray icon, systemd user units)"
+pkgdesc="Control plane for coding agents across your machines (swk, tray icon, systemd units)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/jm2/switchworks"
 license=('GPL-3.0-or-later' 'OFL-1.1')
