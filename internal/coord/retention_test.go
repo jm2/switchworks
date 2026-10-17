@@ -14,10 +14,19 @@ import (
 	"github.com/jm2/switchworks/internal/wire"
 )
 
+// pruneServer is testServer without its router's own minute tidy, which
+// would prune too, concurrently with the test's calls (on the router's
+// goroutine only, in a real coordinator).
+func pruneServer(t *testing.T) *Server {
+	s := testServer(t, Guards{})
+	s.router.close()
+	return s
+}
+
 // Ended sessions go after the retention, with their event logs; live
 // ones, errored ones (still on their node) and recent ones stay.
 func TestPruneSessions(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	now := time.Now()
 	old := now.Add(-defaultSessionRetention - time.Hour)
 	aged := func(status string) func(*model.Session) {
@@ -94,7 +103,7 @@ func TestPruneSessions(t *testing.T) {
 
 // RemoveSession deletes an ended session at once, and refuses a live one.
 func TestRemoveSession(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	live := addSession(t, s, "devbox", "live", func(x *model.Session) { x.ID = ulid.New() })
 	done := addSession(t, s, "devbox", "done", func(x *model.Session) {
 		x.ID = ulid.New()
@@ -119,7 +128,7 @@ func TestRemoveSession(t *testing.T) {
 
 // Deleting history needs admin.
 func TestRemoveSessionScope(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	for _, r := range s.apiRoutes() {
 		if r.pattern == "DELETE /v1/sessions/{id}" {
 			if r.scope != scopeAdmin {
@@ -134,7 +143,7 @@ func TestRemoveSessionScope(t *testing.T) {
 // Sessions above a live one in the spawn chain are kept, so its spawn depth
 // cannot shrink; swk rm refuses them too.
 func TestPruneKeepsAncestorsOfLive(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	now := time.Now()
 	old := now.Add(-defaultSessionRetention - time.Hour)
 	stoppedOld := func(parent string) func(*model.Session) {
@@ -175,7 +184,7 @@ func TestPruneKeepsAncestorsOfLive(t *testing.T) {
 // A removed session's node cannot bring it back: the tombstone refuses
 // adopting it, and its id stays taken.
 func TestRetiredNotAdopted(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	done := addSession(t, s, "devbox", "done", func(x *model.Session) {
 		x.ID = ulid.New()
 		x.Status = model.StatusGone
@@ -194,7 +203,7 @@ func TestRetiredNotAdopted(t *testing.T) {
 
 // A large backlog goes in batches, one per host per tidy.
 func TestPruneBatches(t *testing.T) {
-	s := testServer(t, Guards{})
+	s := pruneServer(t)
 	old := time.Now().Add(-defaultSessionRetention - time.Hour)
 	for i := range 250 {
 		addSession(t, s, "devbox", fmt.Sprintf("s%d", i), func(x *model.Session) {

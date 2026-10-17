@@ -392,8 +392,10 @@ func startSystem() error {
 	}
 	// It runs: from now on it starts at boot too (not before, so a
 	// coordinator that cannot start is not retried at every boot).
-	_, err := sc("config", systemUnitName, "start=", "auto")
-	return err
+	if _, err := sc("config", systemUnitName, "start=", "auto"); err != nil {
+		return fmt.Errorf("the coordinator service is running, but could not be set to start at boot: %w (run `%s service start --system coordinator` again)", err, version.Bin)
+	}
+	return nil
 }
 
 func stopSystem() error {
