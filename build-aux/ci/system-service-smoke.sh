@@ -38,15 +38,19 @@ trap cleanup EXIT
 stop_node() {
   [ -n "$nodepid" ] || return 0
   if [ $os = windows ]; then
-    # Git Bash has no /proc/<pid>/winpid: the node's status file has its
-    # Windows pid.
-    local winpid
-    winpid=$(SWK_HOME="$work/node-home" "$swk" service status --json node | tr -d ' \r\n' | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
-    [ -n "$winpid" ] && taskkill //F //PID "$winpid" >/dev/null 2>&1
+    # Git Bash has no /proc/<pid>/winpid, and `taskkill /IM swk.exe` would
+    # stop the coordinator's service too: stop the swk.exe running this
+    # node, found by its command line.
+    cat >"$work/stop-node.ps1" <<'PS'
+Get-CimInstance Win32_Process -Filter "Name = 'swk.exe'" |
+  Where-Object { $_.CommandLine -match ' node run' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+PS
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$work/stop-node.ps1")" || true
   else
-    kill "$nodepid" 2>/dev/null
+    kill "$nodepid" 2>/dev/null || true
   fi
-  wait "$nodepid" 2>/dev/null
+  wait "$nodepid" 2>/dev/null || true
   nodepid=
 }
 
