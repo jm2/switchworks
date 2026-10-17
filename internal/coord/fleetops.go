@@ -354,7 +354,18 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 		}
 		return fmt.Errorf("cwd %q is outside %s; guards.spawn_cwd_roots allows other directories", spec.Cwd, p.Cwd)
 	}
-	spec.CwdRoot = root
+	spec.CwdRoot, spec.ByAgent = root, true
+	// A parent that can write in its cwd could swap any directory below it
+	// for a symlink once its child has been checked there. So its child
+	// runs in that cwd itself, or in a configured root outside it; the node
+	// checks again with symlinks resolved.
+	if parentRoot != "" && s.writesCwd(p) {
+		if pathWithin(p.Cwd, spec.Cwd) && !pathWithin(spec.Cwd, p.Cwd) {
+			return fmt.Errorf("this session can write in %s, so it may spawn only there (or in guards.spawn_cwd_roots outside it), not in %q",
+				p.Cwd, spec.Cwd)
+		}
+		spec.NotBelow = p.Cwd
+	}
 	for k := range spec.Labels {
 		if reservedLabels[k] || strings.HasPrefix(k, "owner.") {
 			return fmt.Errorf("label %q is reserved for people", k)
@@ -386,6 +397,11 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 	if spec.Sandbox == "" {
 		spec.Sandbox = "read-only"
 	}
+	// agy's --sandbox restricts only its terminal: its edit tools still
+	// write, so an agy child would edit files its read-only parent cannot.
+	if spec.Harness == "agy" && p.Harness != "agy" && spec.Sandbox == "read-only" && !g.AllowUnsandboxedSpawn {
+		return errors.New("agy cannot keep a session read-only, and this child would be; guards.allow_unsandboxed_spawn allows it")
+	}
 	spec.Prompt, spec.Attachments = "", nil // sent as a message once the child exists
 	if !s.router.allow("spawn|"+p.ID, g.SpawnPerMinute) {
 		return fmt.Errorf("spawn rate limit: at most %d a minute", g.SpawnPerMinute)
@@ -400,6 +416,16 @@ func (s *Server) enforcesSandbox(host, harness string) bool {
 		return contains(n.hello.Sandboxed, harness)
 	}
 	return harness == "codex" || harness == "agy" || harness == ""
+}
+
+// writesCwd reports whether p's sandbox confines it yet lets it write in its
+// cwd: workspace-write (or unknown), or agy in any sandbox (its edit tools
+// ignore read-only). Sessions without a sandbox can reach anything anyway.
+func (s *Server) writesCwd(p model.Session) bool {
+	if p.Sandbox == "danger-full-access" || !s.enforcesSandbox(p.Host, p.Harness) {
+		return false
+	}
+	return p.Sandbox != "read-only" || p.Harness == "agy"
 }
 
 func orDefault(v, d string) string {

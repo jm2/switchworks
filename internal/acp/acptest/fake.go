@@ -26,6 +26,8 @@
 //   - "CRASH":   exits mid-turn
 //   - "REFUSE":  stops with "refusal"
 //   - "FAIL":    answers session/prompt with an error
+//   - "LATEPERM": ends the turn, then asks permission with no turn running;
+//     the answer is kept in the session's LatePerm
 //   - with image blocks: replies "echo: <prompt>" plus each image's type,
 //     size and SHA-256, or the vision probe's code (codextest.SeeImages)
 //   - otherwise: replies "echo: <prompt>" in three chunks
@@ -70,7 +72,8 @@ const (
 	// opts in to goose's custom notifications: each turn adds 1000 input
 	// and 50 output tokens to the session's accumulated usage, sent in a
 	// _goose/unstable/session/update usage_update after session/new,
-	// session/load and each turn.
+	// session/load and each turn ("FAIL" counts as a model request made
+	// before the error, and sends it before failing).
 	EnvGooseUsage = "SWK_FAKE_ACP_GOOSEUSAGE"
 )
 
@@ -103,6 +106,9 @@ type Session struct {
 	Images     []ImageRec        `json:"images,omitempty"` // image blocks received
 	AccIn      int64             `json:"acc_in,omitempty"` // accumulated usage (EnvGooseUsage)
 	AccOut     int64             `json:"acc_out,omitempty"`
+	// LatePerm is the answer to LATEPERM's request: "cancelled",
+	// "selected <optionId>", or "unanswered" after 5 seconds.
+	LatePerm string `json:"late_perm,omitempty"`
 }
 
 // ImageRec records an image block the fake received.
@@ -411,6 +417,34 @@ func (a *agent) handle(line []byte) {
 
 // ask sends a permission request and waits for the answer or a cancel.
 func (a *agent) ask(sid string, toolCall map[string]any, cancel chan struct{}) (outcome, optionID string) {
+	ch := a.requestPermission(sid, toolCall)
+	select {
+	case r := <-ch:
+		return permOutcome(r)
+	case <-cancel:
+		// The client must still answer "cancelled"; wait briefly for it.
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+		}
+		return "cancelled", ""
+	}
+}
+
+func permOutcome(r json.RawMessage) (outcome, optionID string) {
+	var resp struct {
+		Outcome struct {
+			Outcome  string `json:"outcome"`
+			OptionID string `json:"optionId"`
+		} `json:"outcome"`
+	}
+	_ = json.Unmarshal(r, &resp)
+	return resp.Outcome.Outcome, resp.Outcome.OptionID
+}
+
+// requestPermission sends a permission request; its answer arrives on the
+// returned channel.
+func (a *agent) requestPermission(sid string, toolCall map[string]any) chan json.RawMessage {
 	a.mu.Lock()
 	a.nextReq++
 	id := fmt.Sprintf("perm-%d-%d", os.Getpid(), a.nextReq)
@@ -424,24 +458,7 @@ func (a *agent) ask(sid string, toolCall map[string]any, cancel chan struct{}) (
 			map[string]any{"optionId": "reject_once", "name": "No", "kind": "reject_once"},
 			map[string]any{"optionId": "reject_always", "name": "Never", "kind": "reject_always"},
 		}}})
-	select {
-	case r := <-ch:
-		var resp struct {
-			Outcome struct {
-				Outcome  string `json:"outcome"`
-				OptionID string `json:"optionId"`
-			} `json:"outcome"`
-		}
-		_ = json.Unmarshal(r, &resp)
-		return resp.Outcome.Outcome, resp.Outcome.OptionID
-	case <-cancel:
-		// The client must still answer "cancelled"; wait briefly for it.
-		select {
-		case <-ch:
-		case <-time.After(2 * time.Second):
-		}
-		return "cancelled", ""
-	}
+	return ch
 }
 
 func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byte, cancel chan struct{}) {
@@ -485,11 +502,34 @@ func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byt
 	case strings.Contains(text, "FAIL"):
 		a.mu.Lock()
 		delete(a.cancel, sid)
+		if a.goose {
+			s.AccIn += 1000
+			s.AccOut += 50
+			a.save(s)
+			a.gooseUsage(s)
+		}
 		a.mu.Unlock()
 		a.send(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": "provider error", "data": "no API key"}})
 	case strings.Contains(text, "CRASH"):
 		msg("about to crash")
 		os.Exit(3)
+	case strings.Contains(text, "LATEPERM"):
+		msg("done")
+		finish("end_turn", "done")
+		time.Sleep(100 * time.Millisecond)
+		ch := a.requestPermission(sid, map[string]any{"toolCallId": "tc-late", "title": "shell · touch late",
+			"kind": "execute", "status": "pending", "rawInput": map[string]any{"command": "touch late"}})
+		late := "unanswered"
+		select {
+		case r := <-ch:
+			outcome, opt := permOutcome(r)
+			late = strings.TrimSpace(outcome + " " + opt)
+		case <-time.After(5 * time.Second):
+		}
+		a.mu.Lock()
+		s.LatePerm = late
+		a.save(s)
+		a.mu.Unlock()
 	case strings.Contains(text, "REFUSE"):
 		finish("refusal", "")
 	case strings.Contains(text, "SLOW"):

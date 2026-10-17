@@ -7,6 +7,7 @@ package proc
 import (
 	"fmt"
 	"os/exec"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -57,8 +58,13 @@ type jobObjectExtendedLimitInformationT struct {
 	PeakJobMemoryUsed     uintptr
 }
 
+// platformState holds the job. mu orders release, which runs as the
+// process exits, against kill from Stop or Kill, so kill never uses a
+// handle that was closed (and possibly reused for another session's job).
 type platformState struct {
-	job syscall.Handle
+	mu       sync.Mutex
+	job      syscall.Handle
+	released bool
 }
 
 func setupCmd(cmd *exec.Cmd) {
@@ -93,22 +99,37 @@ func (s *platformState) attach(cmd *exec.Cmd) error {
 		syscall.CloseHandle(syscall.Handle(job))
 		return fmt.Errorf("AssignProcessToJobObject: %w", err)
 	}
+	s.mu.Lock()
 	s.job = syscall.Handle(job)
+	s.mu.Unlock()
 	return nil
 }
 
+// release closes the job once the leader has exited; the job kills
+// whatever is left in it as the handle closes.
 func (s *platformState) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.released = true
 	if s.job != 0 {
 		syscall.CloseHandle(s.job)
 		s.job = 0
 	}
 }
 
+// endTree has nothing to do: release, right after it, closes the job.
+func (s *platformState) endTree(cmd *exec.Cmd) {}
+
 // terminate has no gentle equivalent for console-less children; stdin EOF
 // (sent by Stop) is the polite signal, so this goes straight to the job.
 func (s *platformState) terminate(cmd *exec.Cmd) {}
 
 func (s *platformState) kill(cmd *exec.Cmd) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.released {
+		return nil // exited, and the job with it
+	}
 	if s.job != 0 {
 		r, _, err := procTerminateJobObject.Call(uintptr(s.job), 1)
 		if r == 0 {

@@ -42,7 +42,7 @@ func LoadConfig(dir string) (Config, error) {
 // Main implements `swk node ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: swk node enroll <token> | swk node run [flags]")
+		fmt.Fprintln(stderr, "usage: swk node enroll - | swk node run [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -158,9 +158,10 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 		token = strings.TrimSpace(string(b))
 	case fs.NArg() == 1:
 		token = fs.Arg(0)
+		fmt.Fprintln(stderr, "swk: warning: a token on the command line is visible to other users of this machine (ps); pass - and paste it on stdin, or set SWK_ENROLL_TOKEN")
 	case fs.NArg() == 0 && token != "":
 	default:
-		fmt.Fprintln(stderr, "usage: swk node enroll [--dir DIR] [--force] <token | - >  (or set SWK_ENROLL_TOKEN)")
+		fmt.Fprintln(stderr, "usage: swk node enroll [--dir DIR] [--force] -   (paste the token on stdin)\n       SWK_ENROLL_TOKEN=... swk node enroll [--dir DIR] [--force]")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -213,7 +214,7 @@ func mainRun(args []string, stderr io.Writer) int {
 	logger := log.New(stderr, "node: ", log.LstdFlags)
 	cfg, err := LoadConfig(*dir)
 	if err != nil {
-		logger.Printf("load config (run `swk node enroll <token>` first): %v", err)
+		logger.Printf("load config (run `swk node enroll -` first): %v", err)
 		return 1
 	}
 	lock, err := runstatus.Lock(*dir)

@@ -105,6 +105,9 @@ func (c *Client) Done() <-chan struct{} { return c.conn.Done() }
 // Close stops the app-server process.
 func (c *Client) Close() error { return c.proc.Stop(4 * time.Second) }
 
+// Kill ends the app-server process tree at once.
+func (c *Client) Kill() error { return c.proc.Kill() }
+
 // Pid returns the app-server process id.
 func (c *Client) Pid() int { return c.proc.Pid() }
 

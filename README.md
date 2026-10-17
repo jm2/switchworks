@@ -470,6 +470,15 @@ If a workstation is lost or compromised, `swk hosts rm <host>` revokes its
 certificate and `swk token rm <name>` its CLI token. Enrolling a host
 again also replaces its old certificate.
 
+The coordinator pins each host's node certificate when it enrolls, and
+refuses any other certificate for that name. Hosts enrolled before
+pinning have no pin yet: the first certificate the fleet CA signed for
+that name to connect is pinned, which could be an older certificate for
+the same name rather than the current one. The coordinator logs a
+`WARNING` for each such host when it starts; enroll those hosts again to
+pin their certificates now. (Refusing them instead would have cut every
+existing host off at the upgrade.)
+
 ### Harnesses
 
 Each node offers the harnesses it finds on that machine. Configure them in
@@ -512,7 +521,11 @@ swk dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 
 `swk dev run` drives one turn of any harness directly, without a node or
 coordinator: a quick check that a harness works on a machine. With
-`--record FILE` it captures the raw protocol stream.
+`--record FILE` it captures the raw protocol stream, in a file only you
+can read (0600; on Windows the file takes its folder's permissions, so
+keep it in your profile). Like the fleet commands, it strips terminal escapes and
+invisible characters from what agents and harnesses print, so a command
+in an approval prompt shows as it would run.
 
 `swk dev vision-probe [--harness goose] [--model M]` sends the harness an
 image with a random code and reports PASS if the model reads it back: run

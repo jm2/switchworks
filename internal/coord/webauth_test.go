@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -287,5 +289,186 @@ func TestFleetStream(t *testing.T) {
 	ev := next()
 	if ev[0] != "message" || !strings.Contains(ev[1], `"text":"ping"`) || !strings.Contains(ev[1], `"from":"user:ops"`) {
 		t.Fatalf("message event: %v", ev)
+	}
+}
+
+func TestSignOutBounded(t *testing.T) {
+	dir := t.TempDir()
+	a, err := loadWebAuth(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	admin, tok := grant{scope: scopeAdmin}, grant{scope: scopeRead, tokenID: ulid.New()}
+	valid := func(c string, at time.Time) bool { _, ok := a.validCookie(c, at); return ok }
+	early := a.newCookie(now, admin, time.Time{}) // another browser, signed in first
+	other := a.newCookie(now, tok, time.Time{})   // another credential's browser
+	var first string
+	for i := 0; i < maxRevokedPerCred+50; i++ {
+		c := a.newCookie(now.Add(time.Duration(i+1)*time.Millisecond), admin, time.Time{})
+		if i == 0 {
+			first = c
+		}
+		if err := a.revoke(c, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	late := a.newCookie(now.Add(time.Second), admin, time.Time{})
+	if n := len(a.revoked.Cookies); n > maxRevokedPerCred {
+		t.Fatalf("%d sign-outs kept, want at most %d", n, maxRevokedPerCred)
+	}
+	// Folding signs out what came before the folded cookies, and nothing
+	// newer or of another credential.
+	if valid(first, now) || valid(early, now) {
+		t.Fatal("folded sign-out let a cookie back in")
+	}
+	if !valid(late, now) || !valid(other, now) {
+		t.Fatal("folding signed out a newer browser or another credential")
+	}
+	again, err := loadWebAuth(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := again.validCookie(first, now); ok {
+		t.Fatal("cutoff not persisted")
+	}
+	if _, ok := again.validCookie(late, now); !ok {
+		t.Fatal("cookie after the cutoff refused after a reload")
+	}
+}
+
+func TestSignOutOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	a, _ := loadWebAuth(dir)
+	now := time.Now()
+	c := a.newCookie(now, grant{scope: scopeAdmin}, time.Time{})
+	parsed, _ := a.parseCookie(c)
+	old, _ := json.Marshal(map[string]time.Time{parsed.id: time.Unix(parsed.expires, 0)})
+	if err := os.WriteFile(a.revokePath, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := loadWebAuth(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.validCookie(c, now); ok {
+		t.Fatal("sign-out from the old file format not honored")
+	}
+	// A corrupt file is not ignored: the coordinator still starts, with a
+	// new key that signs every browser out, signed-out ones included.
+	other := b.newCookie(now, grant{scope: scopeAdmin}, time.Time{})
+	if err := os.WriteFile(a.revokePath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := loadWebAuth(dir)
+	if err != nil {
+		t.Fatalf("corrupt sign-out file stopped startup: %v", err)
+	}
+	if r.notice == "" {
+		t.Fatal("repair not reported")
+	}
+	for _, ck := range []string{c, other} {
+		if _, ok := r.validCookie(ck, now); ok {
+			t.Fatal("a cookie from before the repair still works")
+		}
+	}
+	if aside, _ := filepath.Glob(a.revokePath + ".corrupt-*"); len(aside) != 1 {
+		t.Fatalf("corrupt file not kept aside: %v", aside)
+	}
+	fresh := r.newCookie(now, grant{scope: scopeAdmin}, time.Time{})
+	if _, ok := r.validCookie(fresh, now); !ok {
+		t.Fatal("new sign-ins refused after the repair")
+	}
+}
+
+func TestSignOutNotSaved(t *testing.T) {
+	e := newWebEnv(t)
+	r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil)
+	ck := r.Cookies()[0]
+	cookie := map[string]string{"Cookie": ck.Name + "=" + ck.Value}
+	// A directory where the file goes makes the write fail.
+	if err := os.Mkdir(e.srv.web.revokePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.do(t, "POST", "/ui/logout", "", cookie); r.StatusCode != 500 {
+		t.Fatalf("unsaved sign-out reported as %d", r.StatusCode)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", cookie); r.StatusCode != 401 {
+		t.Fatalf("cookie still works after an unsaved sign-out: %d", r.StatusCode)
+	}
+}
+
+func TestBearerThrottle(t *testing.T) {
+	e := newWebEnv(t)
+	for i := 0; i < maxFailures; i++ {
+		if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 401 {
+			t.Fatalf("bad bearer %d: %d", i, r.StatusCode)
+		}
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer " + e.token}); r.StatusCode != 429 {
+		t.Fatalf("bearer guesses not throttled: %d", r.StatusCode)
+	}
+	// Sign-ins share the count.
+	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
+		t.Fatalf("sign-in after bearer guesses: %d", r.StatusCode)
+	}
+}
+
+func TestFailuresEvictOldest(t *testing.T) {
+	a, _ := loadWebAuth(t.TempDir())
+	now := time.Now()
+	bad := func() bool { return false }
+	for i := 0; i < maxFailures; i++ {
+		a.checkToken("attacker", now, bad)
+	}
+	// A flood of other clients, all failing more recently than the attacker
+	// but within the minute.
+	for i := 0; i < 2*maxClients; i++ {
+		a.checkToken(fmt.Sprintf("10.%d.%d.0/24", i>>8, i&0xff), now.Add(time.Second), bad)
+	}
+	if len(a.failures) > maxClients {
+		t.Fatalf("%d clients tracked", len(a.failures))
+	}
+	// The quietest clients are forgotten first: one that failed last keeps
+	// its count through another flood.
+	for i := 0; i < maxFailures; i++ {
+		a.checkToken("busy", now.Add(2*time.Second), bad)
+	}
+	for i := 0; i < maxClients; i++ {
+		a.checkToken(fmt.Sprintf("11.%d.%d.0/24", i>>8, i&0xff), now.Add(time.Second), bad)
+	}
+	if _, th := a.checkToken("busy", now.Add(3*time.Second), func() bool { return true }); !th {
+		t.Fatal("a flood of new clients reset an active client's count")
+	}
+}
+
+func TestHostCookieOverHTTPS(t *testing.T) {
+	e := newWebEnv(t)
+	// The test server is plain HTTP on loopback, as behind tailscale serve.
+	https := map[string]string{"X-Forwarded-Proto": "https"}
+	r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, https)
+	if r.StatusCode != 200 || len(r.Cookies()) != 1 {
+		t.Fatalf("sign-in: %d %v", r.StatusCode, r.Cookies())
+	}
+	ck := r.Cookies()[0]
+	if ck.Name != secureCookieName || !ck.Secure || ck.Path != "/" || ck.Domain != "" {
+		t.Fatalf("cookie over HTTPS: %+v", ck)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Cookie": ck.Name + "=" + ck.Value}); r.StatusCode != 200 {
+		t.Fatalf("API with the __Host- cookie: %d", r.StatusCode)
+	}
+	// A cookie under the old name still works until it expires.
+	old := e.srv.web.newCookie(time.Now(), grant{scope: scopeAdmin}, time.Time{})
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Cookie": cookieName + "=" + old}); r.StatusCode != 200 {
+		t.Fatalf("API with the old cookie name: %d", r.StatusCode)
+	}
+}
+
+func TestNoSniff(t *testing.T) {
+	e := newWebEnv(t)
+	rec := httptest.NewRecorder()
+	securityHeaders(e.srv.Handler()).ServeHTTP(rec, httptest.NewRequest("GET", "/v1/hosts", nil))
+	if rec.Code != 401 || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("API response: %d %v", rec.Code, rec.Header())
 	}
 }

@@ -328,7 +328,7 @@ func (h *handle) env() map[string]string {
 // before the reader starts, so a reader only ever treats its own turn as
 // ended when its process exits.
 func (h *handle) startProc(t *turnState) (*proc.Process, error) {
-	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
 		return nil, err
 	}
 	args := h.args()
@@ -363,6 +363,11 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	if mode == adapter.DeliverSteer {
 		return adapter.ErrNotSupported
 	}
+	// Every turn, not only when a process starts: a running agy may still
+	// resolve the workspace path anew.
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return err
+	}
 	h.mu.Lock()
 	if h.stopped {
 		h.mu.Unlock()
@@ -381,6 +386,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		p = nil
 		h.interrupting = false
 	}
+	// Bound to the reused process in the same critical section, so its
+	// exit (see read) cannot slip in between unseen.
+	t.proc = p
 	h.mu.Unlock()
 
 	fail := func(err error) error {
@@ -399,9 +407,6 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		h.p = p
 		h.mu.Unlock()
 	}
-	h.mu.Lock()
-	t.proc = p // the reused long-lived process (startProc set it otherwise)
-	h.mu.Unlock()
 	var line []byte
 	if perTurn {
 		line = []byte(in.Text)
@@ -419,12 +424,46 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	h.emit(model.KindItemCompleted, userItem)
 	h.setStatus(model.StatusActive, "")
 	// Write before returning so an immediate Interrupt cannot overtake it.
-	if _, err := p.Stdin.Write(line); err != nil {
-		_ = p.Kill()
-		return nil // read() reports the failed turn when the process ends
-	}
-	if perTurn {
+	_, werr := p.Stdin.Write(line)
+	if werr == nil && perTurn {
 		_ = p.Stdin.Close()
+	}
+	// From here read() ends the turn if the process exits; one that exited
+	// before (it left the turn to us) or that could not take the message
+	// fails the turn here.
+	h.mu.Lock()
+	t.live = true
+	dead := (t.exited || werr != nil) && h.turn == t
+	if dead {
+		h.turn = nil
+		if h.p == p {
+			h.p = nil // the next turn starts a new process
+		}
+	}
+	exited, interrupted := t.exited, t.interrupted || h.interrupting || h.stopped
+	stopped := h.stopped
+	h.mu.Unlock()
+	if werr != nil {
+		_ = p.Kill()
+	}
+	if dead {
+		tc := model.TurnCompleted{TurnID: t.id, Status: "failed", DurationMs: time.Since(t.start).Milliseconds()}
+		if exited {
+			t.flush() // read() is done with p's output
+			tc.Error = "agy exited without a result event"
+			if err := p.Err(); err != nil {
+				tc.Error += ": " + err.Error()
+			}
+		} else {
+			tc.Error = "send the message to agy: " + werr.Error()
+		}
+		if interrupted {
+			tc.Status, tc.Error = "interrupted", ""
+		}
+		h.emit(model.KindTurnCompleted, tc)
+		if !stopped {
+			h.setStatus(model.StatusIdle, "")
+		}
 	}
 	return nil
 }
@@ -454,10 +493,15 @@ func (h *handle) read(p *proc.Process) {
 	if t != nil && t.proc != p {
 		t = nil // the turn belongs to another (newer) process
 	}
+	interrupted := h.interrupting || h.stopped
+	if t != nil && !t.live {
+		// Deliver is still starting this turn on p; it ends it.
+		t.exited, t.interrupted = true, interrupted
+		t = nil
+	}
 	if t != nil {
 		h.turn = nil
 	}
-	interrupted := h.interrupting || h.stopped
 	if current {
 		h.interrupting = false
 	}

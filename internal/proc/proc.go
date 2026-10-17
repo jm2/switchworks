@@ -79,6 +79,10 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	}
 	go func() {
 		p.waitErr = cmd.Wait()
+		// Whatever the leader started (shells, MCP servers) must not
+		// outlive it, however it exited: on stdin EOF, by a crash, or on
+		// its own.
+		p.plat.endTree(cmd)
 		// A descendant that left the process group may still hold the
 		// pipe's write end; give the reader a moment to drain what the
 		// process wrote, then end the read instead of waiting for it.
@@ -127,7 +131,8 @@ func (p *Process) Err() error {
 }
 
 // Stop asks the process tree to exit, waiting up to grace before killing it.
-// Closing stdin first lets well-behaved stdio servers exit on EOF.
+// Closing stdin first lets well-behaved stdio servers exit on EOF; what the
+// leader leaves behind is then ended as it exits (see Start).
 func (p *Process) Stop(grace time.Duration) error {
 	var err error
 	p.once.Do(func() {
@@ -157,9 +162,9 @@ func (p *Process) Kill() error {
 }
 
 // CheckWithin reports an error unless dir, with symlinks resolved, is root
-// or below it. Adapters call it right before every use of a session's cwd
-// when the session has a root (it was spawned by an agent), so the agent
-// cannot swap a directory for a symlink between spawn and use.
+// or below it. The node checks an agent's spawn with it; adapters then call
+// CheckPinned right before every use of the session's cwd (every turn), so
+// the agent cannot swap a directory for a symlink between spawn and use.
 func CheckWithin(root, dir string) error {
 	if root == "" {
 		return nil
@@ -172,6 +177,23 @@ func CheckWithin(root, dir string) error {
 	rel, err := filepath.Rel(r, d)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return fmt.Errorf("cwd %q is outside %q, the directory this session may work in", dir, root)
+	}
+	return nil
+}
+
+// CheckPinned is CheckWithin for a cwd the node recorded with symlinks
+// resolved (sessions spawned by agents): dir must also still resolve to
+// itself, so a directory on its path swapped for a symlink since then is
+// refused even where the link stays inside root.
+func CheckPinned(root, dir string) error {
+	if root == "" {
+		return nil
+	}
+	if err := CheckWithin(root, dir); err != nil {
+		return err
+	}
+	if d, err := filepath.EvalSymlinks(dir); err != nil || d != filepath.Clean(dir) {
+		return fmt.Errorf("cwd %q no longer leads to the directory this session started in (replaced by a symlink?)", dir)
 	}
 	return nil
 }

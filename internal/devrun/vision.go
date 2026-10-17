@@ -25,6 +25,7 @@ import (
 	"github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/harness"
 	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/render"
 )
 
 // The vision probe checks whether a harness and model can see images: it
@@ -238,6 +239,8 @@ func drainFor(events chan adapter.Event, d time.Duration, fn func(adapter.Event)
 
 // VisionMain runs `swk dev vision-probe`.
 func VisionMain(args []string, stdout, stderr io.Writer) int {
+	rawStderr := stderr
+	stdout, stderr = terminal(stdout, stderr)
 	fs := flag.NewFlagSet("dev vision-probe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	h := fs.String("harness", "codex", "harness: codex, goose, or the name given with -acp-bin (agy cannot take images)")
@@ -271,7 +274,7 @@ func VisionMain(args []string, stdout, stderr io.Writer) int {
 	}
 	harnessStderr := io.Discard
 	if *logs {
-		harnessStderr = stderr
+		harnessStderr = render.Safe(rawStderr)
 	}
 	opts := harness.Options{CodexBin: *codexBin, Stderr: harnessStderr, Logf: logf, ACP: map[string]harness.ACPAgent{}}
 	if *codexHome != "" {

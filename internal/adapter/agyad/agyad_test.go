@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -111,6 +112,14 @@ func fakeAgy() {
 			return true
 		case strings.Contains(prompt, "NORESULT"):
 			os.Exit(2)
+		case strings.Contains(prompt, "VANISH"):
+			// Finish the turn, then exit while a detached descendant keeps
+			// stdout open, so the adapter does not see the exit at once.
+			result("SUCCESS", "bye", "")
+			cmd := exec.Command("setsid", "sleep", "8")
+			cmd.Stdout = os.Stdout
+			_ = cmd.Start()
+			os.Exit(0)
 		case strings.Contains(prompt, "FAIL"):
 			result("ERROR", "", "boom")
 			return true
@@ -675,8 +684,9 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 		t.Fatal("exclude written into the symlink target")
 	}
 
-	// A worktree's excludes go to its common directory.
-	main := filepath.Join(t.TempDir(), ".git")
+	// A worktree inside its repository: excludes go to the common directory.
+	top := t.TempDir()
+	main := filepath.Join(top, ".git")
 	fakeGitDir(t, main)
 	wt := filepath.Join(main, "worktrees", "wt")
 	if err := os.MkdirAll(wt, 0o755); err != nil {
@@ -684,13 +694,43 @@ func TestFleetToolsWorkspaceTricks(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(wt, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(wt, "commondir"), []byte("../..\n"), 0o644)
-	work := t.TempDir()
+	work := filepath.Join(top, "wt")
+	_ = os.Mkdir(work, 0o755)
 	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+wt+"\n"), 0o644)
 	if _, _, err := gitExclude(work, workspaceMCP); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(main, "info", "exclude")); !strings.Contains(string(b), "/.agents/mcp_config.json") {
 		t.Fatalf("worktree exclude: %q", b)
+	}
+
+	// A gitdir (or a commondir) outside the repository is not followed,
+	// even when it is a real git directory: the workspace could name any.
+	other := filepath.Join(t.TempDir(), ".git")
+	fakeGitDir(t, other)
+	work = t.TempDir()
+	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+other+"\n"), 0o644)
+	if _, _, err := gitExclude(work, workspaceMCP); err == nil {
+		t.Fatal("followed a gitdir outside the repository")
+	}
+	inner := filepath.Join(work, "gd")
+	fakeGitDir(t, inner)
+	_ = os.WriteFile(filepath.Join(inner, "commondir"), []byte(other+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: gd\n"), 0o644)
+	if _, _, err := gitExclude(work, workspaceMCP); err != nil {
+		t.Fatal(err)
+	}
+	// A gitdir inside the workspace that is a symlink out of it.
+	link := filepath.Join(work, "gl")
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: gl\n"), 0o644)
+	if _, _, err := gitExclude(work, workspaceMCP); err == nil {
+		t.Fatal("followed a gitdir symlinked out of the repository")
+	}
+	if _, err := os.Stat(filepath.Join(other, "info")); err == nil {
+		t.Fatal("wrote into a git directory outside the repository")
 	}
 }
 
@@ -1030,4 +1070,44 @@ func TestFleetToolsCleanupRetried(t *testing.T) {
 	if _, err := os.Stat(agents); !os.IsNotExist(err) {
 		t.Fatalf("retry did not clean up: %v", err)
 	}
+}
+
+// A long-lived agy that died before the next message never leaves that
+// turn active: depending on when its exit is seen, the turn fails at once
+// or runs in a new process.
+func TestDeliverToDeadProcess(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid")
+	}
+	a, _ := newAdapter(t, Options{})
+	col := &collector{}
+	hh, err := a.Start(context.Background(), adapter.StartSpec{Cwd: t.TempDir()}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hh.(*handle)
+	col.turn(t, h, "VANISH", "completed")
+	h.mu.Lock()
+	p := h.p
+	h.mu.Unlock()
+	if p == nil {
+		t.Fatal("no process after the first turn")
+	}
+	<-p.Done()
+	from := len(col.all())
+	start := time.Now()
+	if err := h.Deliver(context.Background(), adapter.Input{Text: "next"}, adapter.DeliverQueue); err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, from, "the turn's end", func(e adapter.Event) bool {
+		return turnDone("failed")(e) || turnDone("completed")(e)
+	})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("the turn took %v", d)
+	}
+	waitIdle(t, h)
+	if err := h.Interrupt(context.Background()); !errors.Is(err, adapter.ErrNotActive) {
+		t.Fatalf("interrupt after the turn: %v", err)
+	}
+	col.turn(t, h, "again", "completed")
 }

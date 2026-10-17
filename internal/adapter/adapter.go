@@ -69,6 +69,9 @@ type StartSpec struct {
 	// CwdRoot, when set, is the directory Cwd must stay inside (sessions
 	// spawned by agents); adapters check it before every use of Cwd.
 	CwdRoot string
+	// ByAgent: an agent spawned the session (its approval policy must
+	// hold; see model.SpawnSpec).
+	ByAgent bool
 
 	// MCP is an MCP server to attach to this session only (the fleet
 	// tools). It carries a per-session credential, so it is never persisted.

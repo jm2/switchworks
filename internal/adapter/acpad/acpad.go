@@ -304,7 +304,7 @@ func (h *handle) mcpServers() []acp.McpServerStdio {
 // open starts an agent process and creates (sessionID == "") or reopens a
 // session in it, then registers.
 func (h *handle) open(ctx context.Context, sessionID string) error {
-	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
 		return err
 	}
 	c, err := acp.Start(ctx, acp.Options{
@@ -407,7 +407,7 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 			warn("%s has no model option; set its model in its own config or env", h.a.cfg.Harness)
 		}
 	}
-	strict := h.spec.CwdRoot != "" && h.spec.ApprovalPolicy != "" && h.spec.ApprovalPolicy != "never"
+	strict := (h.spec.ByAgent || h.spec.CwdRoot != "") && h.spec.ApprovalPolicy != "" && h.spec.ApprovalPolicy != "never"
 	if mode := h.modeFor(s); mode != "" {
 		if o := s.Option("mode"); o != nil {
 			if o.Current() != mode {
@@ -534,6 +534,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	if mode == adapter.DeliverSteer {
 		return adapter.ErrNotSupported
 	}
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return err
+	}
 	c, sid, err := h.client()
 	if err != nil {
 		return err
@@ -613,6 +616,16 @@ func (h *handle) runTurn(c *acp.Client, turn *acp.Turn, turnID string, start tim
 	default:
 		tc.Status, tc.Error = mapStop(resp.StopReason)
 		h.usage(turnID, resp.Usage)
+	}
+	if err != nil {
+		// A failed or interrupted turn used tokens too; goose's accumulated
+		// usage, when it sends it, has them.
+		h.mu.Lock()
+		grew := h.gooseAcc != nil && (h.gooseSent == nil || *h.gooseAcc != *h.gooseSent)
+		h.mu.Unlock()
+		if grew {
+			h.usage(turnID, nil)
+		}
 	}
 	h.mu.Lock()
 	if h.turnID == turnID {
@@ -865,6 +878,16 @@ func (h *handle) OnPermission(id json.RawMessage, req acp.RequestPermissionReque
 	h.mu.Lock()
 	c := h.c
 	turnID := h.turnID
+	if turnID == "" || h.cancelling {
+		// No turn to ask for (it ended, or is being cancelled and its
+		// prompts were already answered): nobody would see this request,
+		// and the agent would wait on it, so answer it now.
+		h.mu.Unlock()
+		if c != nil {
+			_ = c.Permit(id, acp.PermissionOutcome{Outcome: "cancelled"})
+		}
+		return
+	}
 	ts := h.toolLocked(req.ToolCall.ToolCallID, turnID)
 	ts.merge(req.ToolCall.ToolCallFields, req.ToolCall.ToolContent())
 	cl := ts.classify()
@@ -917,10 +940,21 @@ func (h *handle) OnPermission(id json.RawMessage, req acp.RequestPermissionReque
 		ar.Command = ts.title
 	}
 	h.mu.Lock()
+	if h.turnID != turnID || h.cancelling {
+		// The turn ended or was cancelled meanwhile, and its prompts
+		// were answered without this one.
+		h.mu.Unlock()
+		_ = c.Permit(id, acp.PermissionOutcome{Outcome: "cancelled"})
+		return
+	}
 	h.approvals[aid] = p
+	waiting := h.status != model.StatusWaitingApproval
+	h.status = model.StatusWaitingApproval
 	h.mu.Unlock()
 	h.emit(model.KindApprovalRequested, ar)
-	h.setStatus(model.StatusWaitingApproval, "")
+	if waiting {
+		h.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusWaitingApproval})
+	}
 }
 
 // Resolve answers a pending permission request.
@@ -946,7 +980,6 @@ func (h *handle) Resolve(ctx context.Context, approvalID, decision string) error
 		return fmt.Errorf("decision %q not offered for this prompt (offered: %v, cancel)", decision, offered)
 	}
 	delete(h.approvals, approvalID)
-	remaining := len(h.approvals)
 	if decision == DecisionCancel {
 		h.cancelling = true
 	}
@@ -963,13 +996,18 @@ func (h *handle) Resolve(ctx context.Context, approvalID, decision string) error
 		return err
 	}
 	h.emit(model.KindApprovalResolved, model.ApprovalResolved{ApprovalID: approvalID, Decision: decision})
-	if remaining == 0 && decision != DecisionCancel {
-		h.mu.Lock()
-		active := h.turnID != ""
-		h.mu.Unlock()
-		if active {
-			h.setStatus(model.StatusActive, "")
-		}
+	// Back to active once nothing is left to answer, checked and set under
+	// one lock: a turn that has ended meanwhile has set idle, which stays.
+	// A cancelled turn stays waiting until it ends.
+	h.mu.Lock()
+	resume := decision != DecisionCancel && len(h.approvals) == 0 && h.turnID != "" &&
+		!h.cancelling && h.status == model.StatusWaitingApproval
+	if resume {
+		h.status = model.StatusActive
+	}
+	h.mu.Unlock()
+	if resume {
+		h.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusActive})
 	}
 	return nil
 }

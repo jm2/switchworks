@@ -143,7 +143,9 @@ func (s *Server) handleRemoveHost(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, sess := range s.store.Sessions() {
 		if sess.Host == host && live(sess) {
-			_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusGone })
+			if cur, err := s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusGone }); err == nil {
+				s.router.failAsksTo(cur, "its host was removed")
+			}
 			s.publishSession(sess.ID)
 		}
 	}
@@ -717,11 +719,14 @@ func bodyDeadline(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// securityHeaders adds HSTS over HTTPS. Browsers ignore it on a
-// connection whose certificate they do not trust, so it cannot lock anyone
-// out before the fleet CA is installed.
+// securityHeaders adds HSTS over HTTPS, and nosniff to every response so
+// a browser never reads an API response (JSON that may quote agent text)
+// as HTML or script. Browsers ignore HSTS on a connection whose
+// certificate they do not trust, so it cannot lock anyone out before the
+// fleet CA is installed.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if secureRequest(r) {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}

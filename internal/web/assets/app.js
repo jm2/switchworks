@@ -505,7 +505,19 @@ function openMenu(anchor) {
     }}, icon(themeIcon[t]), h('span', {text: themeName[t]}), t === cur ? h('span', {class: 'tick'}, icon('check')) : null)),
     h('hr'),
     h('button', {type: 'button', role: 'menuitem', onclick: async () => {
-      await fetch('/ui/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Swk-CSRF': '1'}});
+      closeMenu();
+      let warn = '';
+      try {
+        const r = await fetch('/ui/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Swk-CSRF': '1'}});
+        if (!r.ok) warn = 'Signed out, but the coordinator could not save it: a copy of this sign-in may work again after it restarts.';
+      } catch (e) {
+        warn = 'Could not reach the coordinator to sign out.';
+      }
+      if (warn) {
+        toast(warn);
+        setTimeout(() => { location.href = '/login'; }, 5000);
+        return;
+      }
       location.href = '/login';
     }}, icon('signout'), h('span', {text: 'Sign out'})));
   menu.hidden = false;
@@ -672,10 +684,13 @@ const decisionLabel = {
   decline: 'Decline', declineAlways: 'Always decline', cancel: 'Decline and stop',
 };
 
-// Bidirectional overrides and isolates can make text read differently from
-// what it is: an approval must show exactly what would run.
-const BIDI = /[\u202A-\u202E\u2066-\u2069]/g;
-function plain(s) { return (s || '').replace(BIDI, ''); }
+// Bidirectional overrides, isolates and marks (LRM, RLM, ALM) can make text
+// read differently from what it is, and zero-width spaces, word joiners and
+// BOMs hide a split or a join: an approval must show exactly what would run.
+// ZWNJ and ZWJ (U+200C, U+200D) stay, as in render.Safe: scripts and emoji
+// need them, and they do not reorder text.
+const HIDDEN = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C\u200B\u2060\uFEFF]/g;
+function plain(s) { return (s || '').replace(HIDDEN, ''); }
 
 function approvalCard(sessionID, a, onDone) {
   const card = h('div', {class: 'approval', role: 'group', 'aria-label': 'Approval'});

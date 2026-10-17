@@ -14,7 +14,11 @@ the lean, static-binary goal. Two design choices changed because of it:
   interface. `FileStore` keeps metadata in an atomically rewritten
   `state.json` and each session's events in an append-only JSONL file with
   an in-memory seq index. Event writes are fsynced before the node is
-  acknowledged. A torn final line is truncated on open. Adding a SQLite
+  acknowledged; a write that fails partway is cut back off, and a torn
+  final line is truncated on open. Event files are opened and indexed when
+  first used, a bounded number at a time. Session records are saved at most
+  every 500 ms, so each carries the seq it was projected through, and
+  events after it are projected again at startup. Adding a SQLite
   implementation (modernc.org/sqlite, pure Go) later is a drop-in.
 - **Node link: NDJSON over mTLS instead of gRPC.** Same semantics (one
   long-lived bidirectional stream per node, node-initiated), with no protobuf

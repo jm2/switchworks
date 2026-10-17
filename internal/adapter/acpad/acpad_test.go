@@ -670,9 +670,16 @@ func TestCloseWhileStarting(t *testing.T) {
 func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
 	a, _ := testAdapter(t, nil)
 	a.cfg.Modes = map[string]string{"untrusted": "no-such-mode"}
-	cwd := t.TempDir()
+	cwd, err := filepath.EvalSymlinks(t.TempDir()) // as the node records it
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, CwdRoot: cwd, ApprovalPolicy: "untrusted"}, newRec().sink); err == nil {
 		t.Fatal("an agent-spawned session started without its approval policy")
+	}
+	// Marked as an agent's without a root (guards.spawn_cwd_roots ["*"]).
+	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ByAgent: true, ApprovalPolicy: "untrusted"}, newRec().sink); err == nil {
+		t.Fatal("an agent-spawned session without a root started without its approval policy")
 	}
 	h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ApprovalPolicy: "untrusted"}, newRec().sink)
 	if err != nil {
@@ -829,5 +836,52 @@ func TestUsageOmittedOptionalField(t *testing.T) {
 	}
 	if evs[1].Total.CachedInputTokens != 400 {
 		t.Fatalf("total %+v", evs[1].Total)
+	}
+}
+
+// A permission request that arrives with no turn running is answered
+// "cancelled" at once, and the session stays idle for the next message.
+func TestPermissionAfterTurnEnded(t *testing.T) {
+	a, state := testAdapter(t, nil)
+	h, r := start(t, a, adapter.StartSpec{})
+	if tc := r.turn(t, h, "LATEPERM"); tc.Status != "completed" {
+		t.Fatalf("turn %+v", tc)
+	}
+	var late string
+	deadline := time.Now().Add(10 * time.Second)
+	for late == "" && time.Now().Before(deadline) {
+		if s, err := acptest.ReadSession(state, h.Ref().ID); err == nil {
+			late = s.LatePerm
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if late != "cancelled" {
+		t.Fatalf("late permission request answered %q", late)
+	}
+	for _, e := range r.all() {
+		if e.Kind == model.KindApprovalRequested {
+			t.Fatalf("late request became an approval:\n%s", dump(r.all()))
+		}
+	}
+	if st := h.Status(); st != model.StatusIdle {
+		t.Fatalf("status %s", st)
+	}
+	if tc := r.turn(t, h, "next"); tc.Status != "completed" {
+		t.Fatalf("next turn %+v", tc)
+	}
+}
+
+// A turn that fails still reports the usage goose accumulated in it.
+func TestGooseUsageOfFailedTurn(t *testing.T) {
+	a, _ := testAdapter(t, map[string]string{acptest.EnvGooseUsage: "1"})
+	h, r := start(t, a, adapter.StartSpec{})
+	r.turn(t, h, "one")
+	if tc := r.turn(t, h, "FAIL"); tc.Status != "failed" {
+		t.Fatalf("turn %+v", tc)
+	}
+	evs := usageEvents(r.all())
+	if len(evs) != 2 || evs[1].Last != (model.Usage{InputTokens: 1000, OutputTokens: 50, TotalTokens: 1050}) ||
+		evs[1].Total != (model.Usage{InputTokens: 2000, OutputTokens: 100, TotalTokens: 2100}) {
+		t.Fatalf("usage %+v", evs)
 	}
 }

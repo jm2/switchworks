@@ -131,6 +131,9 @@ func (a *Adapter) watch(c *codex.Client) {
 		live = append(live, h)
 	}
 	a.mu.Unlock()
+	// Its stdout closed; make sure the process and anything it started
+	// are gone too.
+	_ = c.Kill()
 	a.cfg.Logf("codex app-server exited; restarting and resuming %d thread(s)", len(live))
 	for _, h := range live {
 		h.lostClient()
@@ -147,7 +150,8 @@ func (a *Adapter) watch(c *codex.Client) {
 		nc, err := a.getClient(ctx)
 		if err == nil {
 			for _, h := range live {
-				if err := h.resumeOn(ctx, nc); err != nil {
+				// A session stopped while app-server was down stays stopped.
+				if err := h.resumeOn(ctx, nc); err != nil && !errors.Is(err, adapter.ErrClosed) {
 					h.setStatus(model.StatusError, "resume after app-server restart failed: "+err.Error())
 				}
 			}
@@ -162,7 +166,9 @@ func (a *Adapter) watch(c *codex.Client) {
 		}
 	}
 	for _, h := range live {
-		h.setStatus(model.StatusError, "codex app-server could not be restarted")
+		if !h.isClosed() {
+			h.setStatus(model.StatusError, "codex app-server could not be restarted")
+		}
 	}
 }
 
@@ -245,7 +251,7 @@ func (a *Adapter) unregister(h *handle) {
 
 // Start creates a new thread.
 func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
-	if err := proc.CheckWithin(spec.CwdRoot, spec.Cwd); err != nil {
+	if err := proc.CheckPinned(spec.CwdRoot, spec.Cwd); err != nil {
 		return nil, err
 	}
 	c, err := a.getClient(ctx)
@@ -265,7 +271,9 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 		return nil, fmt.Errorf("thread/start: %w", err)
 	}
 	h := newHandle(a, c, resp.Thread.ID, spec, sink)
-	h.attached(c, resp, false)
+	if err := h.attached(c, resp, false); err != nil {
+		return nil, err
+	}
 	if spec.Name != "" {
 		if err := c.ThreadSetName(ctx, h.threadID, spec.Name); err != nil {
 			a.cfg.Logf("codex: thread/name/set: %v", err)
@@ -346,9 +354,15 @@ func (h *handle) caps() model.Caps {
 	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true}
 }
 
-// attached finishes registration after thread/start or thread/resume.
-func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resumed bool) {
+// attached finishes registration after thread/start or thread/resume. It
+// returns ErrClosed, registering nothing, when the session was stopped
+// meanwhile (app-server restarted under a session being stopped).
+func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resumed bool) error {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return adapter.ErrClosed
+	}
 	h.c = c
 	h.model = resp.Model
 	h.provider = resp.ModelProvider
@@ -356,6 +370,12 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	h.activeTurn = ""
 	h.mu.Unlock()
 	early := h.a.register(h)
+	// Stop marks the handle closed before it unregisters, so a Stop that
+	// raced past the check above is seen here.
+	if h.isClosed() {
+		h.a.unregister(h)
+		return adapter.ErrClosed
+	}
 	h.emit(model.KindSessionRegistered, model.SessionRegistered{
 		NativeRef: h.Ref(), Cwd: resp.Cwd, Model: resp.Model, Provider: resp.ModelProvider,
 		Caps: h.caps(), Resumed: resumed,
@@ -368,10 +388,20 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	for _, n := range early {
 		h.onNote(n.method, n.params)
 	}
+	return nil
+}
+
+func (h *handle) isClosed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closed
 }
 
 func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
-	if err := proc.CheckWithin(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+	if h.isClosed() {
+		return adapter.ErrClosed
+	}
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
 		return err
 	}
 	resp, err := c.ThreadResume(ctx, codex.ThreadResumeParams{
@@ -384,18 +414,48 @@ func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
 	if err != nil {
 		return fmt.Errorf("thread/resume %s: %w", h.threadID, err)
 	}
-	h.attached(c, resp, true)
+	if err := h.attached(c, resp, true); err != nil {
+		// Stopped while resuming: drop the subscription thread/resume made.
+		_ = c.ThreadUnsubscribe(ctx, h.threadID)
+		return err
+	}
 	return nil
 }
 
+// lostClient ends what app-server took with it: the running turn fails,
+// its pending approvals are cleared, and image files and command ids no
+// turn will need are dropped.
 func (h *handle) lostClient() {
 	h.mu.Lock()
 	h.c = nil
+	turn := h.activeTurn
 	h.activeTurn = ""
+	if turn != "" {
+		h.doneTurns = append(h.doneTurns, turn)
+		if len(h.doneTurns) > 16 {
+			h.doneTurns = h.doneTurns[len(h.doneTurns)-16:]
+		}
+	}
+	var cleared []string
 	for id := range h.approvals {
+		cleared = append(cleared, id)
 		delete(h.approvals, id)
 	}
+	var files []string
+	for id, ps := range h.files {
+		files = append(files, ps...)
+		delete(h.files, id)
+	}
+	h.commandItems = nil
+	h.stopping = nil
 	h.mu.Unlock()
+	h.removeFiles(files)
+	for _, aid := range cleared {
+		h.emit(model.KindApprovalResolved, model.ApprovalResolved{ApprovalID: aid, Decision: "cleared"})
+	}
+	if turn != "" {
+		h.emit(model.KindTurnCompleted, model.TurnCompleted{TurnID: turn, Status: "failed", Error: "codex app-server exited"})
+	}
 	h.setStatus(model.StatusError, "codex app-server exited; restarting")
 }
 
@@ -689,6 +749,11 @@ func (h *handle) Resolve(ctx context.Context, approvalID, decision string) error
 
 // Deliver starts a turn (queue) or steers the active one.
 func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.DeliveryMode) error {
+	// Codex resolves the cwd for each command, so check it before every
+	// turn and steer, not only when the thread starts.
+	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
+		return err
+	}
 	c, err := h.client()
 	if err != nil {
 		return err
@@ -811,11 +876,16 @@ func (h *handle) stopTurnCommands(c *codex.Client, turnID string) {
 
 // Stop interrupts any active turn and unsubscribes from the thread.
 func (h *handle) Stop(ctx context.Context) error {
-	c, err := h.client()
-	if err == nil {
-		h.mu.Lock()
-		active := h.activeTurn
-		h.mu.Unlock()
+	// Closed first, so a resume after an app-server restart that is under
+	// way sees it (see attached) and leaves the session stopped.
+	h.mu.Lock()
+	c, active, was := h.c, h.activeTurn, h.closed
+	h.closed = true
+	h.mu.Unlock()
+	if was {
+		return nil
+	}
+	if c != nil {
 		if active != "" {
 			_ = c.TurnInterrupt(ctx, h.threadID, active)
 		}
@@ -838,9 +908,6 @@ func (h *handle) Stop(ctx context.Context) error {
 	}
 	h.a.unregister(h)
 	h.setStatus(model.StatusStopped, "")
-	h.mu.Lock()
-	h.closed = true
-	h.mu.Unlock()
 	h.cleanImages()
 	return nil
 }
