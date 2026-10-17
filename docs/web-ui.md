@@ -151,8 +151,10 @@ signs in again, and nothing signed out comes back.
   origin. SVG, which can carry script, is never accepted.
 - Failed token attempts are limited to 10 a minute per client (an IPv4
   address or IPv6 /64): sign-ins with a token and API requests with a bad
-  `Authorization: Bearer` token share the count, and past it both are
-  refused with 429 until a minute has passed. Under a flood of clients the
+  `Authorization: Bearer` token share the count, and past it every
+  sign-in and bearer request from that client is refused with 429 until a
+  minute has passed, a valid token included (otherwise a right guess would
+  still get through). Under a flood of clients the
   coordinator forgets the ones quiet longest first, never everyone at once.
   One-time links are not limited (they cannot be guessed), so a flood of
   bad tokens cannot keep you from signing in with a link.
