@@ -14,14 +14,20 @@ import (
 	"github.com/jm2/switchworks/internal/render"
 )
 
-const usage = `usage: swk service install [--no-start] [node|coordinator]
-       swk service uninstall [node|coordinator]
-       swk service start|stop|restart [--if-installed] [node|coordinator]
+const usage = `usage: swk service install [--no-start] [--system] [node|coordinator]
+       swk service uninstall [--system] [node|coordinator]
+       swk service start|stop|restart [--if-installed] [--system] [node|coordinator]
        swk service status [--json] [node|coordinator]
 
 Registers the node (the default) or the coordinator with your own service
 manager, to run as you: a systemd user unit on Linux, a LaunchAgent on
-macOS, a logon task on Windows. Nothing runs as root or SYSTEM.`
+macOS, a logon task on Windows.
+
+With --system (Linux and Windows, as root or from an elevated prompt), the
+coordinator instead becomes a system service that starts at boot under an
+account of its own (switchworks, or NT SERVICE\swk-coordinator), out of
+reach of agents running as you. Then set it up with
+` + "`swk --system coordinator init`" + `. Nothing runs as root or SYSTEM.`
 
 // Main implements `swk service ...`.
 func Main(args []string, stdout, stderr io.Writer) int {
@@ -33,17 +39,23 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("service "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprintln(stderr, usage) }
-	var noStart, asJSON, ifInstalled bool
+	var noStart, asJSON, ifInstalled, system bool
 	var exe string
+	systemFlag := func() {
+		fs.BoolVar(&system, "system", false, "the coordinator's system service, under its own account (root or administrator)")
+	}
 	switch verb {
 	case "install":
 		fs.BoolVar(&noStart, "no-start", false, "register only; start at the next login")
 		fs.StringVar(&exe, "swk", "", "swk binary the service runs (default: this one)")
+		systemFlag()
 	case "status":
 		fs.BoolVar(&asJSON, "json", false, "print JSON (what the tray apps read)")
 	case "start", "stop", "restart":
 		fs.BoolVar(&ifInstalled, "if-installed", false, "do nothing, successfully, when the service is not installed")
+		systemFlag()
 	case "uninstall":
+		systemFlag()
 	case "help", "-h", "--help":
 		fmt.Fprintln(stdout, usage)
 		return 0
@@ -64,12 +76,37 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	if role == "" {
 		role = Node
+		if system {
+			role = Coordinator
+		}
 	}
 	if err := checkRole(role); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	var err error
+	if system {
+		switch verb {
+		case "install":
+			err = InstallSystem(role, exe, noStart, stdout)
+		case "uninstall":
+			err = UninstallSystem(role, stdout)
+		case "start":
+			err = StartSystem(role)
+		case "stop":
+			err = StopSystem(role)
+		case "restart":
+			err = RestartSystem(role)
+		}
+		if ifInstalled && errors.Is(err, ErrNotInstalled) {
+			return 0
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	switch verb {
 	case "install":
 		if !Query(role).Configured {
@@ -78,6 +115,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				hint = "swk coordinator init --host <name>"
 			}
 			fmt.Fprintf(stdout, "Note: %s is not set up yet (%s); the service will fail until it is.\n", role, hint)
+		}
+		if _, ok := querySystemInfo(); ok && role == Coordinator {
+			fmt.Fprintln(stdout, "Note: the system coordinator is installed too; two coordinators cannot share ports 7480 and 7481.")
 		}
 		err = Install(role, exe, noStart, stdout)
 	case "uninstall":
@@ -157,6 +197,8 @@ func Describe(in Info) string {
 		parts = append(parts, "stopped")
 	}
 	switch {
+	case in.Installed && in.System:
+		parts = append(parts, in.Manager+" system service "+in.Unit+", as its own account (starts at boot)")
 	case in.Installed && in.Enabled:
 		parts = append(parts, in.Manager+" "+in.Unit+" (starts at login)")
 	case in.Installed:

@@ -63,6 +63,11 @@ Services:
                                  run it at login as you (systemd user unit,
                                  LaunchAgent or logon task) and start it now
   swk service start|stop|restart|status|uninstall [node|coordinator]
+  swk service install --system coordinator
+                                 run the coordinator at boot as an account of
+                                 its own (Linux, Windows; root or administrator)
+  swk --system <command>         run a coordinator or CLI command against that
+                                 coordinator, as its account
 
 Development:
   swk mcp                        MCP server with the fleet tools (started by the node inside sessions)
@@ -81,6 +86,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, usage, version.Name, version.Version)
 		return 2
+	}
+	if args[0] == "--system" {
+		code, done := service.EnterSystem(args[1:], stderr)
+		if done {
+			return code
+		}
+		args = args[1:]
 	}
 	switch args[0] {
 	case "version", "--version", "-v":

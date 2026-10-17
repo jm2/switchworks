@@ -90,12 +90,16 @@ archives for every platform. Download `SHA256SUMS.txt` with a package and check 
 entry before installing; `gh attestation verify <file> --repo jm2/switchworks` also checks a
 file's build provenance.
 
-**Everything runs as you, never as root or SYSTEM.** The packages install programs, systemd
-*user* units, the tray app and icons; they create no system service and no system user, and they
-start nothing. Each person turns on the node (or coordinator) for themselves with `swk service
-install`, which registers it with their own service manager: a systemd user unit on Linux, a
-LaunchAgent on macOS, a logon task in Task Scheduler on Windows. The node must run as you, so
-sessions get your sign-ins, repositories and toolchains.
+**Nothing runs as root or SYSTEM, and the packages start nothing.** Each person turns on the
+node for themselves with `swk service install`, which registers it with their own service
+manager: a systemd user unit on Linux, a LaunchAgent on macOS, a logon task in Task Scheduler on
+Windows. The node must run as you, so sessions get your sign-ins, repositories and toolchains.
+
+The coordinator can run the same way, or, on Linux and Windows, as a **system service under an
+account of its own** (`switchworks`, or the virtual account `NT SERVICE\swk-coordinator`), so
+agents running as you on that machine cannot read its CA key, admin token or fleet state. The
+Linux packages create that account and ship its unit disabled; see
+[the coordinator](#1-the-coordinator).
 
 ### Supported platforms
 
@@ -145,8 +149,11 @@ sudo pacman -U ./switchworks-x86_64.pkg.tar.zst
 ```
 
 Each installs `swk` and `swk-tray` in `/usr/bin`, the `swk-node` and `swk-coordinator` user
-units in `/usr/lib/systemd/user`, and a **Switchworks** launcher for the tray icon. The binaries
-are static, so the packages have no dependencies.
+units in `/usr/lib/systemd/user`, the coordinator's system unit
+(`/usr/lib/systemd/system/swk-coordinator.service`, disabled) and a **Switchworks** launcher for
+the tray icon, and creates the unprivileged `switchworks` account (no password, no login shell)
+that the system unit runs as. The binaries are static. Removing the package stops and disables
+the system coordinator but keeps its account and `/var/lib/switchworks`, which hold the CA.
 
 ### macOS
 
@@ -174,7 +181,9 @@ ln -s /Applications/Switchworks.app/Contents/MacOS/swk ~/.local/bin/swk
 rights, into `%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
 `swkw.exe` (the same program without a console window, which the node's logon task runs) and
 `swk-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
-Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swk`.
+Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swk`. The
+coordinator's system service, if you set one up, is separate: `swk service uninstall --system
+coordinator` from an elevated prompt removes it.
 
 ### Podman (coordinator only)
 
@@ -203,7 +212,8 @@ read-only, and restarts the container when its healthcheck (`swk coordinator hea
 Back up the `swk-coordinator` volume: it holds the CA key.
 
 A container under the same account as your agents is not a security boundary: they can reach
-its volume with `podman unshare`. Give it an account of its own on a machine where agents run.
+its volume with `podman unshare`. Give it an account of its own on a machine where agents run, or
+use the [system service](#as-a-system-service), which does that for you.
 
 ### Archives
 
@@ -270,6 +280,61 @@ swk service install coordinator
 
 or in a terminal: `swk coordinator run`. On Linux, also run `loginctl enable-linger "$USER"`
 so it keeps running while you are logged out (`swk service install` reminds you).
+
+#### As a system service
+
+If agents will run on the coordinator's machine too, run the coordinator under an account of
+its own instead: anything running as you can read your files, the CA key and admin token
+included. On Linux and Windows, `swk service install --system coordinator` sets that up:
+
+| OS | The service | Its account | Its files |
+| --- | --- | --- | --- |
+| Linux | `swk-coordinator.service`, a system unit with systemd's sandboxing (no capabilities, read-only system, no home directories, a system-call filter) | `switchworks` (created by the package, or by the install) | `/var/lib/switchworks`, mode 700 |
+| Windows | The `swk-coordinator` service, allowed through Windows Firewall on private and domain networks | `NT SERVICE\swk-coordinator`, a virtual account with no password | `%ProgramData%\Switchworks`, open only to that account, SYSTEM and administrators |
+
+Setting it up takes root (or an elevated prompt on Windows, without `sudo`); the coordinator
+itself never runs with either. Do it instead of the steps above, not as well:
+
+```bash
+sudo swk service install --system coordinator
+sudo swk --system coordinator init --host coord.lan,10.0.0.5
+sudo swk service start --system coordinator
+```
+
+On Windows, from an elevated PowerShell:
+
+```powershell
+swk service install --system coordinator
+swk --system coordinator init --host coord.lan,10.0.0.5
+swk service start --system coordinator
+```
+
+`swk --system <command>` runs a coordinator or CLI command as the coordinator's account, with
+its files and its admin `cli.json`: `sudo swk --system coordinator enroll-token devbox`, `sudo swk
+--system token ls`, and so on. For the CLI as yourself, give your own account a scoped token:
+
+```bash
+mkdir -p ~/.config/swk
+(umask 077; sudo swk --system token create "$USER" --scope operate --cli-config > ~/.config/swk/cli.json)
+```
+
+On Windows, make the token from the elevated prompt and save it where your own (non-elevated)
+`swk` reads it; `%AppData%\swk` is private to your account:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\swk" | Out-Null
+$cfg = swk --system token create $env:USERNAME --scope operate --cli-config | Out-String
+[IO.File]::WriteAllText("$env:APPDATA\swk\cli.json", $cfg)  # UTF-8 without a BOM
+```
+
+Where `swk` is not root's own (installed in your home directory, or the per-user Windows
+install), the service runs a copy that only root or administrators can replace:
+`/usr/local/lib/switchworks/swk` or `%ProgramFiles%\Switchworks Coordinator\swk.exe`. Run the
+install again after upgrading Switchworks to update it; the Linux packages' own `/usr/bin/swk`
+needs nothing, and a package upgrade restarts the service. `swk service
+start|stop|restart|uninstall --system coordinator` manage it, and `swk service status` shows
+it. Uninstalling keeps the account and the coordinator's files. macOS has no system service
+yet; give the coordinator a user account of its own there.
 
 It listens on port **7480** (web UI, API and CLI) and **7481** (nodes).
 Allow both through the firewall from your workstations only.

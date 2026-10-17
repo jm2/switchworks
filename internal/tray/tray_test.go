@@ -66,6 +66,13 @@ func TestView(t *testing.T) {
 		}
 	}
 
+	// The system coordinator is shown, but managed as root, not from here.
+	o.Coordinator = service.Info{Role: service.Coordinator, Configured: true, Installed: true, Running: true, System: true}
+	got = labels(a.view(o))
+	if !strings.Contains(got, "(Coordinator: running (system service))") || strings.Contains(got, "coordinator)") || strings.Contains(got, "Stop coordinator") {
+		t.Errorf("system coordinator: menu %q", got)
+	}
+
 	o = service.Overview{Node: service.Info{Role: service.Node}, Coordinator: service.Info{Role: service.Coordinator}}
 	v = a.view(o)
 	if v.Icon != IconIdle || !strings.Contains(labels(v), "(Open web UI)") || !strings.Contains(labels(v), "Enroll with") {
