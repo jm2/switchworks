@@ -111,13 +111,17 @@ func checkRole(role string) error {
 	return nil
 }
 
+// queryState asks the service manager; tests replace it, so that a service
+// running on the machine that runs them does not change their results.
+var queryState = query
+
 // Query reports on one role.
 func Query(role string) Info {
 	in := Info{Role: role, Manager: managerName, Unit: unitName(role), Dir: Dir(role), LogDir: LogDir(role)}
 	if _, err := os.Stat(filepath.Join(in.Dir, configFile(role))); err == nil {
 		in.Configured = true
 	}
-	st, err := query(role)
+	st, err := queryState(role)
 	if err != nil {
 		in.Error = err.Error()
 	}

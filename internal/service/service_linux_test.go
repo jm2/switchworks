@@ -46,3 +46,27 @@ func TestSystemdQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestDropInText(t *testing.T) {
+	b, err := dropInText(`/home/dev/.local/bin:/home/dev/100%/bin:/home/dev/a"b\c:/usr/bin`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[Service]\nEnvironment=\"PATH=/home/dev/.local/bin:/home/dev/100%%/bin:/home/dev/a\\\"b\\\\c:/usr/bin\"\n"
+	if s := string(b); !strings.HasPrefix(s, generatedMarker) || !strings.HasSuffix(s, want) {
+		t.Fatalf("drop-in:\n%s\nwant it to end with:\n%s", s, want)
+	}
+	if _, err := dropInText("/usr/bin\nExecStartPre=/bin/evil"); err == nil {
+		t.Fatal("a PATH with a newline was accepted")
+	}
+}
+
+func TestLoginPATH(t *testing.T) {
+	t.Setenv("SHELL", "")
+	t.Setenv("HOME", "/home/dev")
+	t.Setenv("PATH", ".:bin:/custom/bin::/usr/bin")
+	got := loginPATH("/usr/local/bin:/usr/bin")
+	if got != "/custom/bin:/usr/bin:/home/dev/.local/bin:/usr/local/bin" {
+		t.Fatalf("loginPATH = %q", got)
+	}
+}

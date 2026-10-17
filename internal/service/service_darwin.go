@@ -6,7 +6,6 @@ package service
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jm2/switchworks/internal/paths"
 )
@@ -59,37 +57,28 @@ func query(role string) (state, error) {
 	return st, nil
 }
 
-// launchPATH is the PATH the agent gets. LaunchAgents start with a minimal
-// PATH, so harnesses installed with Homebrew, npm or a version manager would
-// not resolve. Take the login shell's PATH (where Homebrew's shellenv and
-// version managers usually set it up), then this process's, and make sure
-// the usual locations are present.
+// launchPATH is the PATH the agent gets (see loginPATH).
 func launchPATH() string {
-	var parts []string
-	seen := map[string]bool{}
-	add := func(p string) {
-		for _, d := range filepath.SplitList(p) {
-			// Only absolute directories: a relative entry such as "."
-			// would make lookups depend on the agent's working directory.
-			if d != "" && filepath.IsAbs(d) && !seen[d] {
-				seen[d] = true
-				parts = append(parts, d)
-			}
-		}
+	return loginPATH("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+}
+
+// appLauncher returns Switchworks.app's main executable when exe is the swk
+// bundled inside it, or "". The agent then starts the app (`Switchworks
+// --swk node run ...`), which runs swk as its child. macOS grants Local
+// Network access to the responsible process: an app it knows, whose
+// Info.plist explains the request, can be asked about and allowed. A
+// helper binary that launchd starts directly is denied without a prompt,
+// and the node cannot reach a coordinator on the LAN.
+func appLauncher(exe string) string {
+	dir := filepath.Dir(exe)
+	if filepath.Base(exe) != "swk" || !strings.HasSuffix(dir, ".app/Contents/MacOS") {
+		return ""
 	}
-	if sh := os.Getenv("SHELL"); sh != "" && filepath.IsAbs(sh) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		// A marker separates PATH from anything the profile prints.
-		const mark = "__SWK_PATH__="
-		out, err := exec.CommandContext(ctx, sh, "-l", "-c", `printf '\n`+mark+`%s\n' "$PATH"`).Output()
-		cancel()
-		if i := strings.LastIndex(string(out), mark); err == nil && i >= 0 {
-			add(strings.TrimSpace(string(out[i+len(mark):])))
-		}
+	l := filepath.Join(dir, "Switchworks")
+	if fi, err := os.Stat(l); err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+		return ""
 	}
-	add(os.Getenv("PATH"))
-	add("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
-	return strings.Join(parts, ":")
+	return l
 }
 
 func xmlText(s string) string {
@@ -98,7 +87,13 @@ func xmlText(s string) string {
 	return b.String()
 }
 
-func plistText(role, exe, path, logFile string) string {
+// plistText renders the agent for exe, started through launcher when it is
+// not "" (see appLauncher).
+func plistText(role, exe, launcher, path, logFile string) string {
+	program := "    <string>" + xmlText(exe) + "</string>\n"
+	if launcher != "" {
+		program = "    <string>" + xmlText(launcher) + "</string>\n    <string>--swk</string>\n"
+	}
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Written by ` + "`swk service install " + role + "`" + `; ` + "`swk service uninstall " + role + "`" + ` removes it.
@@ -109,8 +104,7 @@ func plistText(role, exe, path, logFile string) string {
   <key>Label</key><string>` + xmlText(unitName(role)) + `</string>
   <key>ProgramArguments</key>
   <array>
-    <string>` + xmlText(exe) + `</string>
-    <string>` + role + `</string>
+` + program + `    <string>` + role + `</string>
     <string>run</string>
     <string>--log-file</string>
     <string>` + xmlText(logFile) + `</string>
@@ -150,10 +144,15 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	}
 	// Replace a loaded agent so the new definition takes effect.
 	_ = command("launchctl", "bootout", target(role)).Run()
-	if err := paths.WriteFile(path, []byte(plistText(role, exe, launchPATH(), logFile)), 0o644); err != nil {
+	launcher := appLauncher(exe)
+	if err := paths.WriteFile(path, []byte(plistText(role, exe, launcher, launchPATH(), logFile)), 0o644); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Wrote %s (runs %s; log %s)\n", path, exe, logFile)
+	if launcher != "" {
+		fmt.Fprintf(out, "Wrote %s (runs %s through %s; log %s)\n", path, exe, launcher, logFile)
+	} else {
+		fmt.Fprintf(out, "Wrote %s (runs %s; log %s)\n", path, exe, logFile)
+	}
 	if noStart {
 		fmt.Fprintln(out, "It starts at your next login.")
 		return nil

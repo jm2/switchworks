@@ -14,7 +14,7 @@ import (
 
 func TestPlistText(t *testing.T) {
 	for _, role := range Roles {
-		s := plistText(role, "/Applications/Switch & yard.app/Contents/MacOS/swk", "/opt/homebrew/bin:/usr/bin",
+		s := plistText(role, "/Applications/Switch & yard.app/Contents/MacOS/swk", "", "/opt/homebrew/bin:/usr/bin",
 			"/Users/dev/Library/Application Support/swk/node/logs/node.log")
 		for _, want := range []string{
 			"<string>dev.switchworks." + role + "</string>",
@@ -39,6 +39,38 @@ func TestPlistText(t *testing.T) {
 				t.Errorf("%s plist: plutil -lint: %v %s", role, err, out)
 			}
 		}
+	}
+}
+
+// Bundled in the app, the agent starts the app's executable, which runs swk.
+func TestPlistTextLauncher(t *testing.T) {
+	s := plistText("node", "/Applications/Switchworks.app/Contents/MacOS/swk",
+		"/Applications/Switchworks.app/Contents/MacOS/Switchworks", "/usr/bin", "/tmp/node.log")
+	want := "<array>\n    <string>/Applications/Switchworks.app/Contents/MacOS/Switchworks</string>\n" +
+		"    <string>--swk</string>\n    <string>node</string>\n    <string>run</string>"
+	if !strings.Contains(s, want) {
+		t.Fatalf("plist lacks %q:\n%s", want, s)
+	}
+}
+
+func TestAppLauncher(t *testing.T) {
+	macos := filepath.Join(t.TempDir(), "Switchworks.app", "Contents", "MacOS")
+	if err := os.MkdirAll(macos, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	swk := filepath.Join(macos, "swk")
+	if got := appLauncher(swk); got != "" {
+		t.Fatalf("launcher %q without the app's executable", got)
+	}
+	app := filepath.Join(macos, "Switchworks")
+	if err := os.WriteFile(app, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := appLauncher(swk); got != app {
+		t.Fatalf("appLauncher = %q, want %q", got, app)
+	}
+	if got := appLauncher("/opt/homebrew/bin/swk"); got != "" {
+		t.Fatalf("launcher %q for a swk outside an app", got)
 	}
 }
 

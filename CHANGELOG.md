@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS node blocked from the LAN** — The LaunchAgent now starts the node through Switchworks,
+  which macOS asks about Local Network access; v0.1.0's was denied without a prompt. Run
+  `swk service install` again after updating.
+- **Harnesses in `~/.local/bin` on Linux** — `swk service install` gives the node's user unit
+  your login shell's `PATH`, so codex, goose and agy installed there are found.
+
 ## [0.1.0] — 2026-10-17
 
 ### Added

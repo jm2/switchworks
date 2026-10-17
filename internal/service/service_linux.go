@@ -47,6 +47,29 @@ func userUnitPath(role string) (string, error) {
 	return filepath.Join(dir, "systemd", "user", unitName(role)), nil
 }
 
+// pathDropIn is the drop-in Install writes beside the unit, packaged or
+// not, to give it the PATH of your login shell (see loginPATH): a user
+// unit's own is only /usr/local/bin:/usr/bin.
+func pathDropIn(role string) (string, error) {
+	unit, err := userUnitPath(role)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(unit+".d", "swk-path.conf"), nil
+}
+
+// dropInText renders the drop-in that sets PATH.
+func dropInText(path string) ([]byte, error) {
+	if strings.ContainsFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return nil, fmt.Errorf("PATH contains control characters; not writing it into a unit")
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%")
+	return []byte(generatedMarker +
+		"# Your login shell's PATH, so harnesses in ~/.local/bin or installed with\n" +
+		"# npm or a version manager resolve. Re-run the install to pick up a new one.\n" +
+		"[Service]\nEnvironment=\"PATH=" + r.Replace(path) + "\"\n"), nil
+}
+
 func query(role string) (state, error) {
 	var st state
 	out, err := systemctl("show", "--property=LoadState,UnitFileState,ActiveState", unitName(role))
@@ -140,7 +163,27 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(out, "Wrote %s (runs %s)\n", path, exe)
-		if _, err := systemctl("daemon-reload"); err != nil {
+	}
+	dropIn, err := pathDropIn(role)
+	if err != nil {
+		return err
+	}
+	text, err := dropInText(loginPATH("/usr/local/bin:/usr/bin:/bin"))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {
+		return err
+	}
+	if err := paths.WriteFile(dropIn, text, 0o644); err != nil {
+		return err
+	}
+	if _, err := systemctl("daemon-reload"); err != nil {
+		return err
+	}
+	// A running unit keeps its old PATH until it restarts.
+	if st, err := query(role); err == nil && st.active && !noStart {
+		if _, err := systemctl("restart", unit); err != nil {
 			return err
 		}
 	}
@@ -176,11 +219,23 @@ func uninstall(role string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if b, err := os.ReadFile(path); err == nil && bytes.HasPrefix(b, []byte(generatedMarker)) {
-		if err := os.Remove(path); err != nil {
-			return err
+	dropIn, err := pathDropIn(role)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, p := range []string{path, dropIn} {
+		if b, err := os.ReadFile(p); err == nil && bytes.HasPrefix(b, []byte(generatedMarker)) {
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Removed %s\n", p)
+			removed = true
 		}
-		fmt.Fprintf(out, "Removed %s\n", path)
+	}
+	// The drop-in directory goes too, if nothing else is in it.
+	_ = os.Remove(filepath.Dir(dropIn))
+	if removed {
 		_, _ = systemctl("daemon-reload")
 	}
 	return nil
