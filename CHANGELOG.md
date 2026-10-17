@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scoped API tokens** — `admin`, `operate` and `read` tokens (`swk token create`), with a
   ready-made `cli.json` for each workstation.
 - **Session retention** — Ended sessions are deleted with their event logs 90 days after they
-  end (`session_retention_days`); `swk rm` deletes one at once.
+  end by default (`session_retention_days`); `swk rm` deletes one at once.
 - **Services at login** — `swk service install` runs the node or coordinator as you: a systemd
   user unit, a LaunchAgent or a logon task.
 - **System coordinator** — On Linux and Windows the coordinator can run as a service under its

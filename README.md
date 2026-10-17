@@ -50,7 +50,7 @@ by the tools you already use, under your own sign-ins.
 | Tray icon (Linux, Windows) and menu-bar app (macOS) | 🚧 Status, web UI, start/stop/restart, logs; little real use yet |
 | Push notifications | 🚧 Not yet; the tab title and inbox count show what needs you |
 | Coordinator as a system service under its own account | ✅ Linux; 🚧 Windows; ❌ macOS |
-| Session retention: ended sessions deleted after 90 days, `swk rm` | ✅ Running sessions keep their whole log |
+| Session retention: ended sessions deleted after 90 days by default (`session_retention_days`), `swk rm` | ✅ Running sessions keep their whole log |
 | Observing sessions started outside Switchworks | 🚧 Future release |
 
 ---

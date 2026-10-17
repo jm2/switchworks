@@ -468,9 +468,10 @@ jobs:
         with:
           name: release-notes
           path: notes
-      # A rerun must never change a release a maintainer has published: only
-      # no release, or exactly one unpublished draft for this tag, may proceed.
-      - name: Refuse to modify a published release
+      # Nothing here changes an existing release, draft or published: a
+      # draft could be published between a check and a delete. Delete a
+      # stale draft by hand, then rerun.
+      - name: Refuse to touch an existing release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -478,26 +479,14 @@ jobs:
           set -euo pipefail
           # A failed lookup must not look like "no release exists".
           if ! listing=$(gh api --paginate "repos/$GH_REPO/releases" \
-            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .draft"); then
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id"); then
             echo "::error::could not list the releases for $GITHUB_REF_NAME; refusing to publish unchecked"
             exit 1
           fi
-          mapfile -t drafts < <(grep -v '^$' <<< "$listing" || true)
-          case "${#drafts[@]}:${drafts[0]:-}" in
-            0:) echo "No release exists for $GITHUB_REF_NAME; a draft will be created" ;;
-            1:true)
-              echo "One unpublished draft exists for $GITHUB_REF_NAME; it is replaced"
-              gh release delete "$GITHUB_REF_NAME" --yes
-              ;;
-            1:false)
-              echo "::error::release $GITHUB_REF_NAME is already published; refusing to modify it"
-              exit 1
-              ;;
-            *)
-              echo "::error::found ${#drafts[@]} releases for $GITHUB_REF_NAME; refusing to guess which to update"
-              exit 1
-              ;;
-          esac
+          if [[ -n "$listing" ]]; then
+            echo "::error::a release for $GITHUB_REF_NAME already exists; delete it if it is a stale draft, then rerun"
+            exit 1
+          fi
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
