@@ -797,8 +797,12 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 // activity, and tells the fleet views to drop it.
 func (s *Server) forgetSession(id string) {
 	if err := s.store.DeleteSession(id); err != nil {
+		if _, ok := s.store.Session(id); ok {
+			s.logf("forget session %s: %v", id, err)
+			return
+		}
+		// Deleted; only its event log could not be removed.
 		s.logf("forget session %s: %v", id, err)
-		return
 	}
 	s.mu.Lock()
 	delete(s.acts, id)

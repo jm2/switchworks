@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -997,5 +998,36 @@ func TestFleetToolsKeepEditedEntry(t *testing.T) {
 	_ = h.Stop(ctx)
 	if b, _ := os.ReadFile(cfgPath); string(b) != edited {
 		t.Fatalf("edited entry changed on stop: %s", b)
+	}
+}
+
+// A cleanup that fails keeps its record, so the next session in the
+// workspace to stop removes the entry.
+func TestFleetToolsCleanupRetried(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a directory the test cannot write to")
+	}
+	ctx := context.Background()
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: filepath.Join(t.TempDir(), "settings.json")})
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	agents := filepath.Join(repo, ".agents")
+	h1, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(agents, 0o500)
+	_ = h1.Stop(ctx)
+	_ = os.Chmod(agents, 0o755)
+	if _, err := os.Stat(filepath.Join(repo, workspaceMCP)); err != nil {
+		t.Fatalf("config gone though cleanup could not write: %v", err)
+	}
+	h2, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h2.Stop(ctx)
+	if _, err := os.Stat(agents); !os.IsNotExist(err) {
+		t.Fatalf("retry did not clean up: %v", err)
 	}
 }

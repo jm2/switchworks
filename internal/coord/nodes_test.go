@@ -5,12 +5,17 @@ package coord
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jm2/switchworks/internal/apiclient"
 	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/store"
+	"github.com/jm2/switchworks/internal/ulid"
 	"github.com/jm2/switchworks/internal/wire"
 )
 
@@ -132,6 +137,46 @@ func TestPurgeFailedSpawns(t *testing.T) {
 	for _, sess := range []model.Session{real, live} {
 		if _, ok := s.store.Session(sess.ID); !ok {
 			t.Fatalf("%s removed", sess.Path)
+		}
+	}
+}
+
+// A session deleted from the store whose event log could not be removed is
+// still forgotten by the fleet views.
+func TestForgetSessionLogNotRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a directory the test cannot write to")
+	}
+	s := testServer(t, Guards{})
+	dir := t.TempDir()
+	st, err := store.OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s.store = st
+	fleetCh := make(chan FleetEvent, 16)
+	s.fleet[fleetCh] = struct{}{}
+	sess := addSession(t, s, "devbox", "sw", func(x *model.Session) { x.ID = ulid.New() })
+	if _, err := s.store.AppendEvents([]model.Event{{ID: ulid.New(), SessionID: sess.ID, Seq: 1, TS: time.Now(),
+		Kind: model.KindWarning, Payload: model.Marshal(model.ErrorEvent{Message: "x"})}}); err != nil {
+		t.Fatal(err)
+	}
+	events := filepath.Join(dir, "events")
+	_ = os.Chmod(events, 0o500)
+	s.forgetSession(sess.ID)
+	_ = os.Chmod(events, 0o755)
+	if _, ok := s.store.Session(sess.ID); ok {
+		t.Fatal("session kept")
+	}
+	for {
+		select {
+		case ev := <-fleetCh:
+			if ev.Type == "session_removed" {
+				return
+			}
+		default:
+			t.Fatal("session_removed not published")
 		}
 	}
 }

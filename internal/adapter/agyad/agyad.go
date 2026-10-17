@@ -530,11 +530,15 @@ func (h *handle) shutdown(announce bool) {
 			// Only the last explicit Stop cleans up; a node shutdown leaves
 			// the entry for the sessions it will resume.
 			if o.refs <= 0 {
-				delete(h.a.owners, key)
-				if announce {
-					if err := removeFleetTools(o.setup); err != nil {
-						h.a.cfg.Logf("agy: removing fleet tools from %s: %v", o.setup.cwd, err)
-					}
+				o.refs = 0
+				if !announce {
+					delete(h.a.owners, key)
+				} else if err := removeFleetTools(o.setup); err != nil {
+					// Keep the record: the next session there to stop
+					// tries again.
+					h.a.cfg.Logf("agy: removing fleet tools from %s: %v", o.setup.cwd, err)
+				} else {
+					delete(h.a.owners, key)
 				}
 			}
 		}
