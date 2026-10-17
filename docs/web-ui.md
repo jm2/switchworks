@@ -79,7 +79,13 @@ warn about it at first. There are two ways to fix that:
    as `tailscale serve`, nginx's `$proxy_add_x_forwarded_for` and Caddy
    do): the coordinator takes its last entry as the client for the
    sign-in limit, so a proxy that passes the header through unchanged
-   lets each client pick its own.
+   lets each client pick its own. The coordinator cannot tell the proxy
+   from any other process on its machine, since both connect from
+   loopback: with `http_listen` set, a local process can connect to it
+   directly and spread failed sign-ins across addresses it makes up. Leave
+   `http_listen` unset on a machine shared with users or agents you do not
+   trust; tokens are 256-bit random, so the limit is a second line of
+   defense, not the first.
 
 ## Signing in
 
