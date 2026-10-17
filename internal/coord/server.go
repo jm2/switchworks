@@ -346,6 +346,12 @@ func (s *Server) reconcile(host string, st wire.SessionState) {
 	if _, ok := s.store.Session(st.ID); ok {
 		return
 	}
+	if s.store.Retired(st.ID) {
+		// Removed for good (swk rm, or past the retention): its node may
+		// still hold it, but neither it nor its id comes back.
+		s.logOnce(st.ID, "node %s: not adopting session %s (%s): it was removed; its events are acknowledged and dropped", host, st.ID, st.Path)
+		return
+	}
 	name, onHost := strings.CutPrefix(st.Path, host+"/")
 	switch {
 	case !ulid.Valid(st.ID):
@@ -1019,6 +1025,12 @@ func (s *Server) forgetSession(id string) {
 		// store keeps trying.
 		s.logf("forget session %s: %v", id, err)
 	}
+	s.forgotten(id)
+}
+
+// forgotten drops what the coordinator holds for a session the store no
+// longer has, and tells the fleet views to drop it.
+func (s *Server) forgotten(id string) {
 	s.mu.Lock()
 	delete(s.acts, id)
 	s.mu.Unlock()
@@ -1026,9 +1038,8 @@ func (s *Server) forgetSession(id string) {
 	s.fleetPublish("session_removed", map[string]string{"id": id})
 }
 
-// defaultSessionRetention is how long an ended session is kept after its
-// last event, unless coordinator.json's session_retention_days says
-// otherwise.
+// defaultSessionRetention is how long an ended session is kept after it
+// ended, unless coordinator.json's session_retention_days says otherwise.
 const defaultSessionRetention = 90 * 24 * time.Hour
 
 // maxSessionRetentionDays caps session_retention_days (100 years).
@@ -1049,22 +1060,39 @@ func (s *Server) sessionRetention() time.Duration {
 	}
 }
 
-// ended reports whether sess has ended (stopped, or gone from its node)
-// and its last event is older than keep. Nodes report every session they
-// have not stopped, so neither kind comes back once forgotten; a session
-// in error may still be on its node, and is kept. So is one with no
-// timestamps, whose age is unknown.
+// ended reports whether sess ended (stopped, or gone from its node) more
+// than keep ago, by the coordinator's clock. One with no end time, or
+// still running or in error, is kept.
 func ended(sess model.Session, now time.Time, keep time.Duration) bool {
-	last := sess.UpdatedAt
-	if sess.CreatedAt.After(last) {
-		last = sess.CreatedAt
-	}
-	return !live(sess) && !last.IsZero() && now.Sub(last) >= keep
+	return store.Ended(sess) && !sess.EndedAt.IsZero() && now.Sub(sess.EndedAt) >= keep
 }
 
-// pruneSessions forgets ended sessions past the retention: their records
-// and event logs. Without it the store would grow with every session
-// ever run.
+// ancestorsOfLive returns the sessions above a live session in the spawn
+// chain. They are kept however old: the spawn depth of the live ones is
+// counted through them.
+func ancestorsOfLive(sessions []model.Session) map[string]bool {
+	byID := make(map[string]model.Session, len(sessions))
+	for _, sess := range sessions {
+		byID[sess.ID] = sess
+	}
+	keep := map[string]bool{}
+	for _, sess := range sessions {
+		if store.Ended(sess) {
+			continue
+		}
+		for p, d := sess.Parent, 0; p != "" && d < 32 && !keep[p]; d++ {
+			keep[p] = true
+			p = byID[p].Parent
+		}
+	}
+	return keep
+}
+
+// pruneSessions retires ended sessions past the retention: their records
+// and event logs go, and tombstones keep their nodes from bringing them
+// back. Without it the store would grow with every session ever run. Each
+// call takes at most one batch per host, so a large first prune is spread
+// over several minutes rather than holding up the coordinator.
 func (s *Server) pruneSessions(now time.Time) {
 	// Said when the count changes, not every minute.
 	if n := s.store.RemoveDeletedLogs(); n != s.pendingLogs {
@@ -1077,51 +1105,76 @@ func (s *Server) pruneSessions(now time.Time) {
 	if keep == 0 {
 		return
 	}
+	sessions := s.store.Sessions()
+	ancestors := ancestorsOfLive(sessions)
+	byHost := map[string][]string{}
+	for _, sess := range sessions {
+		if ended(sess, now, keep) && !ancestors[sess.ID] {
+			byHost[sess.Host] = append(byHost[sess.Host], sess.ID)
+		}
+	}
 	n := 0
-	for _, sess := range s.store.Sessions() {
-		if !ended(sess, now, keep) {
-			continue
-		}
-		// Checked again with the host's events held back, so a session
-		// that just came back is not taken from under them.
-		unlock := s.lockIngest(sess.Host)
-		if cur, ok := s.store.Session(sess.ID); ok && ended(cur, now, keep) {
-			s.forgetSession(cur.ID)
-			if _, still := s.store.Session(cur.ID); !still {
-				n++
-			}
-		}
-		unlock()
+	for host, ids := range byHost {
+		n += len(s.retire(host, ids, func(cur model.Session) bool { return ended(cur, now, keep) }))
 	}
 	if n > 0 {
 		s.logf("removed %d sessions that ended more than %d days ago", n, int(keep/(24*time.Hour)))
 	}
 }
 
-// RemoveSession forgets an ended session now, as pruneSessions would after
-// the retention. A live one must be stopped first.
+// retire removes host's sessions in ids that still pass ok, checked again
+// with the host's events held back (so a session that just came back is
+// not taken from under them) and with no live session spawned below them.
+// It returns those removed.
+func (s *Server) retire(host string, ids []string, ok func(model.Session) bool) []string {
+	defer s.lockIngest(host)()
+	ancestors := ancestorsOfLive(s.store.Sessions())
+	var batch []string
+	for _, id := range ids {
+		if cur, found := s.store.Session(id); found && cur.Host == host && ok(cur) && !ancestors[id] {
+			batch = append(batch, id)
+		}
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+	removed, err := s.store.RetireSessions(batch)
+	if err != nil {
+		s.logf("remove sessions of %s: %v", host, err)
+		return nil
+	}
+	for _, id := range removed {
+		s.forgotten(id)
+	}
+	return removed
+}
+
+// RemoveSession retires an ended session now, as pruneSessions would after
+// the retention. A live one must be stopped first, and one with live
+// sessions spawned below it is kept while they run.
 func (s *Server) RemoveSession(id string) error {
 	sess, ok := s.store.Session(id)
 	if !ok {
 		return store.ErrNotFound
 	}
-	defer s.lockIngest(sess.Host)()
-	cur, ok := s.store.Session(id)
-	if !ok {
-		return store.ErrNotFound
+	if !store.Ended(sess) {
+		return fmt.Errorf("%w: %s is %s; stop it first", errLive, sess.Path, sess.Status)
 	}
-	if live(cur) {
-		return fmt.Errorf("%w: %s is %s; stop it first", errLive, cur.Path, cur.Status)
+	if ancestorsOfLive(s.store.Sessions())[id] {
+		return fmt.Errorf("%w: %s has sessions spawned below it that still run; stop them first", errLive, sess.Path)
 	}
-	s.forgetSession(id)
-	if _, still := s.store.Session(id); still {
-		return fmt.Errorf("could not remove %s (see the coordinator's log)", cur.Path)
+	if len(s.retire(sess.Host, []string{id}, store.Ended)) == 0 {
+		if _, still := s.store.Session(id); !still {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("could not remove %s (see the coordinator's log)", sess.Path)
 	}
-	s.logf("removed %s (%s)", cur.Path, id)
+	s.logf("removed %s (%s)", sess.Path, id)
 	return nil
 }
 
-// errLive is returned when removing a session that has not ended.
+// errLive is returned when removing a session that has not ended, or that
+// live sessions were spawned below.
 var errLive = errors.New("session is live")
 
 // purgeFailedSpawns removes sessions left behind by spawns that failed

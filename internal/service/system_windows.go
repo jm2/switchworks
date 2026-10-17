@@ -384,17 +384,16 @@ func uninstallSystem(out io.Writer) error {
 }
 
 func startSystem() error {
-	// From now on it starts at boot too.
-	if _, err := sc("config", systemUnitName, "start=", "auto"); err != nil {
-		return err
-	}
 	if _, err := sc("start", systemUnitName); err != nil {
 		return err
 	}
 	if !waitState(serviceRunning, 30*time.Second) {
 		return errors.New("the coordinator service did not start within 30 seconds (see its log)")
 	}
-	return nil
+	// It runs: from now on it starts at boot too (not before, so a
+	// coordinator that cannot start is not retried at every boot).
+	_, err := sc("config", systemUnitName, "start=", "auto")
+	return err
 }
 
 func stopSystem() error {

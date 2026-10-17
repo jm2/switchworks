@@ -48,6 +48,7 @@ type FileStore struct {
 	daily    map[string]int64
 	// deletedLogs: event logs of deleted sessions still to be removed.
 	deletedLogs map[string]bool
+	retired     map[string]time.Time // tombstones, by session id
 	dirty       bool
 	gen         uint64 // snapshot generation, under mu
 
@@ -83,7 +84,17 @@ type snapshot struct {
 	// DeletedLogs are deleted sessions whose event logs could not be
 	// removed yet; removal is tried again until it works.
 	DeletedLogs []string `json:"deleted_logs,omitempty"`
+	// Retired are the tombstones of sessions removed for good, with when.
+	Retired map[string]time.Time `json:"retired,omitempty"`
 }
+
+// retiredTTL is how long a removed session's tombstone is kept: a node
+// that still reports the session after that is long gone.
+const retiredTTL = 365 * 24 * time.Hour
+
+// retireBatch bounds the sessions one RetireSessions call removes, each
+// call rewriting state.json once.
+const retireBatch = 200
 
 const snapshotVersion = 1
 
@@ -128,9 +139,9 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	s := &FileStore{
 		dir: dir, hosts: map[string]model.Host{}, sessions: map[string]*model.Session{},
 		tokens: map[string]tokenRec{}, apiToks: map[string]APIToken{}, logs: map[string]*eventLog{}, daily: map[string]int64{},
-		deletedLogs: map[string]bool{},
-		msgs:        map[string]*model.Message{},
-		stop:        make(chan struct{}), done: make(chan struct{}),
+		deletedLogs: map[string]bool{}, retired: map[string]time.Time{},
+		msgs: map[string]*model.Message{},
+		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
 		var snap snapshot
@@ -147,6 +158,10 @@ func OpenFileStore(dir string) (*FileStore, error) {
 				// saved as projected, as it was then.
 				sess.ProjectedSeq = sess.LastSeq
 			}
+			if Ended(*sess) && sess.EndedAt.IsZero() {
+				// Saved before EndedAt: counted from now.
+				sess.EndedAt = time.Now()
+			}
 			s.sessions[sess.ID] = sess
 		}
 		for _, t := range snap.Tokens {
@@ -161,6 +176,11 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		for _, id := range snap.DeletedLogs {
 			if ulid.Valid(id) && s.sessions[id] == nil {
 				s.deletedLogs[id] = true
+			}
+		}
+		for id, at := range snap.Retired {
+			if s.sessions[id] == nil {
+				s.retired[id] = at
 			}
 		}
 	} else if !os.IsNotExist(err) {
@@ -423,6 +443,12 @@ func (s *FileStore) snapshotLocked() (snapshot, uint64) {
 		snap.DeletedLogs = append(snap.DeletedLogs, id)
 	}
 	sort.Strings(snap.DeletedLogs)
+	if len(s.retired) > 0 {
+		snap.Retired = make(map[string]time.Time, len(s.retired))
+		for id, at := range s.retired {
+			snap.Retired[id] = at
+		}
+	}
 	s.gen++
 	return snap, s.gen
 }
@@ -784,6 +810,9 @@ func (s *FileStore) CreateSession(sess model.Session) error {
 	if _, ok := s.sessions[sess.ID]; ok {
 		return fmt.Errorf("session %s exists", sess.ID)
 	}
+	if _, ok := s.retired[sess.ID]; ok {
+		return fmt.Errorf("session %s: %w", sess.ID, ErrRetired)
+	}
 	for _, other := range s.sessions {
 		if other.Path == sess.Path && !Reusable(*other) {
 			return ErrPathInUse
@@ -797,6 +826,9 @@ func (s *FileStore) CreateSession(sess model.Session) error {
 		}
 	}
 	cp := sess
+	if Ended(cp) && cp.EndedAt.IsZero() {
+		cp.EndedAt = time.Now()
+	}
 	s.sessions[sess.ID] = &cp
 	s.dirty = true
 	if err := s.saveLocked(); err != nil {
@@ -815,9 +847,64 @@ func (s *FileStore) UpdateSession(id string, fn func(*model.Session)) (model.Ses
 	if !ok {
 		return model.Session{}, ErrNotFound
 	}
+	was := Ended(*sess)
 	fn(sess)
+	// The coordinator's clock, whatever path ended it (a node's stop
+	// event, a host removed, a hello that no longer lists it).
+	switch now := Ended(*sess); {
+	case now && !was:
+		sess.EndedAt = time.Now()
+	case !now:
+		sess.EndedAt = time.Time{}
+	}
 	s.dirty = true
 	return *sess, nil
+}
+
+// RetireSessions deletes the sessions in ids (at most retireBatch of them)
+// with one save, leaving tombstones; see Store.
+func (s *FileStore) RetireSessions(ids []string) ([]string, error) {
+	if len(ids) > retireBatch {
+		ids = ids[:retireBatch]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	removed := map[string]*model.Session{}
+	for _, id := range ids {
+		if sess, ok := s.sessions[id]; ok {
+			removed[id] = sess
+			delete(s.sessions, id)
+			s.deletedLogs[id] = true
+			s.retired[id] = now
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	s.dirty = true
+	if err := s.saveLocked(); err != nil {
+		for id, sess := range removed {
+			s.sessions[id] = sess
+			delete(s.deletedLogs, id)
+			delete(s.retired, id)
+		}
+		return nil, err
+	}
+	out := make([]string, 0, len(removed))
+	for id := range removed {
+		out = append(out, id)
+		_ = s.removeLogLocked(id) // retried while it fails
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *FileStore) Retired(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.retired[id]
+	return ok
 }
 
 func (s *FileStore) DeleteSession(id string) error {
@@ -850,10 +937,17 @@ func (s *FileStore) DeleteSession(id string) error {
 // but its event log could not be removed yet; it is removed later.
 var ErrLogPending = errors.New("session deleted; its event log will be removed later")
 
+// errLogBusy: a deleted session's log is being read; it is removed later.
+var errLogBusy = errors.New("event log in use")
+
 // removeLogLocked removes the event log of a deleted session and, once it
-// is gone, forgets that it was pending.
+// is gone, forgets that it was pending. A log a reader holds is left for
+// the next try.
 func (s *FileStore) removeLogLocked(id string) error {
 	if l, ok := s.logs[id]; ok {
+		if l.pins > 0 {
+			return errLogBusy
+		}
 		s.closeLocked(l)
 		delete(s.logs, id)
 	}
@@ -880,6 +974,13 @@ func (s *FileStore) removeDeletedLogsLocked() int {
 func (s *FileStore) RemoveDeletedLogs() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-retiredTTL)
+	for id, at := range s.retired {
+		if at.Before(cutoff) {
+			delete(s.retired, id)
+			s.dirty = true
+		}
+	}
 	if len(s.deletedLogs) == 0 {
 		return 0
 	}

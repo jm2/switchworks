@@ -72,10 +72,17 @@ hash adds nothing), and are deleted when revoked.
 `state.json`, which is rewritten as sessions change, and each has an event
 log, so keeping all of them forever would grow the store and slow every
 save. Stopped sessions, and those their node no longer has (gone), are
-deleted 90 days after their last event (`session_retention_days`; a
-negative value keeps them). Only those two: a node reports every session it
-has not stopped and the coordinator adopts any it does not know, so
-deleting a running or errored session would just bring it back. `swk rm`
+deleted 90 days after they ended (`session_retention_days`; a negative
+value keeps them), counted from `ended_at`, which the store sets by the
+coordinator's clock whatever ends a session: a node's clock, or a session
+idle for months before its host was removed, cannot shorten it. Running and
+errored sessions are kept, and so is any session a running one was spawned
+below, since spawn depth is counted up the chain of parents. A node can
+still hold a session the coordinator calls gone, and the coordinator adopts
+sessions it does not know, so a removed session leaves a tombstone for a
+year: its node cannot bring it back or reuse its id. Failed spawns are
+forgotten without one, so a spawn that started late is still adopted.
+Removal goes in batches of 200, one `state.json` write each. `swk rm`
 deletes one sooner; it needs admin, since an operate token is what agents'
 machines carry, and history is worth more than the space.
 

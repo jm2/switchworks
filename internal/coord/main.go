@@ -41,8 +41,8 @@ type Config struct {
 	// links (default https://<public_api>).
 	PublicUI string `json:"public_ui,omitempty"`
 	// SessionRetentionDays is how long a stopped or gone session's record
-	// and event log are kept after its last event: 0 means the default
-	// (90), a negative number forever.
+	// and event log are kept after it ended: 0 means the default (90), a
+	// negative number forever.
 	SessionRetentionDays int `json:"session_retention_days,omitempty"`
 }
 

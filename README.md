@@ -503,9 +503,10 @@ swk rm myapp                              # delete a stopped session's history (
 A bare session name works when it is unique across the fleet.
 
 Stopped sessions, and sessions whose host no longer has them, are deleted with their event logs
-90 days after their last event. Set `session_retention_days` in `coordinator.json` to change
-that (a negative number keeps them forever), or remove one sooner with `swk rm`. Sessions that
-are still running, or in error on their node, are kept however old.
+90 days after they ended. Set `session_retention_days` in `coordinator.json` to change that (a
+negative number keeps them forever), or remove one sooner with `swk rm`. Sessions that are still
+running, in error on their node, or that a running session was spawned below, are kept however
+old. A removed session stays removed: if its node still reports it, it is not taken back.
 
 Agents get fleet tools (`fleet_list`, `fleet_ask`, `fleet_send`,
 `fleet_spawn`, ...), so a prompt like "ask buildbox/helper whether the ARM

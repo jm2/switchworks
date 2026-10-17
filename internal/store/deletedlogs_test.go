@@ -123,3 +123,62 @@ func TestCreateAfterPendingDelete(t *testing.T) {
 		t.Fatalf("the new session has the old one's events: %v (last seq %d)", evs, s.LastSeq(id))
 	}
 }
+
+// EndedAt is set by the store's clock when a session ends, whatever ends
+// it, and cleared if it comes back.
+func TestEndedAt(t *testing.T) {
+	s, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id := ulid.New()
+	if err := s.CreateSession(model.Session{ID: id, Path: "devbox/x", Host: "devbox", Name: "x", Status: model.StatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	sess, _ := s.UpdateSession(id, func(x *model.Session) { x.Status = model.StatusGone })
+	if sess.EndedAt.Before(before) {
+		t.Fatalf("EndedAt %v after going gone at %v", sess.EndedAt, before)
+	}
+	first := sess.EndedAt
+	if sess, _ = s.UpdateSession(id, func(x *model.Session) { x.Status = model.StatusStopped }); !sess.EndedAt.Equal(first) {
+		t.Fatalf("EndedAt moved from %v to %v between two ended states", first, sess.EndedAt)
+	}
+	if sess, _ = s.UpdateSession(id, func(x *model.Session) { x.Status = model.StatusIdle }); !sess.EndedAt.IsZero() {
+		t.Fatalf("EndedAt %v kept on a live session", sess.EndedAt)
+	}
+}
+
+// Tombstones survive a restart and expire after a year.
+func TestRetiredPersistsAndExpires(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ulid.New()
+	if err := s.CreateSession(model.Session{ID: id, Path: "devbox/x", Host: "devbox", Name: "x", Status: model.StatusStopped}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.RetireSessions([]string{id}); err != nil || len(got) != 1 {
+		t.Fatalf("RetireSessions = %v, %v", got, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = OpenFileStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !s.Retired(id) {
+		t.Fatal("tombstone lost across a restart")
+	}
+	s.mu.Lock()
+	s.retired[id] = time.Now().Add(-retiredTTL - time.Hour)
+	s.mu.Unlock()
+	s.RemoveDeletedLogs()
+	if s.Retired(id) {
+		t.Fatal("a year-old tombstone kept")
+	}
+}

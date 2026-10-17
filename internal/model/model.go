@@ -112,6 +112,9 @@ type Session struct {
 	ProjectedSeq int64     `json:"projected_seq,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// EndedAt is when, by the coordinator's clock, the session was last
+	// seen to stop or go (zero while it runs). Retention counts from it.
+	EndedAt time.Time `json:"ended_at,omitzero"`
 }
 
 // SpawnSpec is what a client asks for when starting a managed session.
