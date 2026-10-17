@@ -163,7 +163,7 @@ func (n *Node) resolveImages(s *session, body []byte) ([]byte, error) {
 		if abs, err := filepath.Abs(cwd); err == nil {
 			cwd = abs
 		}
-		if err := proc.CheckWithin(root, cwd); err != nil {
+		if err := proc.CheckPinned(root, cwd); err != nil {
 			return nil, err
 		}
 		atts := make([]model.Attachment, 0, len(files))

@@ -30,6 +30,8 @@ import (
 
 // Main runs `swk dev run [flags] <prompt>` and returns the exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
+	rawStderr := stderr
+	stdout, stderr = terminal(stdout, stderr)
 	fs := flag.NewFlagSet("dev run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	h := fs.String("harness", "codex", "harness: codex, agy, goose, or the name given with -acp-bin")
@@ -69,17 +71,23 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 	var rec *recorder
 	if *record != "" {
-		f, err := os.Create(*record)
+		// The transcript holds prompts, replies and tool output: keep it
+		// private like the other state files, also when it replaces one.
+		f, err := os.OpenFile(*record, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		defer f.Close()
+		if err := f.Chmod(0o600); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 		rec = &recorder{w: f}
 	}
 	harnessStderr := io.Discard
 	if *logs {
-		harnessStderr = stderr
+		harnessStderr = render.Safe(rawStderr)
 	}
 	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
 		Logf: func(f string, a ...any) {
@@ -168,6 +176,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+}
+
+// terminal filters what dev run and vision-probe print, as cli.Main does
+// for the fleet commands: agent and harness text reaches the terminal here,
+// and unfiltered it could drive the terminal or redraw the approval prompt
+// with a different command. The harness's own stderr (--logs) gets a
+// separate render.Safe over the raw writer, so a sequence split in one
+// stream cannot join bytes from the other.
+func terminal(stdout, stderr io.Writer) (io.Writer, io.Writer) {
+	return render.Safe(stdout), render.Safe(stderr)
 }
 
 func drain(events chan adapter.Event, r *render.Renderer, last *model.Usage, d time.Duration) {

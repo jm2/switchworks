@@ -33,8 +33,16 @@ func TestSystemdQuote(t *testing.T) {
 		"/home/dev/100%/swk": "/home/dev/100%%/swk",
 		`/home/dev/a"b/swk`:  `"/home/dev/a\"b/swk"`,
 	} {
-		if got := systemdQuote(in); got != want {
-			t.Errorf("systemdQuote(%q) = %q, want %q", in, got, want)
+		if got, err := systemdQuote(in); err != nil || got != want {
+			t.Errorf("systemdQuote(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"/home/dev/a\nExecStartPre=/bin/evil\n/swk", "/home/dev/a\rb/swk", "/home/dev/a\x7fb/swk"} {
+		if got, err := systemdQuote(in); err == nil {
+			t.Errorf("systemdQuote(%q) = %q, want an error", in, got)
+		}
+		if _, err := unitText(Roles[0], in); err == nil {
+			t.Errorf("unitText accepted %q", in)
 		}
 	}
 }

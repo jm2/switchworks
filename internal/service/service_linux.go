@@ -79,17 +79,26 @@ func unitText(role, exe string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return bytes.ReplaceAll(b, []byte("@SWK@"), []byte(systemdQuote(exe))), nil
+	q, err := systemdQuote(exe)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.ReplaceAll(b, []byte("@SWK@"), []byte(q)), nil
 }
 
-// systemdQuote quotes a path for ExecStart.
-func systemdQuote(s string) string {
+// systemdQuote quotes a path for ExecStart. It refuses control characters:
+// a newline would end ExecStart and start a directive of the path's
+// choosing, and quoting cannot carry one.
+func systemdQuote(s string) (string, error) {
+	if strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", fmt.Errorf("the path %q contains control characters; not writing a unit for it", s)
+	}
 	s = strings.ReplaceAll(s, "%", "%%")
 	if !strings.ContainsAny(s, " \t\"'\\;$") {
-		return s
+		return s, nil
 	}
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
-	return `"` + r.Replace(s) + `"`
+	return `"` + r.Replace(s) + `"`, nil
 }
 
 // packagedUnit reports whether some unit file other than one Install wrote

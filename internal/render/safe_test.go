@@ -52,3 +52,19 @@ func TestJSONSafe(t *testing.T) {
 		t.Fatalf("raw controls in output: %q", buf.String())
 	}
 }
+
+func TestSafeHidden(t *testing.T) {
+	var b bytes.Buffer
+	w := Safe(&b)
+	in := "a\u200eb\u200fc\u061cd\u200be\u2060f\ufeffg \u0627\u200c\u0644 \U0001F469\u200d\U0001F4BB"
+	raw := []byte(in)
+	for i := range raw {
+		if _, err := w.Write(raw[i : i+1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ZWNJ and ZWJ stay: scripts and emoji sequences need them.
+	if got, want := b.String(), "abcdefg \u0627\u200c\u0644 \U0001F469\u200d\U0001F4BB"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

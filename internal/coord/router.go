@@ -138,6 +138,11 @@ type router struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+
+	// Deliveries started in the background, so close can wait for them
+	// before the store is closed.
+	bg     sync.WaitGroup
+	closed bool // under mu: no more background deliveries
 }
 
 func newRouter(s *Server, g Guards) *router {
@@ -151,6 +156,28 @@ func newRouter(s *Server, g Guards) *router {
 func (r *router) close() {
 	r.stopOnce.Do(func() { close(r.stop) })
 	<-r.done
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	r.bg.Wait()
+}
+
+// deliverLater tries to deliver m in the background, unless the router is
+// closing (the message stays pending, and is delivered after a restart).
+func (r *router) deliverLater(m model.Message) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.bg.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.bg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		r.deliver(ctx, m)
+	}()
 }
 
 func (r *router) poke() {
@@ -198,11 +225,7 @@ func (r *router) loop() {
 			}
 			// Deliver concurrently so one slow host does not hold up the
 			// rest; deliver itself skips messages already in flight.
-			go func(m model.Message) {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				r.deliver(ctx, m)
-			}(m)
+			r.deliverLater(m)
 		}
 	}
 }
@@ -727,7 +750,7 @@ func (r *router) expire(m model.Message) {
 // notifySender queues a system notice for the sending session. Notices are
 // never sent about notices, completion messages or replies.
 func (r *router) notifySender(m model.Message, text string) {
-	if m.FromSession == "" || m.Kind == model.MsgSystem || m.Kind == model.MsgDone {
+	if m.FromSession == "" || m.Kind == model.MsgSystem || m.Kind == model.MsgDone || m.Kind == model.MsgReply {
 		return
 	}
 	sess, ok := r.s.store.Session(m.FromSession)
@@ -738,12 +761,75 @@ func (r *router) notifySender(m model.Message, text string) {
 		ToSession: sess.ID, ToPath: sess.Path, Text: text, Hops: m.Hops, State: model.MsgPending,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(n) == nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			r.deliver(ctx, n)
-		}()
+		r.deliverLater(n)
 	}
+}
+
+// onFailed fails a message its target's node accepted but could not hand
+// to the harness (message.failed), and tells the sender.
+func (r *router) onFailed(sessionID, messageID, why string) {
+	m, ok := r.s.store.Message(messageID)
+	if !ok || m.ToSession != sessionID {
+		return // not this session's to fail
+	}
+	why = clipText(why, 500)
+	if why == "" {
+		why = "the harness did not take it"
+	}
+	r.failAccepted(m.ID, why, func(m model.Message) string {
+		return fmt.Sprintf("Your %s message %s to %s could not be delivered: %s", m.Kind, m.ID, m.To, why)
+	})
+}
+
+// failAsksTo fails the asks a session was given and will not answer, now
+// that it has stopped or gone, and tells their senders.
+func (r *router) failAsksTo(sess model.Session, why string) {
+	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
+		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || m.State != model.MsgDelivered {
+			continue
+		}
+		r.failAccepted(m.ID, why, func(m model.Message) string {
+			return fmt.Sprintf("Your ask %s to %s will not be answered: %s.", m.ID, m.To, why)
+		})
+	}
+}
+
+// failOrphanedAsks fails the unanswered asks of sessions that ended before
+// asks were failed when their session ended.
+func (r *router) failOrphanedAsks() {
+	ended := map[string]model.Session{}
+	for _, sess := range r.s.store.Sessions() {
+		if !live(sess) {
+			ended[sess.ID] = sess
+		}
+	}
+	seen := map[string]bool{}
+	for _, m := range r.s.store.Messages(store.MessageFilter{}) {
+		if sess, ok := ended[m.ToSession]; ok && !seen[sess.ID] && m.Kind == model.MsgAsk && m.State == model.MsgDelivered {
+			seen[sess.ID] = true
+			r.failAsksTo(sess, "its session "+sess.Status)
+		}
+	}
+}
+
+// failAccepted fails a message that is pending or was delivered (but not
+// answered), wakes a fleet_ask waiting on it, and notifies its sender.
+func (r *router) failAccepted(id, why string, notice func(model.Message) string) {
+	r.mu.Lock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || (cur.State != model.MsgPending && cur.State != model.MsgDelivered) {
+		r.mu.Unlock()
+		return
+	}
+	cur.State, cur.Error = model.MsgFailed, why
+	_ = r.put(cur)
+	ws := r.waiters[id]
+	delete(r.waiters, id)
+	for _, w := range ws {
+		w <- cur // the ask itself, failed
+	}
+	r.mu.Unlock()
+	r.notifySender(cur, notice(cur))
 }
 
 // ask sends an ask and, if wait > 0, waits for the reply.
@@ -776,6 +862,10 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 	}
 	if wait > 0 {
 		if rep := r.waitReply(ctx, m.ID, wait); rep != nil {
+			if rep.ID == m.ID {
+				res.Status, res.Error = fleet.AskFailed, rep.Error
+				return res
+			}
 			res.Status, res.Reply, res.ReplyFrom = fleet.AskReplied, rep.Text, rep.From
 			return res
 		}
@@ -784,9 +874,14 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 	return res
 }
 
-// waitReply blocks until askID is answered, d elapses or ctx ends.
+// waitReply blocks until askID is answered, d elapses or ctx ends. It
+// returns the reply, or the ask itself if it failed.
 func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *model.Message {
 	r.mu.Lock()
+	if ask, ok := r.s.store.Message(askID); ok && ask.State == model.MsgFailed {
+		r.mu.Unlock()
+		return &ask
+	}
 	if ask, ok := r.s.store.Message(askID); ok && ask.ReplyID != "" {
 		defer r.mu.Unlock()
 		rep, ok := r.s.store.Message(ask.ReplyID)
@@ -929,7 +1024,10 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 			if ask.ReplyID != "" || wait > 0 {
 				rep = r.waitReply(ctx, ask.ID, wait)
 			}
-			if rep != nil {
+			switch {
+			case rep != nil && rep.ID == ask.ID:
+				t.Status, t.Error = fleet.AskFailed, rep.Error
+			case rep != nil:
 				t.Status, t.Reply, t.ReplyFrom = fleet.AskReplied, rep.Text, rep.From
 			}
 		}
@@ -1013,10 +1111,6 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 		ToSession: parent.ID, ToPath: parent.Path, Text: text, Hops: hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(m) == nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			r.deliver(ctx, m)
-		}()
+		r.deliverLater(m)
 	}
 }

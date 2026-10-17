@@ -22,6 +22,11 @@ type turnState struct {
 	steps map[int]*step
 	// streamed is true once any agent text was emitted as an item.
 	streamed bool
+	// live: Deliver has sent the message, and read() ends the turn if the
+	// process exits; before that, an exit only sets exited and Deliver
+	// fails the turn (interrupted says whether that exit was asked for).
+	// All under h.mu.
+	live, exited, interrupted bool
 }
 
 // step is one step_update index within a turn.

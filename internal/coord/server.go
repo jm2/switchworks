@@ -41,6 +41,11 @@ type Server struct {
 	acts  map[string]*activity         // session id -> recent activity
 
 	dropLogged map[string]time.Time // host -> last "dropped input" log
+	onceLogged map[string]bool      // refusals already logged (logOnce)
+
+	// ingestMu, per host, keeps an old connection's last batch and the new
+	// connection's resend from being stored and projected out of order.
+	ingestMu map[string]*sync.Mutex
 
 	// hostMu orders changes to a host's pinned certificate (enroll, remove)
 	// against nodes completing their connection.
@@ -110,12 +115,25 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 	if s.web, err = loadWebAuth(dir); err != nil {
 		return nil, fmt.Errorf("web sign-in key: %w", err)
 	}
+	if s.web.notice != "" {
+		s.logf("WARNING: %s", s.web.notice)
+	}
 	if s.blobs, err = openBlobStore(filepath.Join(dir, "attachments")); err != nil {
 		return nil, fmt.Errorf("attachment store: %w", err)
 	}
 	s.router = newRouter(s, cfg.Guards)
+	s.replayProjections()
 	s.purgeFailedSpawns()
+	s.router.failOrphanedAsks()
 	s.rebuildActivity()
+	// Hosts enrolled before certificates were pinned still pin the first
+	// valid certificate for their name (ServeNodes); say which, so they can
+	// be re-enrolled to close that window.
+	for _, h := range st.Hosts() {
+		if h.CertSHA256 == "" {
+			s.logf("WARNING: host %s has no pinned certificate; the first node certificate the fleet CA signed for that name to connect will be pinned. Re-enroll it (swk coordinator enroll-token %s, then swk node enroll - on the host) to pin its certificate now", h.ID, h.ID)
+		}
+	}
 	return s, nil
 }
 
@@ -230,16 +248,7 @@ func (s *Server) handleNode(c net.Conn) {
 	s.logf("node %s connected from %s (%s/%s, %s, adapters %v, %d sessions)", host, c.RemoteAddr(), hello.OS, hello.Arch, hello.Version, hello.Adapters, len(hello.Sessions))
 	s.publishHost(host)
 
-	acked := map[string]int64{}
-	if len(hello.Sessions) > maxHelloSessions {
-		s.logf("node %s reports %d sessions; considering the first %d", host, len(hello.Sessions), maxHelloSessions)
-		hello.Sessions = hello.Sessions[:maxHelloSessions]
-	}
-	for _, st := range hello.Sessions {
-		s.reconcile(host, st)
-		s.learnPolicies(host, st)
-		acked[st.ID] = s.store.LastSeq(st.ID)
-	}
+	acked := s.greet(host, hello)
 	if err := wc.Send(wire.TWelcome, "", "", wire.Welcome{Protocol: wire.ProtocolVersion, Acked: acked}); err != nil {
 		n.close()
 	}
@@ -267,6 +276,66 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 }
 
+// greet takes in a node's hello: its host's sessions it no longer has are
+// gone, those it has and the coordinator does not are adopted. It returns
+// the welcome's acks: each reported session's last stored seq, or, for one
+// that is not this host's here, everything the node has, so the node drops
+// events it would otherwise resend forever.
+func (s *Server) greet(host string, hello wire.Hello) map[string]int64 {
+	defer s.lockIngest(host)()
+	if len(hello.Sessions) > maxHelloSessions {
+		s.logf("node %s reports %d sessions; considering the first %d", host, len(hello.Sessions), maxHelloSessions)
+		hello.Sessions = hello.Sessions[:maxHelloSessions]
+	} else {
+		// Before adopting, so a session the node reports can take the path
+		// of one it does not.
+		s.markUnreported(host, hello.Sessions, time.Now())
+	}
+	acked := map[string]int64{}
+	for _, st := range hello.Sessions {
+		s.reconcile(host, st)
+		s.learnPolicies(host, st)
+		if sess, ok := s.store.Session(st.ID); ok && sess.Host == host {
+			acked[st.ID] = s.store.LastSeq(st.ID)
+		} else {
+			acked[st.ID] = st.LastSeq
+		}
+	}
+	return acked
+}
+
+// unreportedGrace is how old a session must be before a hello that does
+// not list it marks it gone: a spawn sent on an earlier connection may not
+// have reached the node when it said hello.
+const unreportedGrace = 5 * time.Minute
+
+// markUnreported marks gone the live sessions of host that its node no
+// longer has (it lists every session it has not stopped). A coordinator
+// that crashed mid-spawn, or lost their last status, would otherwise keep
+// them, and their paths, forever.
+func (s *Server) markUnreported(host string, reported []wire.SessionState, now time.Time) {
+	has := map[string]bool{}
+	for _, st := range reported {
+		has[st.ID] = true
+	}
+	for _, sess := range s.store.Sessions() {
+		if sess.Host != host || !live(sess) || has[sess.ID] || now.Sub(sess.CreatedAt) < unreportedGrace {
+			continue
+		}
+		cur, err := s.store.UpdateSession(sess.ID, func(x *model.Session) {
+			if live(*x) {
+				x.Status = model.StatusGone
+			}
+		})
+		if err != nil || cur.Status != model.StatusGone {
+			continue
+		}
+		s.logf("node %s no longer has %s (%s, %s): marked gone", host, sess.Path, sess.ID, sess.Status)
+		s.publishSession(sess.ID)
+		s.router.failAsksTo(cur, "its session is gone")
+	}
+}
+
 // reconcile adopts sessions a node reports that the coordinator does not
 // know (e.g. after coordinator data loss). The node chooses the ID and path,
 // so both are checked: a canonical ULID, and a path on this host.
@@ -277,30 +346,66 @@ func (s *Server) reconcile(host string, st wire.SessionState) {
 	name, onHost := strings.CutPrefix(st.Path, host+"/")
 	switch {
 	case !ulid.Valid(st.ID):
-		s.logf("node %s: not adopting session with invalid id %q", host, st.ID)
+		s.logOnce(st.ID, "node %s: not adopting session with invalid id %q", host, st.ID)
 		return
 	case !onHost || model.ValidateSessionName(name) != nil:
-		s.logf("node %s: not adopting session %s with path %q", host, st.ID, st.Path)
+		s.logOnce(st.ID, "node %s: not adopting session %s with path %q", host, st.ID, st.Path)
 		return
 	case model.ValidateName("harness", st.Harness) != nil:
-		s.logf("node %s: not adopting session %s with harness %q", host, st.ID, st.Harness)
+		s.logOnce(st.ID, "node %s: not adopting session %s with harness %q", host, st.ID, st.Harness)
 		return
 	}
 	if t, err := ulid.Time(st.ID); err != nil || t.After(time.Now().Add(time.Hour)) {
 		// An ID from the future would outrank every later session on its
 		// path (SessionByPath returns the newest).
-		s.logf("node %s: not adopting session %s: id is from the future", host, st.ID)
+		s.logOnce(st.ID, "node %s: not adopting session %s: id is from the future", host, st.ID)
 		return
 	}
 	status := st.Status
 	if !knownStatus(status) {
 		status = model.StatusError
 	}
+	// Events already in its log (a coordinator that lost state.json but
+	// not events/) are history: the hello says how it is now.
+	last := s.store.LastSeq(st.ID)
 	err := s.store.CreateSession(model.Session{ID: st.ID, Path: st.Path, Host: host, Name: name, Harness: st.Harness,
-		Mode: model.ModeManaged, NativeRef: st.NativeRef, Status: status, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+		Mode: model.ModeManaged, NativeRef: st.NativeRef, Status: status, LastSeq: last, ProjectedSeq: last,
+		CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	if err != nil {
-		s.logf("node %s: adopt session %s (%s): %v", host, st.ID, st.Path, err)
+		s.logOnce(st.ID, "node %s: not adopting session %s (%s): %v; its events are acknowledged and dropped", host, st.ID, st.Path, err)
 	}
+}
+
+// logOnce logs a refusal the first time it happens for key; nodes repeat
+// what is refused on every connection.
+func (s *Server) logOnce(key, format string, args ...any) {
+	s.mu.Lock()
+	if s.onceLogged == nil || len(s.onceLogged) > 10000 {
+		s.onceLogged = map[string]bool{}
+	}
+	seen := s.onceLogged[key]
+	s.onceLogged[key] = true
+	s.mu.Unlock()
+	if !seen {
+		s.logf(format, args...)
+	}
+}
+
+// lockIngest serializes storing and projecting a host's events (and its
+// hellos), and returns the unlock.
+func (s *Server) lockIngest(host string) func() {
+	s.mu.Lock()
+	if s.ingestMu == nil {
+		s.ingestMu = map[string]*sync.Mutex{}
+	}
+	m := s.ingestMu[host]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.ingestMu[host] = m
+	}
+	s.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // learnPolicies records the approval policy and sandbox a node reports for
@@ -384,7 +489,12 @@ func (s *Server) readNode(n *nodeConn) {
 			// maxNodeReqs at a time per node (asks can wait for minutes).
 			select {
 			case n.reqs <- struct{}{}:
+				// Counted in s.wg (this connection's own count is held
+				// meanwhile), so Shutdown waits for it before the store
+				// is closed.
+				s.wg.Add(1)
 				go func() {
+					defer s.wg.Done()
 					defer func() { <-n.reqs }()
 					s.handleNodeReq(n, env)
 				}()
@@ -428,22 +538,26 @@ const maxTokensPerEvent = 20_000_000
 // are acknowledged too, so the node drops them from its spool rather than
 // resending them forever.
 func (s *Server) ingest(host string, evs []model.Event) (map[string]int64, error) {
+	// One batch of a host's at a time, stored and projected in order, even
+	// while a replaced connection finishes its last one.
+	defer s.lockIngest(host)()
 	acked := map[string]int64{}
+	refused := map[string]int64{} // session -> highest refused seq
 	ok := evs[:0:0]
 	for _, ev := range evs {
 		// Only sessions this coordinator created (or adopted from this
 		// host's hello) and that belong to this host: a node must not write
-		// into another host's logs or invent sessions.
+		// into another host's logs or invent sessions. Acknowledging what
+		// is refused only drops it from this node's own spool.
 		sess, known := s.store.Session(ev.SessionID)
 		if !known || sess.Host != host || !ulid.Valid(ev.SessionID) {
 			s.logDrop(host, "event for session %q it does not own", ev.SessionID)
-			if known && sess.Host == host && ev.Seq > acked[ev.SessionID] {
-				acked[ev.SessionID] = ev.Seq
-			}
+			refused[ev.SessionID] = max(refused[ev.SessionID], ev.Seq)
 			continue
 		}
 		if !validKind(ev.Kind) {
 			s.logDrop(host, "event with kind %q", ev.Kind)
+			refused[ev.SessionID] = max(refused[ev.SessionID], ev.Seq)
 			continue
 		}
 		ok = append(ok, ev)
@@ -459,6 +573,13 @@ func (s *Server) ingest(host string, evs []model.Event) (map[string]int64, error
 	}
 	for _, ev := range ok {
 		acked[ev.SessionID] = s.store.LastSeq(ev.SessionID)
+	}
+	for id, seq := range refused {
+		// Past a stored event only once all of them were stored: an ack
+		// above one that failed would drop it from the spool.
+		if _, mixed := acked[id]; !mixed || err == nil {
+			acked[id] = max(acked[id], seq)
+		}
 	}
 	return acked, err
 }
@@ -510,13 +631,22 @@ func (s *Server) route(ev model.Event) {
 				s.router.onSettled(sess, p)
 			}
 		}
+	case model.KindMessageFailed:
+		// The node accepted the message but its harness did not take it.
+		var p model.MessageEvent
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.router.onFailed(ev.SessionID, p.MessageID, p.Error)
+		}
 	}
 }
 
 // project updates the session record from one event, and the fleet's
-// daily token total from usage events.
+// daily token total from usage events. An event at or below the record's
+// ProjectedSeq is already in it.
 func (s *Server) project(ev model.Event) {
 	var tokenDelta int64
+	var before model.Session
+	applied := false
 	defer func() {
 		// Booked by the coordinator's clock (the one the budget is checked
 		// against), and bounded per event, so a node's clock or report
@@ -526,6 +656,9 @@ func (s *Server) project(ev model.Event) {
 		}
 		if tokenDelta > 0 {
 			s.store.AddDailyTokens(time.Now().UTC().Format("2006-01-02"), tokenDelta)
+		}
+		if applied {
+			s.projected(before, ev.SessionID)
 		}
 	}()
 	var usage model.UsageEvent
@@ -537,6 +670,11 @@ func (s *Server) project(ev model.Event) {
 		s.usage.record(ev.SessionID, usage.Total)
 	}
 	_, _ = s.store.UpdateSession(ev.SessionID, func(sess *model.Session) {
+		if ev.Seq <= sess.ProjectedSeq {
+			return
+		}
+		before, applied = *sess, true
+		sess.ProjectedSeq = ev.Seq
 		sess.UpdatedAt = ev.TS
 		switch ev.Kind {
 		case model.KindSessionRegistered:
@@ -580,6 +718,75 @@ func (s *Server) project(ev model.Event) {
 			}
 		}
 	})
+}
+
+// projected acts on a session's change of state by an event: one that
+// ended fails the asks it will not answer, and one that came back on a
+// path another live session has taken since is refused.
+func (s *Server) projected(before model.Session, id string) {
+	after, ok := s.store.Session(id)
+	if !ok {
+		return
+	}
+	if live(before) && !live(after) {
+		s.router.failAsksTo(after, "its session "+after.Status)
+	}
+	if store.Reusable(before) && !store.Reusable(after) {
+		s.refuseRevival(after)
+	}
+}
+
+// refuseRevival marks gone a session that came back to life (a spawn that
+// timed out and started after all, or a session of a removed host enrolled
+// again) when another live session took its path meanwhile, and stops it:
+// one path, one live session.
+func (s *Server) refuseRevival(sess model.Session) {
+	for _, o := range s.store.Sessions() {
+		if o.ID == sess.ID || o.Path != sess.Path || store.Reusable(o) {
+			continue
+		}
+		cur, err := s.store.UpdateSession(sess.ID, func(x *model.Session) { x.Status = model.StatusGone })
+		if err != nil {
+			return
+		}
+		s.logf("%s (%s) came back after %s took its path: marked gone, stopping it", sess.Path, sess.ID, o.ID)
+		s.publishSession(sess.ID)
+		s.router.failAsksTo(cur, "its session is gone")
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := s.SessionCommand(ctx, sess.ID, wire.Cmd{Op: wire.OpStop}); err != nil {
+				s.logf("stop %s (%s): %v", sess.Path, sess.ID, err)
+			}
+		}()
+		return
+	}
+}
+
+// replayProjections projects again the events a crash kept out of their
+// sessions' records: events are durable before they are acknowledged, the
+// records only at the next snapshot, and the node does not send acked
+// events again.
+func (s *Server) replayProjections() {
+	for _, sess := range s.store.Sessions() {
+		after, n := sess.ProjectedSeq, 0
+		for after < sess.LastSeq {
+			evs, err := s.store.Events(sess.ID, after, 400)
+			if err != nil || len(evs) == 0 {
+				break
+			}
+			for _, ev := range evs {
+				s.project(ev)
+			}
+			n += len(evs)
+			after = evs[len(evs)-1].Seq
+		}
+		if n > 0 {
+			s.logf("%s (%s): projected %d events again", sess.Path, sess.ID, n)
+		}
+	}
 }
 
 func (s *Server) subscribe(sessionID string) chan model.Event {
@@ -721,7 +928,8 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		}
 		return model.Session{}, fmt.Errorf("host %q: %w", spec.Host, ErrOffline)
 	}
-	if spec.CwdRoot != "" && !contains(n.hello.Features, wire.FeatureCwdRoot) {
+	if (spec.CwdRoot != "" || spec.ByAgent) &&
+		(!contains(n.hello.Features, wire.FeatureCwdRoot) || !contains(n.hello.Features, wire.FeatureAgentSpawn)) {
 		return model.Session{}, fmt.Errorf("host %q runs an older swk that cannot confine sessions spawned by agents; upgrade it", spec.Host)
 	}
 	if !contains(n.hello.Adapters, spec.Harness) {
@@ -772,8 +980,11 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		// What the coordinator asked for stands; the node's answer only
 		// fills in its defaults, and is marked as reported.
 		_, _ = s.store.UpdateSession(sess.ID, func(x *model.Session) {
-			// Except a cwd under "~", which only the node can expand.
-			if sr.Cwd != "" && strings.HasPrefix(spec.Cwd, "~") {
+			// Except a cwd under "~", which only the node can expand, and
+			// an agent's spawn: the node resolved its symlinks, and that
+			// real path, not text a symlink could later point elsewhere,
+			// is what the child's own children are confined to.
+			if sr.Cwd != "" && (strings.HasPrefix(spec.Cwd, "~") || spec.ByAgent) {
 				x.Cwd = sr.Cwd
 			}
 			if spec.ApprovalPolicy == "" {
@@ -812,12 +1023,13 @@ func (s *Server) forgetSession(id string) {
 }
 
 // purgeFailedSpawns removes sessions left behind by spawns that failed
-// before this coordinator forgot them: in error, never registered by a
-// harness, and without a single event. A node that did start one after
-// all reports it again and it is adopted.
+// before this coordinator forgot them, or that were in flight when it
+// stopped: in error or starting, never registered by a harness, and
+// without a single event. A node that did start one after all reports it
+// again and it is adopted.
 func (s *Server) purgeFailedSpawns() {
 	for _, sess := range s.store.Sessions() {
-		if sess.Status == model.StatusError && sess.NativeRef == nil && s.store.LastSeq(sess.ID) == 0 {
+		if (sess.Status == model.StatusError || sess.Status == model.StatusStarting) && sess.NativeRef == nil && s.store.LastSeq(sess.ID) == 0 {
 			if err := s.store.DeleteSession(sess.ID); err != nil {
 				s.logf("purge failed spawn %s: %v", sess.Path, err)
 				continue

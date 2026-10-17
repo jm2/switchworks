@@ -196,6 +196,11 @@ While the hold window is open, a reply that arrives before the asker starts
 waiting is **held** for it rather than also being delivered as a new turn.
 After the window, an unanswered ask's reply arrives as a `kind=reply` turn.
 
+An ask fails, and the asker gets a `system` notice (and a waiting
+`fleet_ask` or ticket says so at once), when its target's harness does not
+take it, or when the target stops or goes away before answering.
+Unanswered asks are kept 14 days, like finished messages.
+
 A person can ask an agent (`swk ask <address> <question>`) and an agent
 can ask a person (`fleet_ask` to `user:<name>`).
 
@@ -221,18 +226,18 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `spawn_per_minute` | 3 | spawns per agent |
 | `spawn_hosts` | the agent's own host | other hosts agents may spawn on; `["*"]` for any |
 | `spawn_harnesses` | the agent's own harness | other harnesses agents may spawn; `["*"]` for any |
-| `spawn_cwd_roots` | the agent's own cwd | other directories agents may spawn in (and below); `["*"]` for any. On another host only these count, so a cross-host spawn needs them |
+| `spawn_cwd_roots` | the agent's own cwd (and below, for a read-only agent) | other directories agents may spawn in (and below); `["*"]` for any. On another host only these count, so a cross-host spawn needs them |
 | `max_daily_tokens` | off | fleet-wide; `fleet_spawn` is refused once reached (UTC day) |
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
 | `allow_steer_any` | false | let agents steer or interrupt sessions they did not spawn |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
 | `max_broadcast` | 8 | recipients of one broadcast from an agent |
-| `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose) |
+| `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose), or a read-only one spawn agy |
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
 
 The coordinator keeps at most 256 MiB of messages; past that the oldest
-delivered, failed or expired ones are dropped first.
+delivered (answered or not), failed or expired ones are dropped first.
 
 People are not rate limited. Hops count from the message that started the
 sender's current work: a person's message is hop 0, the agent's message to
@@ -243,13 +248,27 @@ A session an agent spawns always inherits the agent's approval policy and
 sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such
 as goose run with the user's full access. So a sandboxed agent may not
 spawn one (even where `spawn_harnesses` allows it) unless
-`allow_unsandboxed_spawn` is set. The child's working directory is checked
-on the target host with symlinks (and Windows junctions) resolved. Agents cannot set the label keys `host`, `harness`,
+`allow_unsandboxed_spawn` is set. agy's sandbox restricts only its
+terminal, not its edit tools, so a read-only agent may not spawn agy
+either, unless `allow_unsandboxed_spawn` is set.
+
+The child's working directory is checked on the target host with symlinks
+(and Windows junctions) resolved, and recorded resolved: the node checks
+before each turn that it still leads to the same directory, and the
+child's own children are confined to that real path. An agent that can
+write in its working directory (Codex `workspace-write`, or agy in any
+sandbox) could swap a directory below it for a symlink once its child has
+been checked there, so it may spawn only in its working directory itself,
+or in a `spawn_cwd_roots` directory outside it (not below it, even with
+`["*"]`). Keep those roots out of places sandboxed agents can write, such
+as `/tmp`. A read-only agent may spawn below its working directory.
+
+Agents cannot set the label keys `host`, `harness`,
 `parent` or any key starting with `owner.`, so routes such as
 `@owner.role=reviewer` stay under your control. (Plain labels such as `@role=reviewer`, and
 the paths of stopped sessions, can still be taken by an agent's children.)
-An agent's spawn is refused on a node too old to enforce the directory
-check, and a parent whose policies are unknown gives its child the
+An agent's spawn is refused on a node too old to enforce these directory
+checks, and a parent whose policies are unknown gives its child the
 strictest ones (`untrusted`, `read-only`). Policies a node reported for its
 own default (rather than ones set at spawn) do not carry to another host;
 the child gets the strictest ones there too. An ACP child of an agent that

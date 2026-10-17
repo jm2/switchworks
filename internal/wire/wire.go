@@ -91,6 +91,10 @@ type Hello struct {
 // FeatureCwdRoot: the node confines a spawn to SpawnSpec.CwdRoot.
 const FeatureCwdRoot = "cwd_root"
 
+// FeatureAgentSpawn: the node honors SpawnSpec.ByAgent and NotBelow and
+// pins an agent-spawned session's resolved cwd.
+const FeatureAgentSpawn = "agent_spawn"
+
 type Welcome struct {
 	Protocol int              `json:"protocol"`
 	Acked    map[string]int64 `json:"acked"`

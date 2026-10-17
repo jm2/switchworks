@@ -74,7 +74,12 @@ warn about it at first. There are two ways to fix that:
    `http_listen` serves the same API and UI over plain HTTP. It must be a
    loopback address; the coordinator refuses to start otherwise. Only on
    that listener, and only from loopback, does it trust the proxy's
-   `X-Forwarded-Proto` and `X-Forwarded-For` headers.
+   `X-Forwarded-Proto` and `X-Forwarded-For` headers. The proxy must set
+   `X-Forwarded-For` itself (overwrite it, or append the client's address,
+   as `tailscale serve`, nginx's `$proxy_add_x_forwarded_for` and Caddy
+   do): the coordinator takes its last entry as the client for the
+   sign-in limit, so a proxy that passes the header through unchanged
+   lets each client pick its own.
 
 ## Signing in
 
@@ -93,21 +98,37 @@ or spawning is refused with a message naming the scope it needs. See the
 scope table in the [README](../README.md#3-the-cli-on-other-machines).
 
 The browser gets a 30-day session cookie, or shorter if its token expires
-sooner. Signing out from the top bar revokes that cookie on the server too,
-so a copy of it stops working. `swk token rm <name>` signs out every
-browser that token signed in, directly or through a link, and voids its
-unused links. Pages and streams already open end within seconds of a
-sign-out or `swk token rm`, and within 15 seconds of an expiry. Each
-token may have 20 unused links at a time (a new one replaces the oldest)
-and sign in 20 times a minute. To sign every browser out, delete `ui.key` in the
-coordinator directory and restart the coordinator.
+sooner. Signing out from the top bar revokes that cookie on the server
+too, so a copy of it stops working. If the coordinator cannot save the
+sign-out, it logs that and `POST /ui/logout` answers 500: the cookie is
+out until the coordinator restarts, but a copy would work again after. The
+server keeps at most 256 single sign-outs per credential; past that, the
+oldest are replaced by a cutoff that also signs out that credential's
+browsers signed in before them. Ordinary use never reaches it; it bounds
+the list when a token is used to sign in and out in a loop. `swk token rm
+<name>` signs out every browser that token signed in, directly or through
+a link, and voids its unused links. Pages and streams already open end
+within seconds of a sign-out or `swk token rm`, and within 15 seconds of
+an expiry. Each token may have 20 unused links at a time (a new one
+replaces the oldest) and sign in 20 times a minute. To sign every browser
+out, delete `ui.key` in the coordinator directory and restart the
+coordinator. Sign-outs are kept in `ui-revoked.json` there. If that file
+cannot be read, the coordinator moves it aside
+(`ui-revoked.json.corrupt-<time>`), makes a new `ui.key` so that no older
+cookie works, signed-out ones included, and logs a warning: every browser
+signs in again, and nothing signed out comes back.
 
 ## Security model
 
-- The cookie is `HttpOnly` and `SameSite=Strict`, and `Secure` over HTTPS.
-  It is HMAC-signed with `ui.key` (0600), so no server-side session table
-  is needed. The signed payload holds its expiry, a random id (for
-  sign-out), its scope and the id of the API token behind it; each request
+- The cookie is `HttpOnly` and `SameSite=Strict`. Over HTTPS it is
+  `Secure` and named `__Host-swk_session`, which browsers only accept from
+  a secure page, for `Path=/` and with no `Domain`, so no other host or
+  plain-HTTP page can set or shadow it. Over plain HTTP it is
+  `swk_session`; a `swk_session` cookie from before the rename keeps
+  working over HTTPS until it expires or signs out. It is HMAC-signed with
+  `ui.key` (0600), so no server-side session table is needed. The signed
+  payload holds its expiry, a random id (for sign-out), when it was
+  minted, its scope and the id of the API token behind it; each request
   checks that token still exists, so revoking the token ends the cookie.
   Open streams check again every 15 seconds, and at once after a sign-out
   or revocation.
@@ -116,8 +137,11 @@ coordinator directory and restart the coordinator.
   preflight, and the server never answers one.
 - The pages are served with a strict CSP (`script-src 'self'`, no inline
   scripts or styles), `X-Frame-Options: DENY` and `Referrer-Policy:
-  no-referrer`. Text from sessions is only ever inserted as text, never as
-  HTML.
+  no-referrer`. Every response, API JSON included, carries
+  `X-Content-Type-Options: nosniff`. Text from sessions is only ever
+  inserted as text, never as HTML, and approvals drop bidirectional
+  controls, LRM/RLM/ALM marks, zero-width spaces, word joiners and BOMs
+  so the command shown is the one that would run.
 - Images are shown as `data:` URLs (the CSP allows `img-src 'self' data:`
   and nothing else). The UI builds one only for PNG, JPEG, WebP or GIF,
   and only when the bytes' magic number matches that type: from files it
@@ -125,9 +149,13 @@ coordinator directory and restart the coordinator.
   (type sniffed again by the server, data in base64) rather than a raw
   image, so attachment bytes are never served as a page of the UI's
   origin. SVG, which can carry script, is never accepted.
-- Failed token sign-ins are limited to 10 a minute per client. One-time
-  links are not limited (they cannot be guessed), so a flood of bad tokens
-  cannot keep you from signing in with a link.
+- Failed token attempts are limited to 10 a minute per client (an IPv4
+  address or IPv6 /64): sign-ins with a token and API requests with a bad
+  `Authorization: Bearer` token share the count, and past it both are
+  refused with 429 until a minute has passed. Under a flood of clients the
+  coordinator forgets the ones quiet longest first, never everyone at once.
+  One-time links are not limited (they cannot be guessed), so a flood of
+  bad tokens cannot keep you from signing in with a link.
 - Sign-in and sign-out also require `X-Swk-CSRF: 1`. Over HTTPS the server
   sends `Strict-Transport-Security`; browsers ignore it until they trust
   the fleet CA, so it cannot lock anyone out.

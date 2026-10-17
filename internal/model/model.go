@@ -101,13 +101,17 @@ type Session struct {
 	Sandbox        string `json:"sandbox,omitempty"`
 	// PoliciesReported: the node, not the coordinator, chose them (its
 	// defaults), so they are not trusted beyond that node's own host.
-	PoliciesReported bool      `json:"policies_reported,omitempty"`
-	Model            string    `json:"model,omitempty"`
-	Provider         string    `json:"provider,omitempty"`
-	Usage            *Usage    `json:"usage,omitempty"`
-	LastSeq          int64     `json:"last_seq"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	PoliciesReported bool   `json:"policies_reported,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	Usage            *Usage `json:"usage,omitempty"`
+	LastSeq          int64  `json:"last_seq"`
+	// ProjectedSeq is the last event whose effects (status, usage, native
+	// ref) this record holds. Events are durable before the record is, so a
+	// coordinator that starts with LastSeq above it projects the rest again.
+	ProjectedSeq int64     `json:"projected_seq,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // SpawnSpec is what a client asks for when starting a managed session.
@@ -128,6 +132,14 @@ type SpawnSpec struct {
 	// directory Cwd must be inside; the node checks it with symlinks
 	// resolved.
 	CwdRoot string `json:"cwd_root,omitempty"`
+	// ByAgent, set by the coordinator, marks a spawn by an agent (whatever
+	// the guards allowed): the node confines and pins its cwd, and ACP
+	// agents must apply its approval policy or not start.
+	ByAgent bool `json:"by_agent,omitempty"`
+	// NotBelow, set by the coordinator for a child of an agent that can
+	// write its own cwd, is that cwd: the child may run in it but not
+	// below it, since the parent could swap anything there for a symlink.
+	NotBelow string `json:"not_below,omitempty"`
 }
 
 // Event is one entry in a session's append-only log.

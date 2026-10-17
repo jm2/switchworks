@@ -24,11 +24,12 @@ const workspaceMCP = ".agents/mcp_config.json"
 // fleetSetup records what setupFleetTools added to a workspace, so it can
 // be taken out again once no session there uses it.
 type fleetSetup struct {
-	cwd, name     string
-	fileCreated   bool           // the config file did not exist before
-	installed     map[string]any // the entry it wrote
-	previous      map[string]any // the entry it replaced, restored on cleanup
-	exclude, line string         // .git/info/exclude and the line added to it, if any
+	cwd, name   string
+	fileCreated bool           // the config file did not exist before
+	installed   map[string]any // the entry it wrote
+	previous    map[string]any // the entry it replaced, restored on cleanup
+	exclude     excludeFile    // .git/info/exclude, if a line was added to it
+	line        string         // the line added
 }
 
 // setupFleetTools makes the fleet tools available to agy sessions in
@@ -138,11 +139,19 @@ func removeFleetTools(f *fleetSetup) error {
 
 // removeExcludeLine drops line, which gitExclude added, from the exclude
 // file ex.
-func removeExcludeLine(ex, line string) error {
-	if ex == "" {
+func removeExcludeLine(ex excludeFile, line string) error {
+	if ex.root == "" {
 		return nil
 	}
-	fi, err := os.Lstat(ex)
+	root, err := os.OpenRoot(ex.root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	fi, err := root.Lstat(ex.rel)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -150,16 +159,16 @@ func removeExcludeLine(ex, line string) error {
 		return err
 	}
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", ex)
+		return fmt.Errorf("%s is not a regular file", filepath.Join(ex.root, ex.rel))
 	}
-	cur, err := os.ReadFile(ex)
+	cur, err := root.ReadFile(ex.rel)
 	if err != nil {
 		return err
 	}
 	lines := strings.SplitAfter(string(cur), "\n")
 	for i, l := range lines {
 		if strings.TrimSpace(l) == line {
-			return writeAtomic(ex, []byte(strings.Join(append(lines[:i:i], lines[i+1:]...), "")))
+			return writeAtomicIn(root, ex.rel, []byte(strings.Join(append(lines[:i:i], lines[i+1:]...), "")))
 		}
 	}
 	return nil
@@ -315,98 +324,166 @@ func addAllowRule(path, rule string) (bool, error) {
 	return true, writeAtomic(path, append(out, '\n'))
 }
 
+// excludeFile is a .git/info/exclude that gitExclude added a line to: rel
+// inside the directory root.
+type excludeFile struct{ root, rel string }
+
 // gitExclude lists rel in the enclosing repository's .git/info/exclude so a
 // file Switchworks created does not show up in git status. It returns the
 // exclude file and the line when it added one.
-func gitExclude(cwd, rel string) (string, string, error) {
-	dir, err := filepath.Abs(cwd)
+//
+// The workspace controls .git, and with a .git file its "gitdir:" and
+// commondir. So that git directory must lie inside the directory holding
+// the .git file, or (a submodule or nested worktree) inside the .git
+// directory of the repository enclosing it, and it is reached through an
+// os.Root there, so no symlink leads out. A worktree whose git directory is
+// elsewhere gets no exclude line.
+func gitExclude(cwd, rel string) (excludeFile, string, error) {
+	abs, err := filepath.Abs(cwd)
 	if err != nil {
-		return "", "", err
+		return excludeFile{}, "", err
 	}
+	dir := abs
+	var fi os.FileInfo
 	for {
-		gitDir := filepath.Join(dir, ".git")
-		fi, err := os.Stat(gitDir)
-		if err == nil {
-			if !fi.IsDir() {
-				// A worktree or submodule: .git is a "gitdir: <path>" file.
-				b, err := os.ReadFile(gitDir)
-				if err != nil {
-					return "", "", err
-				}
-				p := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
-				if !filepath.IsAbs(p) {
-					p = filepath.Join(dir, p)
-				}
-				gitDir = p
-			}
-			// The workspace controls .git, so only write into what is
-			// really a git directory; a worktree's excludes live in its
-			// common directory.
-			if !isGitDir(gitDir) {
-				return "", "", fmt.Errorf("%s is not a git directory", gitDir)
-			}
-			if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-				c := strings.TrimSpace(string(b))
-				if !filepath.IsAbs(c) {
-					c = filepath.Join(gitDir, c)
-				}
-				if isGitDir(c) {
-					gitDir = c
-				}
-			}
-			r, err := filepath.Rel(dir, filepath.Join(cwd, rel))
-			if err != nil {
-				return "", "", err
-			}
-			r = "/" + filepath.ToSlash(r)
-			ex := filepath.Join(gitDir, "info", "exclude")
-			cur, _ := os.ReadFile(ex)
-			for _, l := range strings.Split(string(cur), "\n") {
-				if strings.TrimSpace(l) == r {
-					return "", "", nil
-				}
-			}
-			if err := os.Mkdir(filepath.Dir(ex), 0o755); err != nil && !os.IsExist(err) {
-				return "", "", err
-			}
-			if fi, err := os.Lstat(filepath.Dir(ex)); err != nil || !fi.IsDir() {
-				return "", "", fmt.Errorf("%s is not a directory", filepath.Dir(ex))
-			}
-			if fi, err := os.Lstat(ex); err == nil && !fi.Mode().IsRegular() {
-				return "", "", fmt.Errorf("%s is not a regular file", ex)
-			}
-			f, err := os.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY|oNoFollow, 0o644)
-			if err != nil {
-				return "", "", err
-			}
-			defer f.Close()
-			prefix := ""
-			if len(cur) > 0 && !bytes.HasSuffix(cur, []byte("\n")) {
-				prefix = "\n"
-			}
-			if _, err := fmt.Fprintf(f, "%s%s\n", prefix, r); err != nil {
-				return "", "", err
-			}
-			return ex, r, nil
+		if fi, err = os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			break
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", "", nil // not in a repository
+			return excludeFile{}, "", nil // not in a repository
 		}
 		dir = parent
 	}
+	top, gitDir := dir, ".git"
+	if fi.Mode().IsRegular() {
+		// A worktree or submodule: .git is a "gitdir: <path>" file.
+		b, err := os.ReadFile(filepath.Join(dir, ".git"))
+		if err != nil {
+			return excludeFile{}, "", err
+		}
+		p := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		top = enclosingRepo(dir)
+		var ok bool
+		if gitDir, ok = allowedGitDir(dir, top, p); !ok {
+			return excludeFile{}, "", fmt.Errorf("%s points outside the repository", filepath.Join(dir, ".git"))
+		}
+	}
+	root, err := os.OpenRoot(top)
+	if err != nil {
+		return excludeFile{}, "", err
+	}
+	defer root.Close()
+	// Only write into what is really a git directory; a worktree's
+	// excludes live in its common directory.
+	if !isGitDir(root, gitDir) {
+		return excludeFile{}, "", fmt.Errorf("%s is not a git directory", filepath.Join(top, gitDir))
+	}
+	if b, err := root.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		c := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(c) {
+			c = filepath.Join(top, gitDir, c)
+		}
+		if cr, ok := allowedGitDir(dir, top, c); ok && isGitDir(root, cr) {
+			gitDir = cr
+		}
+	}
+	r, err := filepath.Rel(dir, filepath.Join(abs, rel))
+	if err != nil {
+		return excludeFile{}, "", err
+	}
+	r = "/" + filepath.ToSlash(r)
+	info := filepath.Join(gitDir, "info")
+	ex := filepath.Join(info, "exclude")
+	cur, _ := root.ReadFile(ex)
+	for _, l := range strings.Split(string(cur), "\n") {
+		if strings.TrimSpace(l) == r {
+			return excludeFile{}, "", nil
+		}
+	}
+	if err := root.Mkdir(info, 0o755); err != nil && !os.IsExist(err) {
+		return excludeFile{}, "", err
+	}
+	if fi, err := root.Lstat(info); err != nil || !fi.IsDir() {
+		return excludeFile{}, "", fmt.Errorf("%s is not a directory", filepath.Join(top, info))
+	}
+	if fi, err := root.Lstat(ex); err == nil && !fi.Mode().IsRegular() {
+		return excludeFile{}, "", fmt.Errorf("%s is not a regular file", filepath.Join(top, ex))
+	}
+	f, err := root.OpenFile(ex, os.O_APPEND|os.O_CREATE|os.O_WRONLY|oNoFollow, 0o644)
+	if err != nil {
+		return excludeFile{}, "", err
+	}
+	defer f.Close()
+	prefix := ""
+	if len(cur) > 0 && !bytes.HasSuffix(cur, []byte("\n")) {
+		prefix = "\n"
+	}
+	if _, err := fmt.Fprintf(f, "%s%s\n", prefix, r); err != nil {
+		return excludeFile{}, "", err
+	}
+	return excludeFile{root: top, rel: ex}, r, nil
 }
 
-// isGitDir reports whether dir looks like a git directory: a HEAD file and
-// an objects directory (or, for a worktree, a commondir file).
-func isGitDir(dir string) bool {
-	if fi, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil || !fi.Mode().IsRegular() {
+// allowedGitDir returns p relative to top when a .git file in dir may lead
+// there: inside dir, or inside top's .git when top encloses dir.
+func allowedGitDir(dir, top, p string) (string, bool) {
+	_, inDir := relInside(dir, p)
+	_, inTopGit := relInside(filepath.Join(top, ".git"), p)
+	if !inDir && (top == dir || !inTopGit) {
+		return "", false
+	}
+	return relInside(top, p)
+}
+
+// enclosingRepo returns the nearest directory above dir whose .git is a git
+// directory (the superproject of a submodule, or the repository a worktree
+// is nested in), or dir when there is none.
+func enclosingRepo(dir string) string {
+	for a := filepath.Dir(dir); ; a = filepath.Dir(a) {
+		if fi, err := os.Lstat(filepath.Join(a, ".git")); err == nil && fi.IsDir() {
+			if r, err := os.OpenRoot(a); err == nil {
+				ok := isGitDir(r, ".git")
+				r.Close()
+				if ok {
+					return a
+				}
+			}
+		}
+		if filepath.Dir(a) == a {
+			return dir
+		}
+	}
+}
+
+// relInside returns p relative to dir when p (as text) is inside dir,
+// trying dir with its symlinks resolved too (git writes resolved paths).
+func relInside(dir, p string) (string, bool) {
+	dirs := []string{dir}
+	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
+		dirs = append(dirs, real)
+	}
+	for _, d := range dirs {
+		if r, err := filepath.Rel(d, p); err == nil && filepath.IsLocal(r) {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// isGitDir reports whether dir (inside root) looks like a git directory: a
+// HEAD file and an objects directory (or, for a worktree, a commondir file).
+func isGitDir(root *os.Root, dir string) bool {
+	if fi, err := root.Stat(filepath.Join(dir, "HEAD")); err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "objects")); err == nil && fi.IsDir() {
+	if fi, err := root.Stat(filepath.Join(dir, "objects")); err == nil && fi.IsDir() {
 		return true
 	}
-	_, err := os.Stat(filepath.Join(dir, "commondir"))
+	_, err := root.Stat(filepath.Join(dir, "commondir"))
 	return err == nil
 }
 

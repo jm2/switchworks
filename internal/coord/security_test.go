@@ -59,13 +59,25 @@ func TestAgentSpawnConfinement(t *testing.T) {
 		return spec, err
 	}
 
-	got, err := spawn(model.SpawnSpec{Prompt: "go", Cwd: "/home/dev/src/app/sub"})
+	got, err := spawn(model.SpawnSpec{Prompt: "go", Cwd: "/home/dev/src/app/"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Host != "devbox" || got.Harness != "codex" || got.CwdRoot != "/home/dev/src/app" ||
-		got.ApprovalPolicy != "untrusted" || got.Sandbox != "workspace-write" || got.Prompt != "" {
+	if got.Host != "devbox" || got.Harness != "codex" || got.CwdRoot != "/home/dev/src/app" || !got.ByAgent ||
+		got.NotBelow != "/home/dev/src/app" || got.ApprovalPolicy != "untrusted" || got.Sandbox != "workspace-write" || got.Prompt != "" {
 		t.Fatalf("child spec not confined to its parent: %+v", got)
+	}
+	// Below its own cwd, which it can write (and so re-point), only for a
+	// read-only parent.
+	if _, err := spawn(model.SpawnSpec{Cwd: "/home/dev/src/app/sub"}); err == nil || !strings.Contains(err.Error(), "may spawn only there") {
+		t.Fatalf("workspace-write parent spawned below its cwd: %v", err)
+	}
+	ro := addSession(t, s, "devbox", "ro", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/home/dev/src/app", "untrusted", "read-only"
+	})
+	spec := model.SpawnSpec{Cwd: "/home/dev/src/app/sub"}
+	if err := s.agentSpawn(from(ro), &spec, 1); err != nil || spec.NotBelow != "" {
+		t.Fatalf("read-only parent below its cwd: %v %+v", err, spec)
 	}
 	if got, _ := spawn(model.SpawnSpec{}); got.Cwd != "/home/dev/src/app" {
 		t.Fatalf("default cwd %q", got.Cwd)
@@ -328,5 +340,59 @@ func TestAgentSpawnCrossHostAndApprovals(t *testing.T) {
 	spec = model.SpawnSpec{Harness: "agy"}
 	if err := s.agentSpawn(from(q), &spec, 1); err == nil || !strings.Contains(err.Error(), "does not ask for approvals") {
 		t.Fatalf("agy child of an approving parent: %v", err)
+	}
+}
+
+// A parent that can write its cwd may spawn there or in a configured root
+// outside it, never below it (it could re-point a directory there once the
+// child is checked); "*" roots do not lift that, and the child is still
+// marked as an agent's.
+func TestAgentSpawnWritableParent(t *testing.T) {
+	s := testServer(t, Guards{SpawnCwdRoots: []string{"/srv/work", "/home/dev/app/vendor"}})
+	p := addSession(t, s, "devbox", "lead", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/home/dev/app", "never", "workspace-write"
+	})
+	for cwd, ok := range map[string]bool{
+		"/home/dev/app": true, "/srv/work/x": true, "/home/dev/app/sub": false, "/home/dev/app/vendor/x": false,
+	} {
+		spec := model.SpawnSpec{Cwd: cwd}
+		if err := s.agentSpawn(from(p), &spec, 1); (err == nil) != ok {
+			t.Errorf("%s: %v", cwd, err)
+		}
+	}
+	s.router.guards.SpawnCwdRoots = []string{"*"}
+	spec := model.SpawnSpec{Cwd: "/home/dev/app/sub"}
+	if err := s.agentSpawn(from(p), &spec, 1); err == nil {
+		t.Fatal(`"*" roots let a writing parent spawn below its cwd`)
+	}
+	spec = model.SpawnSpec{Cwd: "/elsewhere"}
+	if err := s.agentSpawn(from(p), &spec, 1); err != nil || !spec.ByAgent || spec.CwdRoot != "" {
+		t.Fatalf(`"*" roots: %v %+v`, err, spec)
+	}
+	// agy writes whatever its sandbox: even a read-only agy parent counts.
+	a := addSession(t, s, "devbox", "agy", func(x *model.Session) {
+		x.Cwd, x.Harness, x.ApprovalPolicy, x.Sandbox = "/home/dev/app", "agy", "never", "read-only"
+	})
+	spec = model.SpawnSpec{Cwd: "/home/dev/app/sub"}
+	if err := s.agentSpawn(from(a), &spec, 1); err == nil {
+		t.Fatal("read-only agy parent spawned below its cwd")
+	}
+}
+
+// agy's sandbox does not stop its edit tools, so a read-only parent may not
+// start an agy child unless allow_unsandboxed_spawn says so.
+func TestAgentSpawnAgyReadOnly(t *testing.T) {
+	s := testServer(t, Guards{SpawnHarnesses: []string{"agy"}})
+	p := addSession(t, s, "devbox", "ro", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/w", "never", "read-only"
+	})
+	spec := model.SpawnSpec{Harness: "agy"}
+	if err := s.agentSpawn(from(p), &spec, 1); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("agy child of a read-only parent: %v", err)
+	}
+	s.router.guards.AllowUnsandboxedSpawn = true
+	spec = model.SpawnSpec{Harness: "agy"}
+	if err := s.agentSpawn(from(p), &spec, 1); err != nil {
+		t.Fatalf("with allow_unsandboxed_spawn: %v", err)
 	}
 }

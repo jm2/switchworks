@@ -5,9 +5,11 @@
 package proc
 
 import (
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -44,5 +46,27 @@ func TestStdoutAfterExit(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("stdout reader still blocked 10s after the process exited")
+	}
+}
+
+// A leader that exits on stdin EOF does not leave its children running.
+func TestStopEndsChildrenOfExitedLeader(t *testing.T) {
+	p, err := Start("sh", []string{"-c", "sleep 300 & echo $!; read x; exit 0"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Fscan(p.Stdout, &pid); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := p.Stop(10 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 4*time.Second {
+		t.Fatalf("Stop took %v", d)
+	}
+	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+		t.Fatalf("child %d still running after Stop (kill 0: %v)", pid, err)
 	}
 }

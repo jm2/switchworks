@@ -267,3 +267,79 @@ func TestResumeAcrossAdapters(t *testing.T) {
 		t.Fatalf("deliver after stop: %v", err)
 	}
 }
+
+// A turn running when app-server dies ends as failed, so the session does
+// not stay busy.
+func TestAppServerCrashFailsRunningTurn(t *testing.T) {
+	a := newFake(t, t.TempDir())
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Deliver(ctx, adapter.Input{Text: "CRASH now"}, adapter.DeliverQueue); err != nil {
+		t.Fatal(err)
+	}
+	i := col.waitFor(t, 0, "turn.started", kind(model.KindTurnStarted))
+	started := col.snapshot()[i].Payload.(model.TurnStarted)
+	col.waitFor(t, i, "failed turn", func(e adapter.Event) bool {
+		p, ok := e.Payload.(model.TurnCompleted)
+		return ok && p.TurnID == started.TurnID && p.Status == "failed" && p.Error != ""
+	})
+}
+
+// A session stopped while app-server is restarting stays stopped: the
+// restart does not resume its thread.
+func TestStopWhileAppServerRestarts(t *testing.T) {
+	a := newFake(t, t.TempDir())
+	ctx := context.Background()
+	col := &collector{}
+	var mu sync.Mutex
+	var h adapter.Handle
+	stopped := make(chan error, 1)
+	sink := func(e adapter.Event) {
+		col.sink(e)
+		// Stop right when the crash is noticed, before the restart.
+		if p, ok := e.Payload.(model.SessionStatus); ok && p.Status == model.StatusError {
+			mu.Lock()
+			hh := h
+			mu.Unlock()
+			stopped <- hh.Stop(ctx)
+		}
+	}
+	hh, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	h = hh
+	mu.Unlock()
+	if err := hh.Deliver(ctx, adapter.Input{Text: "CRASH now"}, adapter.DeliverQueue); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	stop := col.waitFor(t, 0, "stopped", status(model.StatusStopped))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, ok := a.Info(); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("app-server did not restart")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond) // let the restart's resumes run
+	for _, e := range col.snapshot()[stop+1:] {
+		t.Errorf("event after stop: %s", dump([]adapter.Event{e}))
+	}
+	a.mu.Lock()
+	n := len(a.threads)
+	a.mu.Unlock()
+	if n != 0 || hh.Status() != model.StatusStopped {
+		t.Fatalf("after restart: %d thread(s) registered, status %s", n, hh.Status())
+	}
+}

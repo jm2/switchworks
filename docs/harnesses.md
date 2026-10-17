@@ -224,8 +224,10 @@ How a session maps onto ACP:
   session's summed input and output tokens over every model request in
   `_goose/unstable/session/update`. Otherwise from the prompt response's
   `usage` (an unstable ACP field), which goose fills with its last model
-  request only, so a turn with several tool calls is undercounted. The
-  context window comes from `usage_update`. Token counts survive node
+  request only, so a turn with several tool calls is undercounted, and a
+  turn that fails or is interrupted (no prompt response) counts only
+  through goose's accumulated usage. The context window comes from
+  `usage_update`. Token counts survive node
   restarts: the coordinator adds each report's growth to the session.
 - **Fleet tools.** Attached per session through `session/new`'s
   `mcpServers`, with the session's credentials in the server's
@@ -298,7 +300,10 @@ agy.jsonl "hello"` and report anything that renders oddly.
 - **Usage and duration.** agy reports both cumulatively per process in
   stream mode; Switchworks records the per-turn difference and times turns
   itself. agy's input count excludes cache reads, which are added in so
-  agy's figures compare with Codex's.
+  agy's figures compare with Codex's. Usage comes only with a turn's
+  `result`: an interrupted turn still gets one (agy ends the turn when its
+  stdin closes), but a turn whose process crashes or is killed before
+  writing it is not counted.
 - **Fleet tools** (`fleet_tools: true`): agy has no per-run MCP option, so
   for each new session the node adds a `swk` entry (command and args only)
   to `<cwd>/.agents/mcp_config.json`, keeping any other entries, and lists

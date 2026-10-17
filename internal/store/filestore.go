@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -25,9 +27,12 @@ import (
 // Durability: AppendEvents fsyncs the touched event files before returning,
 // because nodes drop their spool once the coordinator acknowledges. Metadata
 // changes are flushed at most every 500ms (immediately for session creation
-// and tokens); on startup, each session's last seq is recomputed from its
-// event file, so a crash loses at most a little projected status, never
-// events.
+// and tokens); on startup, each session's last seq is recovered from its
+// event file, and the coordinator projects again the events after the
+// session's ProjectedSeq, so a crash loses no events and no projected state.
+//
+// Event files are opened when first used, at most maxOpenLogs at a time
+// (least recently used first out); a closed one keeps only its last seq.
 type FileStore struct {
 	dir string
 
@@ -37,11 +42,21 @@ type FileStore struct {
 	tokens   map[string]tokenRec
 	apiToks  map[string]APIToken // by id
 	logs     map[string]*eventLog
+	openLogs int    // logs with an open file
+	clock    uint64 // orders log use, for eviction
 	daily    map[string]int64
 	dirty    bool
+	gen      uint64 // snapshot generation, under mu
+
+	// saveMu orders snapshot writes: one taken later (a higher gen) is
+	// never overwritten by an earlier one still being written.
+	saveMu   sync.Mutex
+	savedGen uint64
 
 	msgs     map[string]*model.Message
 	msgLog   *os.File
+	msgSize  int64 // bytes of whole records in messages.jsonl
+	msgTorn  bool  // a failed write left a partial record: rewrite first
 	msgLines int
 
 	stop chan struct{}
@@ -55,6 +70,8 @@ type tokenRec struct {
 }
 
 type snapshot struct {
+	// Version 1: sessions carry ProjectedSeq.
+	Version     int              `json:"version,omitempty"`
 	Hosts       []model.Host     `json:"hosts"`
 	Sessions    []*model.Session `json:"sessions"`
 	Tokens      []tokenRec       `json:"tokens"`
@@ -62,11 +79,22 @@ type snapshot struct {
 	DailyTokens map[string]int64 `json:"daily_tokens,omitempty"`
 }
 
+const snapshotVersion = 1
+
 // maxEventsRead bounds the bytes one Events call reads.
 const maxEventsRead = 16 << 20
 
-// Messages older than this in a terminal state are dropped at open.
+// maxOpenLogs bounds the event files held open at once.
+const maxOpenLogs = 64
+
+// Finished messages (and asks delivered but never answered) older than
+// this are dropped.
 const messageRetention = 14 * 24 * time.Hour
+
+// writeFile writes to a store file; tests replace it to fail writes.
+var writeFile = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
+
+var logf = log.Printf
 
 type idx struct {
 	seq int64
@@ -74,17 +102,17 @@ type idx struct {
 }
 
 type eventLog struct {
-	f     *os.File
-	index []idx // sorted by seq
-	size  int64
+	id      string // the session's
+	path    string
+	f       *os.File // nil while closed
+	index   []idx    // sorted by seq; nil while closed
+	size    int64
+	lastSeq int64 // known while closed too
+	pins    int   // users outside the store lock (or mid-append): not evicted
+	used    uint64
 }
 
-func (l *eventLog) last() int64 {
-	if len(l.index) == 0 {
-		return 0
-	}
-	return l.index[len(l.index)-1].seq
-}
+func (l *eventLog) last() int64 { return l.lastSeq }
 
 // OpenFileStore opens or creates a store in dir.
 func OpenFileStore(dir string) (*FileStore, error) {
@@ -107,6 +135,11 @@ func OpenFileStore(dir string) (*FileStore, error) {
 			s.hosts[h.ID] = h
 		}
 		for _, sess := range snap.Sessions {
+			if snap.Version < 1 {
+				// Saved before projections were tracked: take what was
+				// saved as projected, as it was then.
+				sess.ProjectedSeq = sess.LastSeq
+			}
 			s.sessions[sess.ID] = sess
 		}
 		for _, t := range snap.Tokens {
@@ -124,7 +157,8 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	if err := s.openMessages(); err != nil {
 		return nil, fmt.Errorf("messages: %w", err)
 	}
-	// Rebuild event indexes and reconcile last seq.
+	// Recover each log's last seq from its tail; logs are indexed when
+	// first used.
 	entries, err := os.ReadDir(filepath.Join(dir, "events"))
 	if err != nil {
 		return nil, err
@@ -137,51 +171,155 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		if !ulid.Valid(id) {
 			continue
 		}
-		l, err := openLog(filepath.Join(dir, "events", e.Name()))
+		l := &eventLog{id: id, path: filepath.Join(dir, "events", e.Name())}
+		seq, ok, err := tailSeq(l.path)
 		if err != nil {
 			return nil, fmt.Errorf("events %s: %w", id, err)
 		}
+		if !ok {
+			// No whole event in the tail (a huge last line): index it all.
+			if err := s.openLocked(l); err != nil {
+				return nil, fmt.Errorf("events %s: %w", id, err)
+			}
+			seq = l.last()
+		}
+		l.lastSeq = seq
 		s.logs[id] = l
 		if sess := s.sessions[id]; sess != nil {
-			sess.LastSeq = l.last()
+			sess.LastSeq = seq
 		}
 	}
 	go s.flusher()
 	return s, nil
 }
 
-func openLog(path string) (*eventLog, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+// tailBytes is how much of a log's end tailSeq reads.
+const tailBytes = 256 << 10
+
+// tailSeq finds the seq of the last whole, parsable event in the file at
+// path from its end. ok is false when the tail holds none but the file is
+// not empty.
+func tailSeq(path string) (seq int64, ok bool, err error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return 0, false, err
 	}
-	l := &eventLog{f: f}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, false, err
+	}
+	n := min(st.Size(), tailBytes)
+	if n == 0 {
+		return 0, true, nil
+	}
+	buf := make([]byte, n)
+	if _, err := f.ReadAt(buf, st.Size()-n); err != nil && err != io.EOF {
+		return 0, false, err
+	}
+	// Whole lines only: drop a torn last one, and (unless the tail is the
+	// whole file) the first, which may be cut.
+	end := bytes.LastIndexByte(buf, '\n')
+	if end < 0 {
+		return 0, n == st.Size(), nil
+	}
+	buf = buf[:end]
+	for len(buf) > 0 {
+		i := bytes.LastIndexByte(buf, '\n')
+		if i < 0 && n < st.Size() {
+			break
+		}
+		line := buf[i+1:]
+		buf = buf[:max(i, 0)]
+		var ev struct {
+			Seq int64 `json:"seq"`
+		}
+		if json.Unmarshal(line, &ev) == nil && ev.Seq > 0 {
+			return ev.Seq, true, nil
+		}
+		if i < 0 {
+			break
+		}
+	}
+	return 0, n == st.Size(), nil
+}
+
+// openLocked opens and indexes l's file, cutting off a torn trailing line,
+// and closes the least recently used other log past maxOpenLogs.
+func (s *FileStore) openLocked(l *eventLog) error {
+	s.clock++
+	l.used = s.clock
+	if l.f != nil {
+		return nil
+	}
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	var index []idx
+	last := func() int64 {
+		if len(index) == 0 {
+			return 0
+		}
+		return index[len(index)-1].seq
+	}
 	br := bufio.NewReaderSize(f, 1<<20)
 	var off int64
+	bad := 0
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			var ev struct {
 				Seq int64 `json:"seq"`
 			}
-			if json.Unmarshal(line, &ev) == nil && ev.Seq > l.last() {
-				l.index = append(l.index, idx{ev.Seq, off})
+			if json.Unmarshal(line, &ev) != nil {
+				bad++
+			} else if ev.Seq > last() {
+				index = append(index, idx{ev.Seq, off})
 			}
 			off += int64(len(line))
 		}
 		if err != nil {
 			// A torn trailing line (crash mid-write) is cut off.
 			if err := f.Truncate(off); err != nil {
-				return nil, err
+				f.Close()
+				return err
 			}
 			break
 		}
 	}
-	l.size = off
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return nil, err
+	if bad > 0 {
+		logf("store: %s: skipped %d unparsable lines", filepath.Base(l.path), bad)
 	}
-	return l, nil
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		f.Close()
+		return err
+	}
+	l.f, l.index, l.size, l.lastSeq = f, index, off, last()
+	s.openLogs++
+	for s.openLogs > maxOpenLogs {
+		var lru *eventLog
+		for _, o := range s.logs {
+			if o.f != nil && o != l && o.pins == 0 && (lru == nil || o.used < lru.used) {
+				lru = o
+			}
+		}
+		if lru == nil {
+			break // all in use; closed when they are not
+		}
+		s.closeLocked(lru)
+	}
+	return nil
+}
+
+// closeLocked closes l's file and drops its index; its last seq stays.
+func (s *FileStore) closeLocked(l *eventLog) {
+	if l.f == nil {
+		return
+	}
+	_ = l.f.Close()
+	l.f, l.index = nil, nil
+	s.openLogs--
 }
 
 func (s *FileStore) flusher() {
@@ -191,25 +329,54 @@ func (s *FileStore) flusher() {
 	for {
 		select {
 		case <-t.C:
-			s.mu.Lock()
-			if s.dirty {
-				_ = s.saveLocked()
-			}
-			s.mu.Unlock()
+			s.flush()
 		case <-s.stop:
 			return
 		}
 	}
 }
 
+// flush saves a dirty snapshot. Only taking it holds the store lock: it is
+// encoded and written outside, so the disk does not hold up the API and
+// the nodes.
+func (s *FileStore) flush() {
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return
+	}
+	snap, gen := s.snapshotLocked()
+	s.dirty = false
+	s.mu.Unlock()
+	if err := s.writeSnapshot(snap, gen); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+	}
+}
+
+// saveLocked writes the snapshot now, for changes that must be durable
+// before the caller goes on.
 func (s *FileStore) saveLocked() error {
-	snap := snapshot{}
+	snap, gen := s.snapshotLocked()
+	if err := s.writeSnapshot(snap, gen); err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
+}
+
+// snapshotLocked copies the metadata into a snapshot that later changes do
+// not touch.
+func (s *FileStore) snapshotLocked() (snapshot, uint64) {
+	snap := snapshot{Version: snapshotVersion}
 	for _, h := range s.hosts {
 		snap.Hosts = append(snap.Hosts, h)
 	}
 	sort.Slice(snap.Hosts, func(i, j int) bool { return snap.Hosts[i].ID < snap.Hosts[j].ID })
 	for _, sess := range s.sessions {
-		snap.Sessions = append(snap.Sessions, sess)
+		cp := *sess // updates replace its pointers and maps, never edit them
+		snap.Sessions = append(snap.Sessions, &cp)
 	}
 	sort.Slice(snap.Sessions, func(i, j int) bool { return snap.Sessions[i].ID < snap.Sessions[j].ID })
 	now := time.Now()
@@ -233,6 +400,17 @@ func (s *FileStore) saveLocked() error {
 			}
 		}
 	}
+	s.gen++
+	return snap, s.gen
+}
+
+// writeSnapshot writes a snapshot unless a later one has been written.
+func (s *FileStore) writeSnapshot(snap snapshot, gen uint64) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if gen <= s.savedGen {
+		return nil
+	}
 	b, err := json.MarshalIndent(snap, "", " ")
 	if err != nil {
 		return err
@@ -240,7 +418,7 @@ func (s *FileStore) saveLocked() error {
 	if err := atomicWrite(filepath.Join(s.dir, "state.json"), b); err != nil {
 		return err
 	}
-	s.dirty = false
+	s.savedGen = gen
 	return nil
 }
 
@@ -250,7 +428,7 @@ func atomicWrite(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := writeFile(f, data); err != nil {
 		f.Close()
 		return err
 	}
@@ -261,7 +439,24 @@ func atomicWrite(path string, data []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir makes a rename in dir durable. Windows cannot sync a directory
+// (and does not need to).
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // Close flushes metadata and closes files.
@@ -272,7 +467,7 @@ func (s *FileStore) Close() error {
 	defer s.mu.Unlock()
 	err := s.saveLocked()
 	for _, l := range s.logs {
-		_ = l.f.Close()
+		s.closeLocked(l)
 	}
 	if s.msgLog != nil {
 		_ = s.msgLog.Close()
@@ -284,8 +479,15 @@ func (s *FileStore) Close() error {
 
 func (s *FileStore) msgPath() string { return filepath.Join(s.dir, "messages.jsonl") }
 
+// prunable reports whether a message may be dropped once old: finished
+// ones, and asks that were delivered but never answered (a reply after
+// the retention would find nothing to answer, which is the same).
+func prunable(m *model.Message) bool {
+	return m.Terminal() || (m.Kind == model.MsgAsk && m.State == model.MsgDelivered)
+}
+
 func (s *FileStore) openMessages() error {
-	torn := false
+	torn, bad := false, 0
 	if f, err := os.Open(s.msgPath()); err == nil {
 		br := bufio.NewReaderSize(f, 1<<20)
 		for {
@@ -301,6 +503,8 @@ func (s *FileStore) openMessages() error {
 					cp := m
 					s.msgs[m.ID] = &cp
 					s.msgLines++
+				} else {
+					bad++
 				}
 			}
 			if err != nil {
@@ -311,34 +515,34 @@ func (s *FileStore) openMessages() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if bad > 0 {
+		logf("store: messages.jsonl: skipped %d unparsable lines", bad)
+	}
 	cutoff := time.Now().Add(-messageRetention)
 	for id, m := range s.msgs {
-		if m.Terminal() && m.CreatedAt.Before(cutoff) {
+		if prunable(m) && m.CreatedAt.Before(cutoff) {
 			delete(s.msgs, id)
 		}
 	}
 	// Compact: rewrite one line per live message.
-	if s.msgLines > len(s.msgs) || torn {
-		var buf bytes.Buffer
-		ids := make([]string, 0, len(s.msgs))
-		for id := range s.msgs {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			b, _ := json.Marshal(s.msgs[id])
-			buf.Write(append(b, '\n'))
-		}
-		if err := atomicWrite(s.msgPath(), buf.Bytes()); err != nil {
-			return err
-		}
-		s.msgLines = len(s.msgs)
+	if s.msgLines > len(s.msgs) || torn || bad > 0 {
+		return s.compactMessagesLocked()
 	}
+	return s.reopenMessagesLocked()
+}
+
+// reopenMessagesLocked opens messages.jsonl for appending.
+func (s *FileStore) reopenMessagesLocked() error {
 	f, err := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	s.msgLog = f
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	s.msgLog, s.msgSize = f, st.Size()
 	return nil
 }
 
@@ -356,12 +560,12 @@ func (s *FileStore) PruneMessages(now time.Time) {
 	total := 0
 	var done []*model.Message
 	for id, m := range s.msgs {
-		if m.Terminal() && m.CreatedAt.Before(cutoff) {
+		if prunable(m) && m.CreatedAt.Before(cutoff) {
 			delete(s.msgs, id)
 			continue
 		}
 		total += len(m.Text)
-		if m.Terminal() {
+		if prunable(m) {
 			done = append(done, m)
 		}
 	}
@@ -399,12 +603,11 @@ func (s *FileStore) compactMessagesLocked() error {
 	err := atomicWrite(s.msgPath(), buf.Bytes())
 	if err == nil {
 		s.msgLines = len(s.msgs)
+		s.msgTorn = false
 	}
-	f, oerr := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if oerr != nil {
+	if oerr := s.reopenMessagesLocked(); oerr != nil {
 		return oerr
 	}
-	s.msgLog = f
 	return err
 }
 
@@ -416,21 +619,32 @@ func (s *FileStore) PutMessage(m model.Message) error {
 	if err != nil {
 		return err
 	}
+	b = append(b, '\n')
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.msgLog == nil { // a compaction could not reopen it
-		f, err := os.OpenFile(s.msgPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
+	if s.msgTorn {
+		if err := s.compactMessagesLocked(); err != nil {
 			return err
 		}
-		s.msgLog = f
 	}
-	if _, err := s.msgLog.Write(append(b, '\n')); err != nil {
+	if s.msgLog == nil { // a compaction could not reopen it
+		if err := s.reopenMessagesLocked(); err != nil {
+			return err
+		}
+	}
+	_, err = writeFile(s.msgLog, b)
+	if err == nil {
+		err = s.msgLog.Sync()
+	}
+	if err != nil {
+		// A partial record would glue the next one onto it: cut it off,
+		// or rewrite the file before the next append.
+		if terr := s.msgLog.Truncate(s.msgSize); terr != nil {
+			s.msgTorn = true
+		}
 		return err
 	}
-	if err := s.msgLog.Sync(); err != nil {
-		return err
-	}
+	s.msgSize += int64(len(b))
 	s.msgLines++
 	cp := m
 	s.msgs[m.ID] = &cp
@@ -555,7 +769,13 @@ func (s *FileStore) CreateSession(sess model.Session) error {
 	cp := sess
 	s.sessions[sess.ID] = &cp
 	s.dirty = true
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		// The caller is told it failed: the session must not hold its
+		// path, or be saved later by the flusher.
+		delete(s.sessions, sess.ID)
+		return err
+	}
+	return nil
 }
 
 func (s *FileStore) UpdateSession(id string, fn func(*model.Session)) (model.Session, error) {
@@ -588,7 +808,7 @@ func (s *FileStore) DeleteSession(id string) error {
 		return err
 	}
 	if l, ok := s.logs[id]; ok {
-		_ = l.f.Close()
+		s.closeLocked(l)
 		delete(s.logs, id)
 	}
 	// The id is a stored session's, which only a canonical ULID can be.
@@ -648,71 +868,128 @@ func (s *FileStore) Sessions() []model.Session {
 	return out
 }
 
+// logFor returns a session's log, opened.
 func (s *FileStore) logFor(id string) (*eventLog, error) {
-	if l, ok := s.logs[id]; ok {
-		return l, nil
+	l, ok := s.logs[id]
+	if !ok {
+		// The ID names a file, and nodes supply it: only a canonical ULID
+		// may, so no ID can leave events/ or alias another session's file.
+		if !ulid.Valid(id) {
+			return nil, fmt.Errorf("%w: %q", ErrBadSessionID, id)
+		}
+		l = &eventLog{id: id, path: filepath.Join(s.dir, "events", id+".jsonl")}
 	}
-	// The ID names a file, and nodes supply it: only a canonical ULID may,
-	// so no ID can leave events/ or alias another session's file.
-	if !ulid.Valid(id) {
-		return nil, fmt.Errorf("%w: %q", ErrBadSessionID, id)
-	}
-	l, err := openLog(filepath.Join(s.dir, "events", id+".jsonl"))
-	if err != nil {
+	if err := s.openLocked(l); err != nil {
 		return nil, err
 	}
 	s.logs[id] = l
 	return l, nil
 }
 
+// logMark is a log's state before an append.
+type logMark struct {
+	size, last int64
+	n          int
+}
+
+// rewindLocked cuts l back to mark m: a failed write may have left part of
+// a line, and the next one would be glued onto it. If the file cannot be
+// cut, it is closed, and opening it again cuts off the torn line.
+func (s *FileStore) rewindLocked(l *eventLog, m logMark) {
+	l.lastSeq = m.last
+	if l.f == nil {
+		return
+	}
+	if err := l.f.Truncate(m.size); err == nil {
+		if _, err := l.f.Seek(m.size, io.SeekStart); err == nil {
+			l.index, l.size = l.index[:m.n], m.size
+			return
+		}
+	}
+	s.closeLocked(l)
+}
+
 func (s *FileStore) AppendEvents(evs []model.Event) ([]model.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var stored []model.Event
-	touched := map[*eventLog]bool{}
+	marks := map[*eventLog]logMark{}
+	defer func() {
+		for l := range marks {
+			l.pins--
+		}
+	}()
+	var err error
 	for _, ev := range evs {
 		if ev.SessionID == "" || ev.Seq <= 0 {
-			return stored, fmt.Errorf("event %s: missing session or seq", ev.ID)
+			err = fmt.Errorf("event %s: missing session or seq", ev.ID)
+			break
 		}
-		l, err := s.logFor(ev.SessionID)
-		if err != nil {
-			return stored, err
+		var l *eventLog
+		if l, err = s.logFor(ev.SessionID); err != nil {
+			break
 		}
 		if ev.Seq <= l.last() {
 			continue // duplicate (e.g. spool replay)
 		}
-		b, err := json.Marshal(ev)
-		if err != nil {
-			return stored, err
+		var b []byte
+		if b, err = json.Marshal(ev); err != nil {
+			break
 		}
 		b = append(b, '\n')
-		n, err := l.f.Write(b)
-		if err != nil {
-			return stored, err
+		if _, ok := marks[l]; !ok {
+			marks[l] = logMark{size: l.size, last: l.last(), n: len(l.index)}
+			l.pins++ // not closed before it is synced
+		}
+		if _, err = writeFile(l.f, b); err != nil {
+			// This log's events from this batch are written again when
+			// the node resends them.
+			s.rewindLocked(l, marks[l])
+			break
 		}
 		l.index = append(l.index, idx{ev.Seq, l.size})
-		l.size += int64(n)
-		touched[l] = true
+		l.size += int64(len(b))
+		l.lastSeq = ev.Seq
 		stored = append(stored, ev)
-		if sess := s.sessions[ev.SessionID]; sess != nil {
-			sess.LastSeq = ev.Seq
+	}
+	// What was written before a failure is kept, once it is durable: the
+	// caller acknowledges up to each session's last seq.
+	for l, m := range marks {
+		if l.f == nil {
+			continue
+		}
+		if serr := l.f.Sync(); serr != nil {
+			s.rewindLocked(l, m)
+			if err == nil {
+				err = serr
+			}
+		}
+	}
+	kept := stored[:0]
+	for _, ev := range stored {
+		if l := s.logs[ev.SessionID]; ev.Seq <= l.last() {
+			kept = append(kept, ev)
+		}
+	}
+	for l := range marks {
+		if sess := s.sessions[l.id]; sess != nil && sess.LastSeq != l.last() {
+			sess.LastSeq = l.last()
 			s.dirty = true
 		}
 	}
-	for l := range touched {
-		if err := l.f.Sync(); err != nil {
-			return stored, err
-		}
-	}
-	return stored, nil
+	return kept, err
 }
 
 func (s *FileStore) Events(sessionID string, after int64, limit int) ([]model.Event, error) {
 	s.mu.Lock()
 	l, ok := s.logs[sessionID]
-	if !ok {
+	if !ok || l.last() <= after {
 		s.mu.Unlock()
 		return nil, nil
+	}
+	if err := s.openLocked(l); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	i := sort.Search(len(l.index), func(i int) bool { return l.index[i].seq > after })
 	if i >= len(l.index) {
@@ -736,24 +1013,39 @@ func (s *FileStore) Events(sessionID string, after int64, limit int) ([]model.Ev
 		}
 	}
 	f := l.f
+	l.pins++
 	s.mu.Unlock()
 	// Read outside the store lock: the range is already written and
-	// indexed, and appends only add after it.
+	// indexed, appends only add after it, and the pin keeps the file open.
 	buf := make([]byte, end-start)
 	_, err := f.ReadAt(buf, start)
+	s.mu.Lock()
+	l.pins--
+	s.mu.Unlock()
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
 	var out []model.Event
+	bad, prev := 0, after
 	for _, line := range bytes.Split(buf, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var ev model.Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return out, err
+			// Damage from an older version's failed write: the events on
+			// either side are still good.
+			bad++
+			continue
 		}
+		if ev.Seq <= prev {
+			continue // not indexed either
+		}
+		prev = ev.Seq
 		out = append(out, ev)
+	}
+	if bad > 0 {
+		logf("store: events of %s after %d: skipped %d unreadable lines", sessionID, after, bad)
 	}
 	return out, nil
 }

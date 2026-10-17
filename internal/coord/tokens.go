@@ -172,20 +172,30 @@ func (s *Server) requireAuth(api *http.ServeMux, scopes map[string]scope) http.H
 		var g grant
 		var still func(time.Time) bool // whether the credential is still good
 		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-			if g, ok = s.bearerGrant(tok, now); !ok {
+			// Bad bearer tokens count against the same per-client limit as
+			// bad sign-ins, so the API is no faster a way to guess one.
+			valid, throttled := s.web.checkToken(clientKey(r), now, func() bool {
+				var ok bool
+				g, ok = s.bearerGrant(tok, now)
+				return ok
+			})
+			if throttled {
+				writeErr(w, http.StatusTooManyRequests, errors.New("too many failed attempts with a bad token; wait a minute"))
+				return
+			}
+			if !valid {
 				writeErr(w, http.StatusUnauthorized, errors.New("invalid token"))
 				return
 			}
 			still = func(t time.Time) bool { return s.grantLive(g, t) }
-		} else if cg, ok := s.cookieGrant(r); ok {
+		} else if value, cg, ok := s.sessionCookie(r); ok {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(csrfHeader) != "1" {
 				writeErr(w, http.StatusForbidden, errors.New("missing "+csrfHeader+" header"))
 				return
 			}
 			g = cg
-			c, _ := r.Cookie(cookieName)
 			still = func(t time.Time) bool {
-				cg, ok := s.web.validCookie(c.Value, t)
+				cg, ok := s.web.validCookie(value, t)
 				return ok && cg == g && s.grantLive(g, t)
 			}
 		} else {

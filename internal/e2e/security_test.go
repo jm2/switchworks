@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jm2/switchworks/internal/apiclient"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/node"
 	"github.com/jm2/switchworks/internal/pki"
@@ -241,5 +242,111 @@ func TestNodeRevocationRaces(t *testing.T) {
 	}
 	if _, ok := c.st.Host("a"); ok {
 		t.Fatal("the removed host came back")
+	}
+}
+
+// An agent that can re-point symlinks must not get a descendant working
+// outside its tree: a child's cwd is recorded resolved (so grandchildren
+// are rooted at the real path), a writing parent may not spawn below its
+// own cwd, and a cwd swapped for a symlink after spawn fails the next turn.
+func TestSpawnCwdSymlinkSwaps(t *testing.T) {
+	ctx := context.Background()
+	coordDir := t.TempDir()
+	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
+	defer co.stop()
+	c := apiClient(t, coordDir)
+	_, _, nd := enrollHost(t, c, "devbox")
+	defer func() { nd.stop(t) }()
+	waitOnline(t, c, "devbox")
+
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, outside := filepath.Join(base, "proj"), filepath.Join(base, "outside")
+	real, sub := filepath.Join(proj, "real"), filepath.Join(proj, "sub")
+	for _, d := range []string{real, sub, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(proj, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("no symlinks:", err)
+	}
+	spawn := func(name, sandbox string) (apiclient.SessionView, *watcher) {
+		t.Helper()
+		s, err := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: name, Cwd: proj, ApprovalPolicy: "never", Sandbox: sandbox})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitStatus(t, c, s.ID, model.StatusIdle)
+		return s, watch(c, s.ID)
+	}
+	say := func(id, text string) {
+		t.Helper()
+		if _, err := c.Send(ctx, id, text, "queue", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A workspace-write parent may spawn only in its own cwd.
+	w, ww := spawn("writer", "workspace-write")
+	defer ww.cancel()
+	say(w.ID, call("fleet_spawn", map[string]any{"cwd": link, "name": "c1"}))
+	ww.waitFor(t, "spawn below a writable cwd refused", 0, agentSaidAll("tool fleet_spawn: Error:", "may spawn only there"))
+
+	// A read-only parent may spawn below its cwd, through a link; the child
+	// is recorded at the real path, so re-pointing the link afterwards does
+	// not move where the child's own children go.
+	r, wr := spawn("reader", "read-only")
+	defer wr.cancel()
+	say(r.ID, call("fleet_spawn", map[string]any{"cwd": link, "name": "c2"}))
+	i := wr.waitFor(t, "spawned via link", 0, agentSaidAll("tool fleet_spawn:", `"path": "devbox/c2"`))
+	c2, err := c.Resolve(ctx, "devbox/c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Cwd != real {
+		t.Fatalf("child recorded at %q, want the resolved %q", c2.Cwd, real)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	w2 := watch(c, c2.ID)
+	defer w2.cancel()
+	waitStatus(t, c, c2.ID, model.StatusIdle)
+	say(c2.ID, call("fleet_spawn", map[string]any{"name": "g2"}))
+	w2.waitFor(t, "grandchild spawned", 0, agentSaidAll("tool fleet_spawn:", `"path": "devbox/g2"`))
+	if g2, err := c.Resolve(ctx, "devbox/g2"); err != nil || g2.Cwd != real {
+		t.Fatalf("grandchild at %q (%v), want %q", g2.Cwd, err, real)
+	}
+
+	// A child whose cwd is swapped for a symlink after spawn gets no
+	// further turns there.
+	say(r.ID, call("fleet_spawn", map[string]any{"cwd": sub, "name": "c3"}))
+	wr.waitFor(t, "spawned in sub", i, agentSaidAll("tool fleet_spawn:", `"path": "devbox/c3"`))
+	c3, err := c.Resolve(ctx, "devbox/c3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w3 := watch(c, c3.ID)
+	defer w3.cancel()
+	waitStatus(t, c, c3.ID, model.StatusIdle)
+	if err := os.Rename(sub, filepath.Join(proj, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, sub); err != nil {
+		t.Fatal(err)
+	}
+	say(c3.ID, "write here")
+	w3.waitFor(t, "turn refused after the swap", 0, func(e model.Event) bool {
+		return e.Kind == model.KindMessageFailed && strings.Contains(string(e.Payload), `cwd \"`+sub)
+	})
+	if countAgent(w3, agentSaid("write here")) != 0 {
+		t.Fatal("the turn ran in the swapped cwd")
 	}
 }

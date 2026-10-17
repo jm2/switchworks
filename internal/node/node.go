@@ -593,23 +593,40 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	if len(images) > 0 && strings.TrimSpace(spec.Prompt) == "" {
 		return nil, errors.New("images need a prompt to go with them")
 	}
-	if spec.CwdRoot != "" {
+	if spec.CwdRoot != "" || spec.ByAgent {
 		// An agent's spawn: the coordinator checked the path's text; here
 		// symlinks are resolved too, so a link inside the root cannot lead
 		// out of it.
 		if err := proc.CheckWithin(spec.CwdRoot, spec.Cwd); err != nil {
 			return nil, err
 		}
-		// Keep the resolved path, so a symlink swapped in later is not
-		// followed (adapters check again before each use).
-		if real, err := filepath.EvalSymlinks(spec.Cwd); err == nil {
-			spec.Cwd = real
+		real, err := filepath.EvalSymlinks(spec.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("cwd %q: %w", spec.Cwd, err)
+		}
+		if spec.NotBelow != "" {
+			// The parent can write in its own cwd, so anything below it
+			// could be re-pointed once checked.
+			nb, err := filepath.EvalSymlinks(spec.NotBelow)
+			if err != nil || (real != nb && proc.CheckWithin(nb, real) == nil) {
+				return nil, fmt.Errorf("cwd %q is inside %q, which the spawning agent can write; it may spawn only in %q itself",
+					spec.Cwd, spec.NotBelow, spec.NotBelow)
+			}
+		}
+		// Keep the resolved path, and pin it: adapters check before each
+		// use that it still resolves to itself (proc.CheckPinned), so a
+		// directory on it swapped for a symlink later is not followed.
+		spec.Cwd = real
+		if spec.CwdRoot == "" {
+			spec.CwdRoot = real // any directory was allowed: pin this one
+		} else if r, err := filepath.EvalSymlinks(spec.CwdRoot); err == nil {
+			spec.CwdRoot = r // resolved once, like the cwd
 		}
 	}
 	s := &session{n: n, rec: record{
 		ID: cmd.Session.ID, Path: cmd.Session.Path, Harness: harnessName, Status: model.StatusStarting, CreatedAt: time.Now(),
 		Spec: adapter.StartSpec{Name: cmd.Session.Path, Cwd: spec.Cwd, Model: spec.Model, Provider: spec.Provider,
-			ApprovalPolicy: approval, Sandbox: sandbox, CwdRoot: spec.CwdRoot},
+			ApprovalPolicy: approval, Sandbox: sandbox, CwdRoot: spec.CwdRoot, ByAgent: spec.ByAgent || spec.CwdRoot != ""},
 	}}
 	if err := s.openSpool(); err != nil {
 		return nil, err
@@ -1077,7 +1094,7 @@ func takesImages(names []string) []string {
 // hello builds the node's greeting.
 func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Features: []string{wire.FeatureCwdRoot}, Sandboxed: sandboxed(n.Adapters()), Images: takesImages(n.Adapters()),
+		Features: []string{wire.FeatureCwdRoot, wire.FeatureAgentSpawn}, Sandboxed: sandboxed(n.Adapters()), Images: takesImages(n.Adapters()),
 		Version: version.Version, Adapters: n.Adapters()}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
