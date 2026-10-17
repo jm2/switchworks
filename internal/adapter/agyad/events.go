@@ -99,10 +99,16 @@ func (h *handle) noteConversation(id string) {
 	}
 }
 
-func (h *handle) handleLine(line []byte) {
+// handleLine handles one line of p's stdout. Lines from a process that no
+// longer owns the active turn (one still stopping after an interrupt) do not
+// touch it.
+func (h *handle) handleLine(p *proc.Process, line []byte) {
 	name, payload, ok := parseEvent(line)
 	h.mu.Lock()
 	t := h.turn
+	if t != nil && t.proc != p {
+		t = nil
+	}
 	h.mu.Unlock()
 	turnID := ""
 	if t != nil {
@@ -158,8 +164,11 @@ func (h *handle) handleLine(line []byte) {
 		if h.turn == t {
 			h.turn = nil
 		}
+		// The process exit that follows an interrupt finds no turn; read()
+		// clears the flag then.
+		interrupted := h.interrupting
 		h.mu.Unlock()
-		t.finish(r)
+		t.finish(r, interrupted)
 	default:
 		if t != nil {
 			h.emit(model.KindItemCompleted, model.Item{TurnID: t.id, ItemID: ulid.New(), ItemType: "agy." + orDefault(name, "event"), Raw: line})
@@ -264,7 +273,7 @@ func (t *turnState) flush() {
 	}
 }
 
-func (t *turnState) finish(r result) {
+func (t *turnState) finish(r result, interrupted bool) {
 	h := t.h
 	t.flush()
 	if !t.streamed && r.Response != "" {
@@ -273,18 +282,20 @@ func (t *turnState) finish(r result) {
 			Raw: model.Marshal(map[string]any{"type": "agentMessage", "text": r.Response})})
 	}
 	if r.Usage != nil {
-		h.usage(t.id, model.Usage{
-			InputTokens: r.Usage.InputTokens, CachedInputTokens: r.Usage.CacheReadTokens,
-			OutputTokens: r.Usage.OutputTokens, ReasoningTokens: r.Usage.ThinkingTokens, TotalTokens: r.Usage.TotalTokens,
-		})
+		h.usage(t.id, normUsage(r.Usage.InputTokens, r.Usage.CacheReadTokens, r.Usage.OutputTokens,
+			r.Usage.ThinkingTokens, r.Usage.TotalTokens))
 	}
 	tc := model.TurnCompleted{TurnID: t.id, Status: mapStatus(r.Status)}
-	if r.DurationSeconds != nil {
+	// duration_seconds is for the process, which is the turn only in
+	// PerTurn mode; a long-lived process reports it cumulatively.
+	if r.DurationSeconds != nil && h.a.cfg.Options.PerTurn {
 		tc.DurationMs = int64(*r.DurationSeconds * 1000)
 	} else {
 		tc.DurationMs = time.Since(t.start).Milliseconds()
 	}
-	if tc.Status == "failed" {
+	if interrupted {
+		tc.Status = "interrupted"
+	} else if tc.Status == "failed" {
 		tc.Error = r.Error
 		if tc.Error == "" {
 			tc.Error = "agy status " + r.Status
@@ -299,13 +310,21 @@ func (t *turnState) finish(r result) {
 	}
 }
 
+// normUsage converts agy's figures to Switchworks's convention (Codex's):
+// input includes cached input, and the total covers input, output and
+// reasoning. agy reports input_tokens without cache reads, and thinking
+// tokens apart from output.
+func normUsage(input, cacheRead, output, thinking, total int64) model.Usage {
+	u := model.Usage{InputTokens: input + cacheRead, CachedInputTokens: cacheRead,
+		OutputTokens: output, ReasoningTokens: thinking}
+	u.TotalTokens = max(total, u.InputTokens+output+thinking)
+	return u
+}
+
 // usage records agy's figures. In stream-input mode they are cumulative for
 // the process (the baseline resets when a process starts); a figure that did
 // not grow is taken as this turn's own.
 func (h *handle) usage(turnID string, rep model.Usage) {
-	if rep.TotalTokens == 0 {
-		rep.TotalTokens = rep.InputTokens + rep.OutputTokens + rep.ReasoningTokens
-	}
 	h.mu.Lock()
 	last := rep
 	if p := h.lastRep; p != nil && rep.TotalTokens > p.TotalTokens {
@@ -317,12 +336,13 @@ func (h *handle) usage(turnID string, rep model.Usage) {
 	}
 	cp := rep
 	h.lastRep = &cp
+	restarted := h.total == (model.Usage{}) // this handle's first report
 	h.total.InputTokens += last.InputTokens
 	h.total.CachedInputTokens += last.CachedInputTokens
 	h.total.OutputTokens += last.OutputTokens
 	h.total.ReasoningTokens += last.ReasoningTokens
 	h.total.TotalTokens += last.TotalTokens
-	ev := model.UsageEvent{TurnID: turnID, Model: h.spec.Model, Last: last, Total: h.total}
+	ev := model.UsageEvent{TurnID: turnID, Model: h.spec.Model, Last: last, Total: h.total, Restarted: restarted}
 	h.mu.Unlock()
 	h.emit(model.KindUsage, ev)
 }

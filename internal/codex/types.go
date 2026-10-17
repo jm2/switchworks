@@ -23,6 +23,12 @@ const (
 	MethodTurnStart         = "turn/start"
 	MethodTurnSteer         = "turn/steer"
 	MethodTurnInterrupt     = "turn/interrupt"
+
+	// Background terminals: commands app-server keeps running after the
+	// turn that started them (experimental API).
+	MethodBackgroundTerminalsList      = "thread/backgroundTerminals/list"
+	MethodBackgroundTerminalsTerminate = "thread/backgroundTerminals/terminate"
+	MethodBackgroundTerminalsClean     = "thread/backgroundTerminals/clean"
 )
 
 // Client -> server notifications.
@@ -159,6 +165,31 @@ type ThreadReadResponse struct {
 }
 
 type ThreadUnsubscribeParams struct {
+	ThreadID string `json:"threadId"`
+}
+
+type BackgroundTerminalsListParams struct {
+	ThreadID string `json:"threadId"`
+}
+
+// BackgroundTerminal is one command still running for a thread. ItemID is
+// the commandExecution item that started it.
+type BackgroundTerminal struct {
+	ProcessID string `json:"processId"`
+	ItemID    string `json:"itemId"`
+	Command   string `json:"command"`
+}
+
+type BackgroundTerminalsListResponse struct {
+	Data []BackgroundTerminal `json:"data"`
+}
+
+type BackgroundTerminalsTerminateParams struct {
+	ThreadID  string `json:"threadId"`
+	ProcessID string `json:"processId"`
+}
+
+type BackgroundTerminalsCleanParams struct {
 	ThreadID string `json:"threadId"`
 }
 

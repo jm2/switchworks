@@ -19,8 +19,8 @@
 | ACP adapter (Goose and others) | done | fake-agent tests: streaming, tool items (command, edit with diff, MCP, generic), reasoning, plans, approvals with every decision, cancel during approval, stuck agent killed, crash and reopen, `session/load` with replay suppressed, `session/resume`, no-reopen agents, mode/model/provider config, fleet tools auto-approved; real goose 1.54.0 against the mock's Anthropic endpoint: approvals, commands, usage, resume across processes, approval modes |
 | Goose in the fleet | done | e2e with real goose: fleet_list, goose → Codex fleet_ask, Codex → goose fleet_ask, resume after node restart; web UI driven in headless Chromium at phone size (tool cards, approval card, approve) |
 | Images in messages and prompts | done | unit tests: type sniffing, limits, safe names, path confinement (outside the cwd, `..`, symlinked file, symlinked directory out, the node's key and directory inside the cwd, FIFOs), coordinator attachment store (retention, pinning, cap, digests), node queue files; Codex adapter writes private `localImage` files and removes them after the turn (fake app-server reads them); ACP adapter sends image blocks only when the agent advertises them; agy refuses; e2e: a screenshot file sent with `fleet_send` from one host arrives byte for byte in the other host's harness, plus `fleet_ask`, `fleet_spawn`, a person's `send` and spawn, refusals, metadata-only events and records; real goose 1.54.0 passes images to the mock's Anthropic emulation (by `swk send` and by a Codex agent's `fleet_send`). Web UI driven in headless Chromium (desktop and phone sizes) against a fake Codex host: attach with the file picker and by pasting, an SVG refused, send, thumbnails in the transcript and the inbox, the full-size view, no console errors or CSP violations |
-| `swk dev vision-probe` | done | passes against the fake app-server, the fake ACP agent and real goose 1.54.0 through the mock provider; the mock reads the probe's PNG text chunk in both API emulations. Not yet run against a real vision model |
-| Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, soft-deny warnings, fleet-tools config files; never run against real `agy` (the installer host is not reachable from the build sandbox) |
+| `swk dev vision-probe` | done | passes against the fake app-server, the fake ACP agent and real goose 1.54.0 through the mock provider; the mock reads the probe's PNG text chunk in both API emulations. Fleet test (2026-10-16): DeepSeek V4.1 Flash and MiMo V2.6 Pro see images in Codex and goose on Linux, macOS and Windows; both sometimes misread one character, which the probe now reports as a near miss |
+| Antigravity adapter | experimental | fake-agy tests on the documented schema: stream-input and per-turn modes, tool steps, cumulative usage, failures, interrupt and restart, sandbox flags, approval-policy modes, soft-deny warnings, fleet-tools config files and their cleanup. Run against real agy 1.4.0 in the fleet test: streaming, follow-up turns, fleet_ask through MCP, resume after node restart, stop, image refusal; headless agy denies commands without allow rules (default, `auto` and `accept-edits` modes alike), and completed a coding task with permissions skipped |
 | Security review fixes | done | regression tests: a node cannot write outside the store, into another host's logs or onto another host's paths; replaced and removed host certificates are refused; agent spawns are confined (host, harness, cwd with symlinks resolved, inherited policies, reserved labels, rate limit); spawn loops reach the hop limit; steer/interrupt/broadcast/status limits for agents; per-client sign-in throttle; server-side sign-out; terminal escapes stripped from CLI output; agy workspace symlink and gitdir tricks refused. Known limit: an agent with a shell on a host can read that node's key (see docs/messaging.md, Trust model) |
 | Scoped API tokens | done | unit tests: every route declares a scope and an undeclared one needs admin (walks the route table), every route with read, operate and admin tokens, create/list/revoke by name or id, expiry, secrets never listed, persistence across a store restart, cookies carrying their scope (forged scope refused, pre-token cookies stay admin), cookies and pending links dying with their token, links capped at the minting token's scope, admin token unchanged; e2e: `swk token create --cli-config` makes a working operate `cli.json`, the CLI spawns, sends and mints links with it but `token ls`, `hosts rm` and enrollment are refused, a read token streams but cannot act, revoking cuts the CLI off |
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
@@ -37,7 +37,13 @@ real-Codex test.
 ## Verified on
 
 - linux/amd64 (build sandbox), Codex 0.160.0. Everything above.
-- linux/arm64, darwin/arm64, windows/amd64: **compiled only.**
+- Fleet test, 2026-10-16, built from source: a coordinator and five nodes
+  (linux/amd64, linux/arm64 on Asahi, darwin/arm64, windows/amd64,
+  windows/arm64) with Codex 0.155–0.160, goose 1.55 and agy 1.4.0 on
+  DeepSeek V4.1 Flash and MiMo V2.6 Pro: enrollment, spawn, approvals,
+  interrupt, resume after node restart, stop, usage, fleet_ask between
+  hosts and to a person, the spawn guard, images between agents, scoped
+  tokens and revocation. Packages, services and trays were not part of it.
 
 ## Known gaps and risks
 
@@ -48,35 +54,51 @@ real-Codex test.
   limit writes and network, not reads. Keeping those secrets from agents
   would need an OS boundary, such as running the node as a separate user.
 
-- **Windows untested.** Job-object teardown, `codex.cmd` shim resolution,
-  the logon task `swk service install` registers, its graceful stop
-  through a named event, the tray and the installer are unverified. winbox should be
-  the first real host.
+- **Windows lightly tested.** Nodes built from source ran Codex and goose
+  sessions on x86_64 and ARM64. The logon task `swk service install`
+  registers, its graceful stop through a named event, the tray and the
+  installer are still unverified. Goose does not run on Windows on ARM.
+- **Interrupted commands.** Codex keeps an interrupted command running as a
+  background terminal; Switchworks now stops the ones the interrupted turn
+  started, and all of a session's on stop (Codex's experimental
+  `thread/backgroundTerminals` methods; older app-servers leave them
+  running until the node stops). goose on Windows can leave an interrupted
+  shell command orphaned; it ends on its own when the command does.
+- **Codex records trust for each working directory** in its own
+  `config.toml` (`[projects."<cwd>"] trust_level = "trusted"`) the first
+  time a session runs there, on Linux and macOS. Remove the entries for
+  throwaway directories yourself.
 - **Codex daemon self-updates.** See m0-findings. If the node is later
   pointed at the shared daemon, the protocol can change under it.
 - **Providers must speak the Responses API** to work through Codex 0.160.0.
-  Goose avoids this with Anthropic-compatible endpoints; those endpoints
-  are verified only through the mock, not with real keys.
-- **Goose's ACP is experimental upstream**, and `PromptResponse.usage` is an
-  unstable ACP field. Goose reports the same usage figure on consecutive
-  turns, so per-turn figures are taken when the report does not grow.
+  DeepSeek and MiMo do (verified with real keys; MiMo needs
+  `web_search = "disabled"`). Goose's Anthropic-compatible endpoints are
+  verified only through the mock; its OpenAI-compatible providers were
+  verified with real keys.
+- **Goose's ACP is experimental upstream.** Token counts come from goose's
+  unstable `_goose/unstable/session/update` notification (goose 1.55); if a
+  goose release drops it, Switchworks falls back to `PromptResponse.usage`,
+  which counts only the last model request of a turn.
 - **ACP agents other than goose are untested** (opencode, Crush's ACP PR,
   claude-agent-acp): expect mode-name and tool-naming differences.
 - **ACP prompts are text and images**; no audio, embedded resources, ACP
   terminals or client file access.
-- **Images reach the harness, not necessarily the model.** Which real
-  models and provider endpoints see images is unverified; run
-  `swk dev vision-probe` per host. Real Codex has not yet been run with a
-  `localImage` input (the fake app-server and the contract test cover the
-  protocol shape). agy cannot take images.
-- **agy is untested against the real binary.** The parser follows the
-  documented schema; tool parameter names (`CommandLine`, `TargetFile`)
-  and MCP tool naming are informed guesses. The soft-deny notice on stderr
-  is matched loosely.
-- **agy fleet tools rely on environment inheritance** from agy to the
-  MCP servers it starts (unverified), and they write
-  `.agents/mcp_config.json` into the workspace and an allow rule into
-  agy's settings (opt-in).
+- **Images reach the harness, not necessarily the model.** Run
+  `swk dev vision-probe` per host and model; goose drops images for a
+  custom provider's model unless it is marked `"supports_vision": true`.
+  agy cannot take images.
+- **agy can do little headless without allow rules.** Its tools that need
+  confirmation are denied, and only agy's real settings file
+  (`~/.gemini/antigravity-cli/settings.json`) is read for allow rules. With
+  permissions skipped it completed a coding task, slowly and with heavy
+  token use, and read other conversations' transcripts under `~/.gemini`
+  on the way.
+- **agy fleet tools write outside the session** when enabled (opt-in):
+  `.agents/mcp_config.json` in the workspace (removed when the session
+  stops) and an `mcp(swk/*)` allow rule in agy's global settings (kept,
+  with a warning when added). They are set up for new sessions only, not
+  for sessions resumed after the setting changes. Environment inheritance
+  from agy to `swk mcp` works with agy 1.4.0.
 - **No retention yet.** Event files grow without bound (M6). Terminal
   messages are compacted after 14 days.
 - **Hop counting is per session, not per conversation.** A session working
@@ -106,16 +128,13 @@ real-Codex test.
 
 ## Recommended before real-world use
 
-1. Run `swk dev run` on all four hosts, starting with winbox, and record
-   one agy stream (`--harness agy --record agy.jsonl`). Run one goose
-   session per host with a real provider.
-2. Try a real model on two hosts with a prompt that needs the other host
-   ("ask buildbox/helper what `uname -m` says there"), and watch `swk messages`.
-3. Set `guards.max_daily_tokens` before letting agents spawn freely.
+1. Run the release packages, services and trays on macOS and Windows; the
+   fleet test covered binaries built from source only.
+2. Set `guards.max_daily_tokens` before letting agents spawn freely.
    Move the admin token off every workstation that runs agents and give
    each one an `operate` or `read` token (`swk token create`).
-4. Open the web UI on the phone you will actually use, and install the CA
+3. Open the web UI on the phone you will actually use, and install the CA
    or set up `tailscale serve`.
-5. For M4, decide whether the node should use Codex's shared app-server
+4. For M4, decide whether the node should use Codex's shared app-server
    daemon (which lets it observe sessions you start in the Codex TUI) or keep
    its own private app-server.

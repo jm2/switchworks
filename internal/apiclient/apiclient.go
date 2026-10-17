@@ -425,7 +425,8 @@ func (c *Client) streamOnce(ctx context.Context, id string, after *int64, fn fun
 }
 
 // FleetStream follows GET /v1/stream once (no reconnect), calling fn with
-// each event's type ("hello", "session", "host", "message") and JSON data,
+// each event's type ("hello", "session", "host", "message", or
+// "session_removed" and "host_removed" with just an id) and JSON data,
 // until ctx ends, the stream closes or fn returns false.
 func (c *Client) FleetStream(ctx context.Context, fn func(typ string, data json.RawMessage) bool) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/v1/stream", nil)

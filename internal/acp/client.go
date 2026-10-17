@@ -24,6 +24,12 @@ type Handler interface {
 	OnPermission(id json.RawMessage, req RequestPermissionRequest)
 }
 
+// GooseHandler is implemented by a Handler that reads goose's custom
+// session updates (MethodGooseSessionUpdate).
+type GooseHandler interface {
+	OnGooseUpdate(n GooseSessionNotification)
+}
+
 // Options configure how the agent is launched.
 type Options struct {
 	Bin    string
@@ -45,6 +51,13 @@ type Client struct {
 type connHandler struct{ c *Client }
 
 func (ch connHandler) HandleNotification(method string, params json.RawMessage) {
+	if method == MethodGooseSessionUpdate {
+		var n GooseSessionNotification
+		if gh, ok := ch.c.h.(GooseHandler); ok && json.Unmarshal(params, &n) == nil {
+			gh.OnGooseUpdate(n)
+		}
+		return
+	}
 	if method != MethodSessionUpdate {
 		return
 	}
@@ -88,8 +101,9 @@ func Start(ctx context.Context, opts Options, h Handler) (*Client, error) {
 	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	req := InitializeRequest{
-		ProtocolVersion: ProtocolVersion,
-		ClientInfo:      &Implementation{Name: version.Slug, Title: version.Name, Version: version.Version},
+		ProtocolVersion:    ProtocolVersion,
+		ClientCapabilities: ClientCapabilities{Meta: GooseCapsMeta()},
+		ClientInfo:         &Implementation{Name: version.Slug, Title: version.Name, Version: version.Version},
 	}
 	if err := c.conn.Call(initCtx, MethodInitialize, req, &c.Info); err != nil {
 		_ = p.Kill()

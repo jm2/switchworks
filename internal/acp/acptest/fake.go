@@ -66,6 +66,12 @@ const (
 	// EnvNoImages makes the fake advertise promptCapabilities.image false
 	// (and reject image blocks).
 	EnvNoImages = "SWK_FAKE_ACP_NOIMAGES"
+	// EnvGooseUsage makes the fake act like goose 1.55 for a client that
+	// opts in to goose's custom notifications: each turn adds 1000 input
+	// and 50 output tokens to the session's accumulated usage, sent in a
+	// _goose/unstable/session/update usage_update after session/new,
+	// session/load and each turn.
+	EnvGooseUsage = "SWK_FAKE_ACP_GOOSEUSAGE"
 )
 
 // Env returns environment overrides that make a re-executed test binary act
@@ -95,6 +101,8 @@ type Session struct {
 	Loads      int               `json:"loads"`
 	Closed     bool              `json:"closed"`
 	Images     []ImageRec        `json:"images,omitempty"` // image blocks received
+	AccIn      int64             `json:"acc_in,omitempty"` // accumulated usage (EnvGooseUsage)
+	AccOut     int64             `json:"acc_out,omitempty"`
 }
 
 // ImageRec records an image block the fake received.
@@ -125,6 +133,7 @@ type agent struct {
 	waiting  map[string]chan json.RawMessage // permission requests by id
 	nextReq  int
 	usage    int64
+	goose    bool // the client opted in to goose's custom notifications
 }
 
 func (a *agent) send(v any) {
@@ -145,6 +154,17 @@ func (a *agent) fail(id json.RawMessage, code int, msg string) {
 func (a *agent) update(sid string, u map[string]any) {
 	a.send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": sid, "update": u}})
 	time.Sleep(5 * time.Millisecond)
+}
+
+// gooseUsage sends s's accumulated usage the way goose does, if the client
+// asked for it.
+func (a *agent) gooseUsage(s *Session) {
+	if !a.goose {
+		return
+	}
+	a.send(map[string]any{"jsonrpc": "2.0", "method": "_goose/unstable/session/update", "params": map[string]any{
+		"sessionId": s.ID, "update": map[string]any{"sessionUpdate": "usage_update", "used": 10, "contextLimit": 128000,
+			"accumulatedInputTokens": s.AccIn, "accumulatedOutputTokens": s.AccOut}}})
 }
 
 func (a *agent) save(s *Session) {
@@ -238,6 +258,13 @@ func (a *agent) handle(line []byte) {
 		return
 	}
 	var p struct {
+		ClientCapabilities struct {
+			Meta struct {
+				Goose struct {
+					CustomNotifications bool `json:"customNotifications"`
+				} `json:"goose"`
+			} `json:"_meta"`
+		} `json:"clientCapabilities"`
 		SessionID  string          `json:"sessionId"`
 		Cwd        string          `json:"cwd"`
 		McpServers json.RawMessage `json:"mcpServers"`
@@ -266,6 +293,7 @@ func (a *agent) handle(line []byte) {
 		}
 		// Like goose 1.54: images and embedded context, no audio.
 		caps["promptCapabilities"] = map[string]any{"image": os.Getenv(EnvNoImages) != "1", "audio": false, "embeddedContext": true}
+		a.goose = os.Getenv(EnvGooseUsage) == "1" && p.ClientCapabilities.Meta.Goose.CustomNotifications
 		a.reply(m.ID, map[string]any{"protocolVersion": 1, "agentCapabilities": caps,
 			"authMethods": []any{}, "agentInfo": map[string]any{"name": "fake-acp", "version": "0.1"}})
 	case "session/new":
@@ -282,6 +310,7 @@ func (a *agent) handle(line []byte) {
 		r := setup(s)
 		r["sessionId"] = id
 		a.reply(m.ID, r)
+		a.gooseUsage(s)
 	case "session/load", "session/resume":
 		s := a.load(p.SessionID)
 		if s == nil {
@@ -298,6 +327,7 @@ func (a *agent) handle(line []byte) {
 			}
 		}
 		a.reply(m.ID, setup(s))
+		a.gooseUsage(s)
 	case "session/set_mode":
 		if s := a.load(p.SessionID); s != nil {
 			s.Config["mode"] = p.ModeID
@@ -434,6 +464,10 @@ func (a *agent) turn(id json.RawMessage, s *Session, text string, images [][]byt
 		}
 		a.usage += 100
 		u := a.usage
+		s.AccIn += 1000
+		s.AccOut += 50
+		a.save(s)
+		a.gooseUsage(s)
 		a.mu.Unlock()
 		a.reply(id, map[string]any{"stopReason": stop, "usage": map[string]any{
 			"totalTokens": u, "inputTokens": u - u/10, "outputTokens": u / 10, "cachedReadTokens": u / 4}})

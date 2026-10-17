@@ -246,6 +246,9 @@ type UsageEvent struct {
 	Last          Usage  `json:"last"`
 	Total         Usage  `json:"total"`
 	ContextWindow int64  `json:"context_window,omitempty"`
+	// Restarted marks the first report of an adapter whose Total starts
+	// over (a new process or handle), so an equal Total is still new usage.
+	Restarted bool `json:"restarted,omitempty"`
 }
 
 type ErrorEvent struct {

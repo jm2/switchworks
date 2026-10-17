@@ -56,6 +56,9 @@ type Store interface {
 	// exists and is not stopped, gone or in error.
 	CreateSession(s model.Session) error
 	UpdateSession(id string, fn func(*model.Session)) (model.Session, error)
+	// DeleteSession forgets a session and its event log (a spawn that
+	// failed, so it never ran).
+	DeleteSession(id string) error
 	Session(id string) (model.Session, bool)
 	SessionByPath(path string) (model.Session, bool)
 	Sessions() []model.Session

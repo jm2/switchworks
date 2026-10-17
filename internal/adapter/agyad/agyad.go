@@ -4,7 +4,7 @@
 //
 // EXPERIMENTAL: built from agy's documented headless mode
 // (https://antigravity.google/docs/cli/headless) and tested against a fake
-// that emits exactly the documented events; not yet run against a real agy.
+// that emits exactly the documented events; run against agy 1.4.0.
 //
 // By default each session runs one long-lived
 //
@@ -18,12 +18,20 @@
 // stream-json output is NDJSON whose "event" field is init, step_update or
 // result, with the payload under the key of the same name. step_update
 // carries text_delta for agent text and tool_info for tool steps; result
-// carries status, response, conversation_id and usage (cumulative for the
-// process in stream-input mode).
+// carries status, response, conversation_id, usage and duration_seconds
+// (both cumulative for the process in stream-input mode, so turn durations
+// are measured here instead; input_tokens excludes cache reads, which are
+// added in).
+//
+// Approval policy maps to agy's permission modes: "never" runs with
+// --dangerously-skip-permissions (as does sandbox danger-full-access),
+// "on-request" and "on-failure" with --mode accept-edits (file edits
+// proceed, commands and MCP calls do not), and "untrusted" or none with
+// agy's default request-review. A --mode in node.json agy.args wins.
 //
 // Differences from Codex: no approval relay (headless agy never asks; tools
 // that would need confirmation are soft-denied unless allowed in agy's
-// settings or the session runs with danger-full-access), no mid-turn
+// settings or permissions are skipped), no mid-turn
 // steering, and Interrupt stops the process (the next turn starts a new one
 // on the same conversation). The conversation id is only known once agy
 // reports it; session.registered is emitted again then.
@@ -33,6 +41,9 @@
 // (command and args only; the per-session credentials reach `swk mcp`
 // through the agy process environment) and, unless the session already
 // skips permissions, an "mcp(swk/*)" allow rule to agy's settings.json.
+// This happens for new sessions only, never on Resume. An explicit Stop
+// removes the workspace entry (and its .git/info/exclude line) if the
+// session created the file; the global allow rule stays.
 package agyad
 
 import (
@@ -42,6 +53,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -86,6 +98,31 @@ type Adapter struct {
 	cfg Config
 	mu  sync.Mutex
 	hs  map[*handle]bool
+
+	// fleetMu serializes fleet tool setup and cleanup; owners maps a
+	// workspace's swk entry to what this adapter added and the sessions
+	// using it.
+	fleetMu sync.Mutex
+	owners  map[string]*fleetOwner
+}
+
+// fleetOwner is a workspace entry this adapter added, and the number of
+// live sessions there that use it. The last one to stop removes it.
+type fleetOwner struct {
+	setup *fleetSetup
+	refs  int
+}
+
+// fleetKey identifies a server entry in a workspace.
+func fleetKey(cwd, name string) string {
+	if cwd == "" {
+		cwd = "."
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = cwd
+	}
+	return abs + "\x00" + name
 }
 
 // New returns an adapter.
@@ -123,8 +160,33 @@ func (a *Adapter) open(spec adapter.StartSpec, sink adapter.Sink, convID string)
 	a.mu.Lock()
 	a.hs[h] = true
 	a.mu.Unlock()
+	// Only a new session gets the fleet tools set up: a resumed one may be a
+	// user's own conversation in their own repository, and keeps whatever
+	// its workspace already has (the credentials still reach it via env).
 	if spec.MCP != nil && a.cfg.Options.FleetTools {
-		for _, w := range setupFleetTools(spec, a.cfg) {
+		key := fleetKey(spec.Cwd, spec.MCP.Name)
+		var warns []string
+		a.fleetMu.Lock()
+		o := a.owners[key]
+		if o == nil && convID == "" {
+			var made *fleetSetup
+			made, warns = setupFleetTools(spec, a.cfg)
+			if made != nil {
+				o = &fleetOwner{setup: made}
+				if a.owners == nil {
+					a.owners = map[string]*fleetOwner{}
+				}
+				a.owners[key] = o
+			}
+		}
+		if o != nil {
+			// Resumed sessions there count too: the entry stays while any
+			// session in the workspace runs.
+			o.refs++
+			h.fleetKey = key
+		}
+		a.fleetMu.Unlock()
+		for _, w := range warns {
 			a.cfg.Logf("agy: %s", w)
 			h.emit(model.KindWarning, model.ErrorEvent{Message: w})
 		}
@@ -163,6 +225,7 @@ type handle struct {
 	lastRep      *model.Usage // last cumulative usage agy reported
 	total        model.Usage
 	deniedSeen   map[string]bool
+	fleetKey     string // the workspace entry this session holds (Adapter.owners)
 }
 
 func (h *handle) emit(kind string, p any) { h.sink(adapter.Event{Kind: kind, Payload: p}) }
@@ -214,12 +277,33 @@ func (h *handle) args() []string {
 	}
 	h.mu.Unlock()
 	switch h.spec.Sandbox {
-	case "danger-full-access":
-		args = append(args, "--dangerously-skip-permissions")
 	case "read-only", "workspace-write":
 		args = append(args, "--sandbox")
 	}
+	switch {
+	case skipsPermissions(h.spec):
+		args = append(args, "--dangerously-skip-permissions")
+	case hasModeArg(h.a.cfg.ExtraArgs):
+		// node.json agy.args chose the mode.
+	case h.spec.ApprovalPolicy == "on-request" || h.spec.ApprovalPolicy == "on-failure":
+		args = append(args, "--mode", "accept-edits")
+	}
 	return append(args, h.a.cfg.ExtraArgs...)
+}
+
+// skipsPermissions reports whether the session runs agy with
+// --dangerously-skip-permissions.
+func skipsPermissions(spec adapter.StartSpec) bool {
+	return spec.Sandbox == "danger-full-access" || spec.ApprovalPolicy == "never"
+}
+
+func hasModeArg(args []string) bool {
+	for _, a := range args {
+		if a == "--mode" || strings.HasPrefix(a, "--mode=") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *handle) env() map[string]string {
@@ -291,6 +375,12 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	t := &turnState{h: h, id: ulid.New(), start: time.Now(), steps: map[int]*step{}}
 	h.turn = t
 	p := h.p
+	if h.interrupting {
+		// The interrupted process ended its turn but is still stopping:
+		// start a new one, and the flag no longer applies.
+		p = nil
+		h.interrupting = false
+	}
 	h.mu.Unlock()
 
 	fail := func(err error) error {
@@ -348,7 +438,7 @@ func (h *handle) read(p *proc.Process) {
 			if tap := h.a.cfg.Tap; tap != nil {
 				tap("in", s)
 			}
-			h.handleLine(s)
+			h.handleLine(p, s)
 		}
 		if err != nil {
 			break
@@ -356,7 +446,8 @@ func (h *handle) read(p *proc.Process) {
 	}
 	<-p.Done()
 	h.mu.Lock()
-	if h.p == p {
+	current := h.p == p // no newer process has taken over
+	if current {
 		h.p = nil
 	}
 	t := h.turn
@@ -367,7 +458,9 @@ func (h *handle) read(p *proc.Process) {
 		h.turn = nil
 	}
 	interrupted := h.interrupting || h.stopped
-	h.interrupting = false
+	if current {
+		h.interrupting = false
+	}
 	stopped := h.stopped
 	h.mu.Unlock()
 	if t != nil {
@@ -420,6 +513,8 @@ func (h *handle) shutdown(announce bool) {
 	}
 	h.stopped = true
 	p := h.p
+	key := h.fleetKey
+	h.fleetKey = ""
 	h.mu.Unlock()
 	if p != nil {
 		_ = p.Stdin.Close() // a clean end for stream-input mode
@@ -428,6 +523,27 @@ func (h *handle) shutdown(announce bool) {
 	h.a.mu.Lock()
 	delete(h.a.hs, h)
 	h.a.mu.Unlock()
+	if key != "" {
+		h.a.fleetMu.Lock()
+		if o := h.a.owners[key]; o != nil {
+			o.refs--
+			// Only the last explicit Stop cleans up; a node shutdown leaves
+			// the entry for the sessions it will resume.
+			if o.refs <= 0 {
+				o.refs = 0
+				if !announce {
+					delete(h.a.owners, key)
+				} else if err := removeFleetTools(o.setup); err != nil {
+					// Keep the record: the next session there to stop
+					// tries again.
+					h.a.cfg.Logf("agy: removing fleet tools from %s: %v", o.setup.cwd, err)
+				} else {
+					delete(h.a.owners, key)
+				}
+			}
+		}
+		h.a.fleetMu.Unlock()
+	}
 	if announce {
 		h.setStatus(model.StatusStopped, "")
 	}

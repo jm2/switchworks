@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +228,86 @@ func TestTornMessageTail(t *testing.T) {
 		if _, ok := s.Message(id); !ok {
 			t.Fatalf("message %s lost after a torn tail", id)
 		}
+	}
+}
+
+func TestDeleteSession(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(model.Session{ID: s1, Path: "devbox/a", Status: model.StatusStarting}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvents([]model.Event{ev(s1, 1, "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(s1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(s1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
+	}
+	if _, ok := s.Session(s1); ok || len(s.Sessions()) != 0 {
+		t.Fatal("session still listed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "events", s1+".jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event log kept: %v", err)
+	}
+	if evs, _ := s.Events(s1, 0, 0); len(evs) != 0 || s.LastSeq(s1) != 0 {
+		t.Fatalf("events kept: %+v", evs)
+	}
+	// The path is free, and the deletion survives a reopen.
+	if err := s.CreateSession(model.Session{ID: s2, Path: "devbox/a", Status: model.StatusStarting}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if all := s.Sessions(); len(all) != 1 || all[0].ID != s2 {
+		t.Fatalf("after reopen: %+v", all)
+	}
+}
+
+// A deletion that cannot be saved leaves the session in place, with its
+// history, so a retry finds it.
+func TestDeleteSessionSaveFails(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a directory the test cannot write to")
+	}
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(model.Session{ID: s1, Path: "devbox/a", Status: model.StatusError}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvents([]model.Event{ev(s1, 1, "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	err = s.DeleteSession(s1)
+	_ = os.Chmod(dir, 0o700)
+	if err == nil {
+		t.Fatal("delete saved into a read-only directory")
+	}
+	if _, ok := s.Session(s1); !ok {
+		t.Fatal("session gone after a failed save")
+	}
+	if evs, _ := s.Events(s1, 0, 10); len(evs) != 1 {
+		t.Fatalf("history after a failed save: %d events", len(evs))
+	}
+	if err := s.DeleteSession(s1); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, ok := s.Session(s1); ok {
+		t.Fatal("retry did not delete")
 	}
 }

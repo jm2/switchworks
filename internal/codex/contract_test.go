@@ -162,7 +162,8 @@ func TestContractAgainstSchema(t *testing.T) {
 
 	requests := methodsOf(t, "ClientRequest.json")
 	for _, m := range []string{MethodInitialize, MethodThreadStart, MethodThreadResume, MethodThreadSetName,
-		MethodThreadList, MethodThreadRead, MethodThreadUnsubscribe, MethodTurnStart, MethodTurnSteer, MethodTurnInterrupt} {
+		MethodThreadList, MethodThreadRead, MethodThreadUnsubscribe, MethodTurnStart, MethodTurnSteer, MethodTurnInterrupt,
+		MethodBackgroundTerminalsList, MethodBackgroundTerminalsTerminate, MethodBackgroundTerminalsClean} {
 		if !requests[m] {
 			t.Errorf("client request %q not in schema", m)
 		}

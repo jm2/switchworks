@@ -146,7 +146,7 @@ func (s *Server) fillActivity(v *apiclient.SessionView) {
 
 // FleetEvent is one event on GET /v1/stream.
 type FleetEvent struct {
-	Type string // "session", "host" or "message"
+	Type string // "session", "session_removed", "host", "host_removed" or "message"
 	Data any
 }
 

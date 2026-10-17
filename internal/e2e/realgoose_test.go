@@ -43,6 +43,7 @@ func startGooseNode(t *testing.T, c *apiclient.Client, host, bin string, mock *c
 	home := filepath.Join(dir, "goose-home")
 	noProxy := "127.0.0.1,localhost"
 	cfg.Codex.Bin = "/nonexistent/codex"
+	cfg.Agy.Bin = "/nonexistent/agy"
 	cfg.ACP = map[string]harness.ACPAgent{"goose": {Bin: bin, Env: map[string]string{
 		"HOME": home, "XDG_CONFIG_HOME": home + "/.config", "XDG_DATA_HOME": home + "/.local/share",
 		"XDG_STATE_HOME": home + "/.local/state",
