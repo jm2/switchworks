@@ -102,7 +102,7 @@ real-Codex test.
   for sessions resumed after the setting changes. Environment inheritance
   from agy to `swk mcp` works with agy 1.4.0.
 - **Running sessions grow without bound.** Ended sessions are deleted
-  with their event logs 90 days after their last event
+  with their event logs 90 days after they ended
   (`session_retention_days`), but a session that keeps running keeps its
   whole log. Terminal messages are compacted after 14 days.
 - **Hop counting is per session, not per conversation.** A session working

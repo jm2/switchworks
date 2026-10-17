@@ -159,8 +159,11 @@ jobs:
           cp "$top"/RPMS/*/switchworks-*.rpm "out/switchworks-$ARCH.rpm"
           rpm -qip "out/switchworks-$ARCH.rpm"
           rpm -qlp "out/switchworks-$ARCH.rpm"
-          # No scriptlets: nothing is enabled or started at install.
-          test -z "$(rpm -qp --scripts "out/switchworks-$ARCH.rpm")"
+          # The scripts create the account and handle the system unit, and
+          # enable nothing for users.
+          rpm -qp --scripts "out/switchworks-$ARCH.rpm" | tee scripts.txt
+          grep -q 'systemd-sysusers' scripts.txt
+          if grep -q 'user-units\|preset-user' scripts.txt; then exit 1; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm-${{ matrix.arch }}
