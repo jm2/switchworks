@@ -120,6 +120,11 @@ func TestScopedCLI(t *testing.T) {
 	wantForbidden(t, "token create with an operate token", err)
 	_, err = op.UILink(ctx, "admin")
 	wantForbidden(t, "admin link from an operate token", err)
+	// Deleting history needs admin, and a live session must stop first.
+	wantForbidden(t, "rm with an operate token", op.RemoveSession(ctx, sess.ID))
+	if err := admin.RemoveSession(ctx, sess.ID); err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Fatalf("rm of a live session: %v", err)
+	}
 
 	// A read token watches but cannot act.
 	ro, err := admin.CreateToken(ctx, "wallboard", "read", 0)

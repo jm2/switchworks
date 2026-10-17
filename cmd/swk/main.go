@@ -32,6 +32,8 @@ Fleet:
   swk interrupt <session>        cancel a session's active turn
   swk approve <session> <approval-id> <decision>
   swk stop <session>             stop managing a session
+  swk rm <session>               delete a stopped session's record and events
+                                 (admin; ended ones go after 90 days anyway)
   swk events <session>           print a session's event log as JSON
 
 Messages:

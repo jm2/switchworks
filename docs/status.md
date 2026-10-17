@@ -26,6 +26,7 @@
 | Cross-compilation | done | linux/amd64, linux/arm64, darwin/arm64, windows/amd64 build and vet clean |
 | `swk service` (user services) | done | unit tests per platform (systemd unit quoting, LaunchAgent plist with `plutil -lint`, logon-task XML and SID names, the Windows stop event); CI's Services job runs a coordinator and node through systemd user units, LaunchAgents and logon tasks on GitHub's Linux, macOS and Windows runners: install, run as the user, connect, restart, stop, start, uninstall |
 | Coordinator system service (`--system`) | done, little real use | unit tests: the system unit and its account match the packages', the environment `swk --system` passes, root-only binary checks, which commands `--system` allows, the Windows service command line; run in a Fedora 44 container booted with systemd, as a user with sudo, from a copied binary and from the RPM's unit: runs as `switchworks` under the unit's sandbox (exposure 1.4 in `systemd-analyze security`), its directory closed to the user, an operate token and a node as the user, restart, uninstall. CI's System service job does the same on GitHub's Linux and Windows runners (Windows: the virtual account and the folder's permissions), and installs and removes the `.deb` around it |
+| Session retention (`swk rm`, `session_retention_days`) | done | unit tests: stopped and gone sessions past the retention are removed with their event logs and the web UI told; running, errored and recently active ones stay; a negative retention keeps all, a shorter one applies; removing a live session is refused; the route needs admin. e2e: an operate token cannot `rm`, and an admin cannot remove a live session |
 | Status file (`status.json`) | done | unit tests; a real coordinator and node run with `--log-file` reported running and connected, and the file went away on SIGTERM |
 | Linux tray (`swk-tray`, StatusNotifierItem) | done, little real use | D-Bus codec round trips and talks to a real `dbus-daemon`; a fake StatusNotifierWatcher receives the registration, reads the item's properties, pixmaps, tooltip and menu layout, and clicks an item. Not yet looked at in a real panel |
 | Windows tray (`swk-tray.exe`) | done, little real use | CI starts it on a Windows runner (it stays up; a second copy exits); not yet looked at on a real desktop |
@@ -100,8 +101,10 @@ real-Codex test.
   with a warning when added). They are set up for new sessions only, not
   for sessions resumed after the setting changes. Environment inheritance
   from agy to `swk mcp` works with agy 1.4.0.
-- **No retention yet.** Event files grow without bound (M6). Terminal
-  messages are compacted after 14 days.
+- **Running sessions grow without bound.** Ended sessions are deleted
+  with their event logs 90 days after their last event
+  (`session_retention_days`), but a session that keeps running keeps its
+  whole log. Terminal messages are compacted after 14 days.
 - **Hop counting is per session, not per conversation.** A session working
   on a deep chain that then gets an unrelated message starts again from that
   message's hop count. Good enough to stop ping-pong; not a causal trace.

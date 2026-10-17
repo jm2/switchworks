@@ -1022,6 +1022,91 @@ func (s *Server) forgetSession(id string) {
 	s.fleetPublish("session_removed", map[string]string{"id": id})
 }
 
+// defaultSessionRetention is how long an ended session is kept after its
+// last event, unless coordinator.json's session_retention_days says
+// otherwise.
+const defaultSessionRetention = 90 * 24 * time.Hour
+
+// sessionRetention returns how long ended sessions are kept (0: forever).
+func (s *Server) sessionRetention() time.Duration {
+	switch d := s.cfg.SessionRetentionDays; {
+	case d < 0:
+		return 0
+	case d == 0:
+		return defaultSessionRetention
+	default:
+		return time.Duration(d) * 24 * time.Hour
+	}
+}
+
+// ended reports whether sess has ended (stopped, or gone from its node)
+// and its last event is older than keep. Nodes report every session they
+// have not stopped, so neither kind comes back once forgotten; a session
+// in error may still be on its node, and is kept. So is one with no
+// timestamps, whose age is unknown.
+func ended(sess model.Session, now time.Time, keep time.Duration) bool {
+	last := sess.UpdatedAt
+	if sess.CreatedAt.After(last) {
+		last = sess.CreatedAt
+	}
+	return !live(sess) && !last.IsZero() && now.Sub(last) >= keep
+}
+
+// pruneSessions forgets ended sessions past the retention: their records
+// and event logs. Without it the store would grow with every session
+// ever run.
+func (s *Server) pruneSessions(now time.Time) {
+	keep := s.sessionRetention()
+	if keep == 0 {
+		return
+	}
+	n := 0
+	for _, sess := range s.store.Sessions() {
+		if !ended(sess, now, keep) {
+			continue
+		}
+		// Checked again with the host's events held back, so a session
+		// that just came back is not taken from under them.
+		unlock := s.lockIngest(sess.Host)
+		if cur, ok := s.store.Session(sess.ID); ok && ended(cur, now, keep) {
+			s.forgetSession(cur.ID)
+			if _, still := s.store.Session(cur.ID); !still {
+				n++
+			}
+		}
+		unlock()
+	}
+	if n > 0 {
+		s.logf("removed %d sessions that ended more than %d days ago", n, int(keep/(24*time.Hour)))
+	}
+}
+
+// RemoveSession forgets an ended session now, as pruneSessions would after
+// the retention. A live one must be stopped first.
+func (s *Server) RemoveSession(id string) error {
+	sess, ok := s.store.Session(id)
+	if !ok {
+		return store.ErrNotFound
+	}
+	defer s.lockIngest(sess.Host)()
+	cur, ok := s.store.Session(id)
+	if !ok {
+		return store.ErrNotFound
+	}
+	if live(cur) {
+		return fmt.Errorf("%w: %s is %s; stop it first", errLive, cur.Path, cur.Status)
+	}
+	s.forgetSession(id)
+	if _, still := s.store.Session(id); still {
+		return fmt.Errorf("could not remove %s (see the coordinator's log)", cur.Path)
+	}
+	s.logf("removed %s (%s)", cur.Path, id)
+	return nil
+}
+
+// errLive is returned when removing a session that has not ended.
+var errLive = errors.New("session is live")
+
 // purgeFailedSpawns removes sessions left behind by spawns that failed
 // before this coordinator forgot them, or that were in flight when it
 // stopped: in error or starting, never registered by a harness, and

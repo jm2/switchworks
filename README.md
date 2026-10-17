@@ -293,7 +293,9 @@ included. On Linux and Windows, `swk service install --system coordinator` sets 
 | Windows | The `swk-coordinator` service, allowed through Windows Firewall on private and domain networks | `NT SERVICE\swk-coordinator`, a virtual account with no password | `%ProgramData%\Switchworks`, open only to that account, SYSTEM and administrators |
 
 Setting it up takes root (or an elevated prompt on Windows, without `sudo`); the coordinator
-itself never runs with either. Do it instead of the steps above, not as well:
+itself never runs with either. It starts at boot only once it is set up: on Linux the unit is
+skipped until `init` has written its config, and on Windows `swk service start --system` is
+what turns starting at boot on. Do it instead of the steps above, not as well:
 
 ```bash
 sudo swk service install --system coordinator
@@ -495,9 +497,15 @@ swk send --image shot.png myapp "does this look right?"    # with an image (up t
 swk approve myapp <approval-id> accept    # or answer in the web UI
 swk interrupt myapp
 swk stop myapp                            # history is kept
+swk rm myapp                              # delete a stopped session's history (admin)
 ```
 
 A bare session name works when it is unique across the fleet.
+
+Stopped sessions, and sessions whose host no longer has them, are deleted with their event logs
+90 days after their last event. Set `session_retention_days` in `coordinator.json` to change
+that (a negative number keeps them forever), or remove one sooner with `swk rm`. Sessions that
+are still running, or in error on their node, are kept however old.
 
 Agents get fleet tools (`fleet_list`, `fleet_ask`, `fleet_send`,
 `fleet_spawn`, ...), so a prompt like "ask buildbox/helper whether the ARM

@@ -232,7 +232,8 @@ func (r *router) loop() {
 
 // tidy drops state that would otherwise grow for as long as the
 // coordinator runs: rate-limit buckets that have refilled, triggers of
-// sessions that have ended, and finished messages past their retention.
+// sessions that have ended, finished messages past their retention, and
+// ended sessions past theirs.
 func (r *router) tidy(now time.Time) {
 	r.mu.Lock()
 	for k, b := range r.buckets {
@@ -253,6 +254,7 @@ func (r *router) tidy(now time.Time) {
 		}
 	}
 	r.s.store.PruneMessages(now)
+	r.s.pruneSessions(now)
 	if r.s.blobs != nil {
 		pinned := map[string]bool{}
 		for _, m := range r.s.store.PendingMessages() {

@@ -347,6 +347,11 @@ func (c *Client) Stop(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/stop", nil, nil)
 }
 
+// RemoveSession forgets an ended session: its record and event log.
+func (c *Client) RemoveSession(ctx context.Context, id string) error {
+	return c.do(ctx, "DELETE", "/v1/sessions/"+url.PathEscape(id), nil, nil)
+}
+
 // EnrollToken asks the coordinator for a one-time token for host.
 func (c *Client) EnrollToken(ctx context.Context, host string, ttl time.Duration) (string, error) {
 	var out struct {

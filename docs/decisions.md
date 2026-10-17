@@ -68,6 +68,17 @@ credential can do, not who it is. Tokens live in the coordinator store as a
 SHA-256 hash, like enrollment tokens (they are 256-bit random, so a slow
 hash adds nothing), and are deleted when revoked.
 
+**Ended sessions are kept for 90 days.** Every session's record lives in
+`state.json`, which is rewritten as sessions change, and each has an event
+log, so keeping all of them forever would grow the store and slow every
+save. Stopped sessions, and those their node no longer has (gone), are
+deleted 90 days after their last event (`session_retention_days`; a
+negative value keeps them). Only those two: a node reports every session it
+has not stopped and the coordinator adopts any it does not know, so
+deleting a running or errored session would just bring it back. `swk rm`
+deletes one sooner; it needs admin, since an operate token is what agents'
+machines carry, and history is worth more than the space.
+
 **The coordinator can have an account of its own.** On a machine where
 agents also run, a coordinator running as you is readable by them: its CA
 key signs node certificates and its admin `cli.json` controls the fleet.
