@@ -59,6 +59,10 @@ type Store interface {
 	// DeleteSession forgets a session and its event log (a spawn that
 	// failed, so it never ran).
 	DeleteSession(id string) error
+	// RemoveDeletedLogs tries again to remove the event logs of deleted
+	// sessions that DeleteSession could not (it returned ErrLogPending),
+	// returning how many remain.
+	RemoveDeletedLogs() int
 	Session(id string) (model.Session, bool)
 	SessionByPath(path string) (model.Session, bool)
 	Sessions() []model.Session

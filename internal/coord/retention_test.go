@@ -76,6 +76,12 @@ func TestPruneSessions(t *testing.T) {
 	if _, ok := s.store.Session(recent.ID); !ok {
 		t.Fatal("a negative retention removed a session")
 	}
+	// One that would overflow a Duration is capped, not negative.
+	s.cfg.SessionRetentionDays = 1 << 40
+	s.pruneSessions(now)
+	if _, ok := s.store.Session(recent.ID); !ok {
+		t.Fatal("an overflowing retention removed a recent session")
+	}
 	s.cfg.SessionRetentionDays = 1
 	s.pruneSessions(now.Add(25 * time.Hour))
 	if _, ok := s.store.Session(recent.ID); ok {

@@ -56,6 +56,9 @@ type Server struct {
 	auth   authWatch  // ends open requests whose credential was revoked
 	blobs  *blobStore // image attachments (blobs.go)
 	usage  usageBook  // adapters' last usage totals (usage.go)
+	// pendingLogs: event logs of deleted sessions not yet removed, as
+	// last reported (pruneSessions, on the router's goroutine).
+	pendingLogs int
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup
@@ -1012,7 +1015,8 @@ func (s *Server) forgetSession(id string) {
 			s.logf("forget session %s: %v", id, err)
 			return
 		}
-		// Deleted; only its event log could not be removed.
+		// Deleted; only its event log could not be removed yet, and the
+		// store keeps trying.
 		s.logf("forget session %s: %v", id, err)
 	}
 	s.mu.Lock()
@@ -1027,6 +1031,9 @@ func (s *Server) forgetSession(id string) {
 // otherwise.
 const defaultSessionRetention = 90 * 24 * time.Hour
 
+// maxSessionRetentionDays caps session_retention_days (100 years).
+const maxSessionRetentionDays = 36500
+
 // sessionRetention returns how long ended sessions are kept (0: forever).
 func (s *Server) sessionRetention() time.Duration {
 	switch d := s.cfg.SessionRetentionDays; {
@@ -1034,6 +1041,9 @@ func (s *Server) sessionRetention() time.Duration {
 		return 0
 	case d == 0:
 		return defaultSessionRetention
+	case d > maxSessionRetentionDays:
+		// Far past anything kept, and short of overflowing a Duration.
+		return maxSessionRetentionDays * 24 * time.Hour
 	default:
 		return time.Duration(d) * 24 * time.Hour
 	}
@@ -1056,6 +1066,13 @@ func ended(sess model.Session, now time.Time, keep time.Duration) bool {
 // and event logs. Without it the store would grow with every session
 // ever run.
 func (s *Server) pruneSessions(now time.Time) {
+	// Said when the count changes, not every minute.
+	if n := s.store.RemoveDeletedLogs(); n != s.pendingLogs {
+		if n > 0 {
+			s.logf("%d event logs of deleted sessions could not be removed yet; trying again every minute", n)
+		}
+		s.pendingLogs = n
+	}
 	keep := s.sessionRetention()
 	if keep == 0 {
 		return
