@@ -25,14 +25,15 @@ const workspaceMCP = ".agents/mcp_config.json"
 // be taken out again once no session there uses it.
 type fleetSetup struct {
 	cwd, name     string
-	fileCreated   bool   // the config file did not exist before
-	exclude, line string // .git/info/exclude and the line added to it, if any
+	fileCreated   bool           // the config file did not exist before
+	previous      map[string]any // the entry it replaced, restored on cleanup
+	exclude, line string         // .git/info/exclude and the line added to it, if any
 }
 
 // setupFleetTools makes the fleet tools available to agy sessions in
 // spec.Cwd and returns warnings for anything it could not do, plus a record
-// of the workspace entry when it added it (nil when the entry was already
-// there).
+// of the workspace entry when it added or replaced it (nil when the entry
+// was already there as wanted).
 // It never removes or rewrites other entries, and never writes credentials
 // to disk.
 func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string) {
@@ -54,12 +55,12 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string)
 	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	created, added, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, map[string]any{"command": cmd, "args": args})
+	created, added, previous, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, map[string]any{"command": cmd, "args": args})
 	if err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	if added {
-		made = &fleetSetup{cwd: cwd, name: m.Name, fileCreated: created}
+	if added || previous != nil {
+		made = &fleetSetup{cwd: cwd, name: m.Name, fileCreated: created, previous: previous}
 	}
 	if created {
 		if made.exclude, made.line, err = gitExclude(cwd, workspaceMCP); err != nil {
@@ -109,7 +110,11 @@ func removeFleetTools(f *fleetSetup) error {
 	}
 	servers, _ := doc["mcpServers"].(map[string]any)
 	if _, ok := servers[f.name]; ok {
-		delete(servers, f.name)
+		if f.previous != nil {
+			servers[f.name] = f.previous // the entry it replaced
+		} else {
+			delete(servers, f.name)
+		}
 		if f.fileCreated && len(servers) == 0 && len(doc) == 1 {
 			err = root.Remove(workspaceMCP)
 			_ = root.Remove(filepath.Dir(workspaceMCP)) // only if now empty
@@ -187,12 +192,13 @@ func insideWorkspace(cwd, rel string) error {
 
 // mergeMCPConfig sets mcpServers[name] in the agy MCP config file rel
 // under cwd, keeping everything else. It reports whether it created the
-// file. All access goes through an os.Root on cwd, so a symlink the agent
+// file, whether the entry is new, and the entry it replaced (nil if none,
+// or if the entry already matched and nothing was written). All access goes through an os.Root on cwd, so a symlink the agent
 // swaps in after insideWorkspace looked cannot lead the write outside.
-func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, added bool, err error) {
+func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, added bool, previous map[string]any, err error) {
 	root, err := os.OpenRoot(cwd)
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
 	defer root.Close()
 	path := filepath.Join(cwd, rel)
@@ -202,23 +208,24 @@ func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, adde
 	switch {
 	case created:
 	case err != nil:
-		return false, false, err
+		return false, false, nil, err
 	case len(bytes.TrimSpace(b)) > 0:
 		if err := json.Unmarshal(b, &doc); err != nil {
-			return false, false, fmt.Errorf("%s is not valid JSON; not touching it: %v", path, err)
+			return false, false, nil, fmt.Errorf("%s is not valid JSON; not touching it: %v", path, err)
 		}
 	}
 	servers, _ := doc["mcpServers"].(map[string]any)
 	if servers == nil {
 		if _, exists := doc["mcpServers"]; exists {
-			return false, false, fmt.Errorf("%s: mcpServers is not an object; not touching it", path)
+			return false, false, nil, fmt.Errorf("%s: mcpServers is not an object; not touching it", path)
 		}
 		servers = map[string]any{}
 	}
-	if old, ok := servers[name].(map[string]any); ok {
+	old, replacing := servers[name].(map[string]any)
+	if replacing {
 		same := old["command"] == server["command"] && reflect.DeepEqual(asStrings(old["args"]), server["args"])
 		if same {
-			return false, false, nil
+			return false, false, nil, nil
 		}
 		// Keep fields the user added (disabledTools, cwd, ...).
 		for k, v := range old {
@@ -228,16 +235,19 @@ func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, adde
 		}
 	}
 	_, existed := servers[name]
+	if replacing {
+		previous = old
+	}
 	servers[name] = server
 	doc["mcpServers"] = servers
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
 	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
-	return created, !existed, writeAtomicIn(root, rel, append(out, '\n'))
+	return created, !existed, previous, writeAtomicIn(root, rel, append(out, '\n'))
 }
 
 func asStrings(v any) []string {

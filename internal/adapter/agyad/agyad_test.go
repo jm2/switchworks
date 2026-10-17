@@ -949,3 +949,33 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 		t.Fatalf("config removed on shutdown: %v", err)
 	}
 }
+
+// A different swk entry that a session replaced is put back when it stops.
+func TestFleetToolsRestoreReplacedEntry(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: filepath.Join(t.TempDir(), "settings.json")})
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	cfgPath := filepath.Join(repo, ".agents", "mcp_config.json")
+	_ = os.MkdirAll(filepath.Dir(cfgPath), 0o755)
+	orig := `{"mcpServers":{"swk":{"command":"/opt/old/swk","args":["mcp","--old"]}}}`
+	_ = os.WriteFile(cfgPath, []byte(orig), 0o644)
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(cfgPath); strings.Contains(string(b), "/opt/old/swk") {
+		t.Fatalf("entry not replaced: %s", b)
+	}
+	_ = h.Stop(ctx)
+	b, _ := os.ReadFile(cfgPath)
+	var doc struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil || doc.MCPServers["swk"].Command != "/opt/old/swk" || len(doc.MCPServers["swk"].Args) != 2 {
+		t.Fatalf("entry not restored: %s", b)
+	}
+}

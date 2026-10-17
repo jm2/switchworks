@@ -816,3 +816,18 @@ func TestGooseUsageWithoutPromptUsage(t *testing.T) {
 		t.Fatalf("usage %+v", evs)
 	}
 }
+
+// A cumulative report that leaves out an optional field it sent before is
+// still differenced, not taken whole.
+func TestUsageOmittedOptionalField(t *testing.T) {
+	cached := int64(400)
+	evs := usageSeq(t, "other-agent 1.0",
+		acp.Usage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100, CachedReadTokens: &cached},
+		acp.Usage{InputTokens: 1500, OutputTokens: 150, TotalTokens: 1650})
+	if want := (model.Usage{InputTokens: 500, OutputTokens: 50, TotalTokens: 550}); evs[1].Last != want {
+		t.Fatalf("second turn %+v, want %+v", evs[1].Last, want)
+	}
+	if evs[1].Total.CachedInputTokens != 400 {
+		t.Fatalf("total %+v", evs[1].Total)
+	}
+}

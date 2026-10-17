@@ -701,11 +701,24 @@ func (h *handle) usage(turnID string, u *acp.Usage) {
 		return
 	}
 	last := rep
-	if p := h.lastRep; p != nil && !reportsLastRequest(h.agentName) && rep.TotalTokens > p.TotalTokens && covers(rep, *p) {
-		last = model.Usage{
-			InputTokens: rep.InputTokens - p.InputTokens, CachedInputTokens: rep.CachedInputTokens - p.CachedInputTokens,
-			OutputTokens: rep.OutputTokens - p.OutputTokens, ReasoningTokens: rep.ReasoningTokens - p.ReasoningTokens,
-			TotalTokens: rep.TotalTokens - p.TotalTokens,
+	if p := h.lastRep; p != nil && !reportsLastRequest(h.agentName) {
+		// A field the agent left out this time is unknown, not zero: as a
+		// cumulative report it keeps its last value, so leaving it out
+		// cannot make the report look like a reset.
+		cum := rep
+		if u.CachedReadTokens == nil {
+			cum.CachedInputTokens = p.CachedInputTokens
+		}
+		if u.ThoughtTokens == nil {
+			cum.ReasoningTokens = p.ReasoningTokens
+		}
+		if cum.TotalTokens > p.TotalTokens && covers(cum, *p) {
+			last = model.Usage{
+				InputTokens: cum.InputTokens - p.InputTokens, CachedInputTokens: cum.CachedInputTokens - p.CachedInputTokens,
+				OutputTokens: cum.OutputTokens - p.OutputTokens, ReasoningTokens: cum.ReasoningTokens - p.ReasoningTokens,
+				TotalTokens: cum.TotalTokens - p.TotalTokens,
+			}
+			rep = cum
 		}
 	}
 	h.lastRep = &rep

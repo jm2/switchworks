@@ -304,8 +304,8 @@ agy.jsonl "hello"` and report anything that renders oddly.
   to `<cwd>/.agents/mcp_config.json`, keeping any other entries, and lists
   the file in `.git/info/exclude` if it created it. When the last session
   in that workspace stops, the node removes the entry it added (and the
-  file and exclude line, if it created them); an `swk` entry that was
-  there before is left alone. Unless the session skips permissions, the node also
+  file and exclude line, if it created them), and puts back an `swk`
+  entry it replaced. Unless the session skips permissions, the node also
   adds `mcp(swk/*)` to `permissions.allow` in agy's global settings, and
   says so in a warning; that rule stays. Sessions that already existed
   when you turned fleet tools on are not changed when the node resumes
