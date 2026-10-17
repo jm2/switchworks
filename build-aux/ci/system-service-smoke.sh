@@ -98,7 +98,9 @@ if [ $os = linux ]; then
     fail "this user can read the system coordinator's config"
   fi
 else
-  owner=$(powershell -NoProfile -Command '$s = Get-CimInstance Win32_Service -Filter "Name=''swk-coordinator''"; (Get-Process -Id $s.ProcessId -IncludeUserName).UserName' | tr -d '\r')
+  pid=$(sc.exe queryex swk-coordinator | tr -d '\r' | sed -n 's/^ *PID *: *\([0-9]*\).*/\1/p')
+  [ -n "$pid" ] && [ "$pid" != 0 ] || fail "sc.exe queryex shows no process for the coordinator"
+  owner=$(powershell -NoProfile -Command "(Get-Process -Id $pid -IncludeUserName).UserName" | tr -d '\r')
   [ "$owner" = 'NT SERVICE\swk-coordinator' ] || fail "the coordinator runs as '$owner', not NT SERVICE\\swk-coordinator"
   # Only SYSTEM, administrators and the service's account may open its folder.
   while IFS= read -r id; do
