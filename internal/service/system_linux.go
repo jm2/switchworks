@@ -323,12 +323,12 @@ func enterSystem(args []string, stderr io.Writer) (int, bool) {
 		return 1, true
 	}
 	u, err := systemAccount(false)
+	var uid, gid int
 	if err == nil {
 		err = ensureSystemHome(u)
 	}
-	uid, gid, idErr := ids(u)
 	if err == nil {
-		err = idErr
+		uid, gid, err = ids(u)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)

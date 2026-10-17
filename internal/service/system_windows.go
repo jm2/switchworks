@@ -286,12 +286,15 @@ func installSystem(exe string, noStart bool, out io.Writer) error {
 		return err
 	}
 	// Its own service SID (what the virtual account is), only the privilege
-	// every process has, and a restart after a crash.
+	// every process has, and a restart after a crash or a failed exit
+	// (failureflag: the coordinator reports its own failures as stopped,
+	// with an exit code).
 	for _, args := range [][]string{
 		{"description", systemUnitName, "Switchworks coordinator: the fleet's API, web UI and node port. Runs as its own account; set up with `swk --system coordinator init`."},
 		{"sidtype", systemUnitName, "unrestricted"},
 		{"privs", systemUnitName, "SeChangeNotifyPrivilege"},
 		{"failure", systemUnitName, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000"},
+		{"failureflag", systemUnitName, "1"},
 	} {
 		if _, err := sc(args...); err != nil {
 			return err

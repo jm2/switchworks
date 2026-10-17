@@ -104,8 +104,11 @@ set -e
 if [ "$1" = configure ]; then
 	systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} switchworks.conf
 fi
-# Nothing is enabled; a coordinator that runs restarts on the new binary.
+# Nothing is enabled, but deb-systemd-helper records the links enabling
+# would make, so that prerm can remove them however they were made. A
+# coordinator that runs restarts on the new binary.
 if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigure ] || [ "$1" = abort-remove ]; then
+	deb-systemd-helper update-state swk-coordinator.service >/dev/null || true
 	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
 		systemctl --system daemon-reload >/dev/null || true
 		if [ -n "$2" ]; then
@@ -118,8 +121,10 @@ EOF
 cat > "$stage/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-# Stop and disable the system coordinator when the package goes. Its
-# account and /var/lib/switchworks (the CA and fleet state) are kept.
+# Stop and disable the system coordinator when the package goes, removing
+# the links postinst recorded (also when systemctl or swk made them), so a
+# later install does not start it again by itself. Its account and
+# /var/lib/switchworks (the CA and fleet state) are kept.
 if [ "$1" = remove ]; then
 	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
 		deb-systemd-invoke stop swk-coordinator.service >/dev/null || true

@@ -38,7 +38,11 @@ trap cleanup EXIT
 stop_node() {
   [ -n "$nodepid" ] || return 0
   if [ $os = windows ]; then
-    taskkill //F //PID "$(cat "/proc/$nodepid/winpid")" >/dev/null 2>&1
+    # Git Bash has no /proc/<pid>/winpid: the node's status file has its
+    # Windows pid.
+    local winpid
+    winpid=$(SWK_HOME="$work/node-home" "$swk" service status --json node | tr -d ' \r\n' | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+    [ -n "$winpid" ] && taskkill //F //PID "$winpid" >/dev/null 2>&1
   else
     kill "$nodepid" 2>/dev/null
   fi
@@ -99,7 +103,9 @@ if [ $os = linux ]; then
   fi
 else
   pid=$(sc.exe queryex swk-coordinator | tr -d '\r' | sed -n 's/^ *PID *: *\([0-9]*\).*/\1/p')
-  [ -n "$pid" ] && [ "$pid" != 0 ] || fail "sc.exe queryex shows no process for the coordinator"
+  if [ -z "$pid" ] || [ "$pid" = 0 ]; then
+    fail "sc.exe queryex shows no process for the coordinator"
+  fi
   owner=$(powershell -NoProfile -Command "(Get-Process -Id $pid -IncludeUserName).UserName" | tr -d '\r')
   [ "$owner" = 'NT SERVICE\swk-coordinator' ] || fail "the coordinator runs as '$owner', not NT SERVICE\\swk-coordinator"
   # Only SYSTEM, administrators and the service's account may open its folder.

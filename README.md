@@ -301,6 +301,14 @@ sudo swk --system coordinator init --host coord.lan,10.0.0.5
 sudo swk service start --system coordinator
 ```
 
+On Windows, from an elevated PowerShell:
+
+```powershell
+swk service install --system coordinator
+swk --system coordinator init --host coord.lan,10.0.0.5
+swk service start --system coordinator
+```
+
 `swk --system <command>` runs a coordinator or CLI command as the coordinator's account, with
 its files and its admin `cli.json`: `sudo swk --system coordinator enroll-token devbox`, `sudo swk
 --system token ls`, and so on. For the CLI as yourself, give your own account a scoped token:
@@ -308,6 +316,15 @@ its files and its admin `cli.json`: `sudo swk --system coordinator enroll-token 
 ```bash
 mkdir -p ~/.config/swk
 (umask 077; sudo swk --system token create "$USER" --scope operate --cli-config > ~/.config/swk/cli.json)
+```
+
+On Windows, make the token from the elevated prompt and save it where your own (non-elevated)
+`swk` reads it; `%AppData%\swk` is private to your account:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\swk" | Out-Null
+$cfg = swk --system token create $env:USERNAME --scope operate --cli-config | Out-String
+[IO.File]::WriteAllText("$env:APPDATA\swk\cli.json", $cfg)  # UTF-8 without a BOM
 ```
 
 Where `swk` is not root's own (installed in your home directory, or the per-user Windows
