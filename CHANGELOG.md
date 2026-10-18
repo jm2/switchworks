@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-10-18
+
 ### Fixed
 
 - **macOS node blocked from the LAN** — The LaunchAgent now starts the node through Switchworks,
@@ -90,5 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Running sessions grow without bound** — Only ended sessions are deleted.
 - **Web UI tested in Chromium only** — Safari on iOS has not been tried.
 
-[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jm2/switchworks/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jm2/switchworks/releases/tag/v0.1.0
