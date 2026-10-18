@@ -57,9 +57,16 @@ real-Codex test.
   would need an OS boundary, such as running the node as a separate user.
 
 - **Windows lightly tested.** Nodes built from source ran Codex and goose
-  sessions on x86_64 and ARM64. The logon task `swk service install`
-  registers, its graceful stop through a named event, the tray and the
-  installer are still unverified. Goose does not run on Windows on ARM.
+  sessions on x86_64 and ARM64, and the v0.1.0 fleet test ran installed
+  nodes from their logon tasks on both. The tray and the installer have
+  had little use. Goose does not run on Windows on ARM.
+- **Defender and the unsigned Windows binaries.** In that test Microsoft
+  Defender quarantined `swk.exe` on both machines as
+  `Behavior:Win32/Persistence.A!ml`, shortly after `swk service install`,
+  which wrote a task file to `%TEMP%` and ran `schtasks.exe` on it. The
+  task is now registered through the Task Scheduler API instead; that has
+  not been tested against Defender. Code signing is the lasting fix. The
+  README has the restore steps.
 - **Interrupted commands.** Codex keeps an interrupted command running as a
   background terminal; Switchworks now stops the ones the interrupted turn
   started, and all of a session's on stop (Codex's experimental

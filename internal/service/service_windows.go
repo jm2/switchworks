@@ -162,7 +162,7 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	if err := runTask(name); err != nil {
 		return err
 	}
-	if !waitRunning(role, startWait) {
+	if !waitRunning(role, startWait, 0) {
 		fmt.Fprintf(out, "Started it, but it has not reported running after %s; see %s\n", startWait, logFile)
 		return nil
 	}
@@ -219,11 +219,15 @@ const startWait = 30 * time.Second
 
 // start runs the task and waits for the process to write its status file,
 // so that a status check right after start or restart sees it running.
-func start(role string) error {
+func start(role string) error { return startReplacing(role, 0) }
+
+// startReplacing is start after old, the pid of the process it replaces,
+// has stopped: a status file old left behind does not count.
+func startReplacing(role string, old int) error {
 	if err := runTask(unitName(role)); err != nil {
 		return err
 	}
-	if !waitRunning(role, startWait) {
+	if !waitRunning(role, startWait, old) {
 		return fmt.Errorf("%s: started, but it has not reported running after %s; see %s",
 			role, startWait, filepath.Join(LogDir(role), role+".log"))
 	}
@@ -275,15 +279,26 @@ func stop(role string) error {
 }
 
 func restart(role string) error {
+	old := 0
+	if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+		old = s.PID
+	}
 	if err := stop(role); err != nil {
 		return err
 	}
 	// Task Scheduler ignores a run while it still counts the old instance
 	// as running (MultipleInstancesPolicy IgnoreNew).
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
-		if t, err := queryTask(unitName(role)); err != nil || !t.running {
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(250 * time.Millisecond) {
+		t, err := queryTask(unitName(role))
+		if err != nil {
+			return err
+		}
+		if !t.running {
 			break
 		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: Task Scheduler still counts the stopped instance as running", role)
+		}
 	}
-	return start(role)
+	return startReplacing(role, old)
 }

@@ -187,18 +187,22 @@ Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\
 coordinator's system service, if you set one up, is separate: `swk service uninstall --system
 coordinator` from an elevated prompt removes it.
 
-The binaries are not code-signed yet, and Microsoft Defender has quarantined `swk.exe` as
-`Behavior:Win32/Persistence.A!ml` after `swk service install`. The node keeps running (its task
-runs `swkw.exe`), but the `swk` command is gone. Check that its SHA-256 matches the `swk.exe`
-in the release's `.zip`, then restore it from Windows Security → Virus & threat protection →
-Protection history, or from an elevated PowerShell (`-FilePath` cannot be combined with `-Name`
-or `-All`):
+The binaries are not code-signed yet. In the v0.1.0 fleet test Microsoft Defender quarantined
+`swk.exe` as `Behavior:Win32/Persistence.A!ml` shortly after `swk service install`, on both
+Windows machines. `swk` now registers the logon task through the Task Scheduler API instead of
+writing a task file and running `schtasks.exe` on it, which is what Defender flagged; whether
+that is enough has not been tested yet. If it happens again, the node keeps running (its task
+runs `swkw.exe`), but the `swk` command is gone. Restore it from Windows Security → Virus &
+threat protection → Protection history, or from an elevated PowerShell running as you (with a
+separate administrator account, give your own path; `-FilePath` cannot be combined with
+`-Name` or `-All`):
 
 ```powershell
-& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Restore -FilePath C:\Users\<you>\AppData\Local\Programs\Switchworks\swk.exe
+& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Restore -FilePath "$env:LOCALAPPDATA\Programs\Switchworks\swk.exe"
 ```
 
-Please also report it as a false positive at <https://www.microsoft.com/wdsi/filesubmission>.
+Before you run it, check that its SHA-256 (`Get-FileHash`) matches the `swk.exe` in the
+release's `.zip`, itself checked against `SHA256SUMS.txt`. Please also report it as a false positive at <https://www.microsoft.com/wdsi/filesubmission>.
 
 ### Podman (coordinator only)
 

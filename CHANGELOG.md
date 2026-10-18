@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Defender quarantined `swk.exe` on Windows** — `swk service install` wrote the logon task to a
   file in `%TEMP%` and ran `schtasks.exe` on it, which Microsoft Defender's behavior monitoring
   flagged as `Behavior:Win32/Persistence.A!ml`. Switchworks now uses the Task Scheduler API
-  directly, with no task file and no child process.
+  directly, with no task file and no child process; this is not yet tested against Defender.
 - **`swk service start` and `restart` returned early on Windows** — They now wait for the node or
   coordinator to report running, so `swk service status` right afterwards shows it running.
 

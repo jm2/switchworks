@@ -334,11 +334,12 @@ func run(name string, args ...string) (string, error) {
 	return out, nil
 }
 
-// waitRunning waits for a role's process to write a fresh status file.
-func waitRunning(role string, d time.Duration) bool {
+// waitRunning waits for a role's process to write a fresh status file;
+// one from the process with pid old (if not 0) does not count.
+func waitRunning(role string, d time.Duration, old int) bool {
 	deadline := time.Now().Add(d)
 	for {
-		if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+		if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) && (old == 0 || s.PID != old) {
 			return true
 		}
 		if time.Now().After(deadline) {
