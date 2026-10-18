@@ -16,9 +16,9 @@ by the tools you already use, under your own sign-ins.
 
 ![A session waiting for approval](docs/img/web-ui.png)
 
-> **v0.1.0 alpha.** Switchworks is tested on Linux, and nodes built from source have run on
-> macOS and Windows in a five-host fleet test; the macOS and Windows packages have had
-> little real use. Pre-built packages are on the
+> **v0.1.1 alpha.** Switchworks is tested on Linux, and the v0.1.0 packages ran a five-host
+> fleet across Linux, macOS and Windows; the macOS and Windows packages have had little use
+> beyond that. Pre-built packages are on the
 > [Releases](https://github.com/jm2/switchworks/releases) page; per-area status and how each
 > part was verified are in [`docs/status.md`](docs/status.md).
 

@@ -13,7 +13,7 @@
 
 Name:           switchworks
 # Packit replaces Version with the release tag minus its "v" (see .packit.yaml).
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Control plane for coding agents across your machines
 
@@ -99,6 +99,9 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/io.github.jm2.Switchworks.svg
 
 %changelog
+* Sun Oct 18 2026 Switchworks Contributors - 0.1.1-1
+- Update to 0.1.1.
+
 * Thu Oct 15 2026 Switchworks Contributors - 0.1.0-1
 - Initial package: swk, swk-tray, systemd user units, and a system unit
   that runs the coordinator as its own switchworks account.
