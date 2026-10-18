@@ -405,7 +405,10 @@ certificate itself rather than its PEM file: `openssl x509 -in ca.crt
 > `ping` and `curl` work. Allow the terminal app (or Switchworks) under
 > System Settings, Privacy & Security, Local Network. A
 > long-lived tmux server can keep the denial after you allow the terminal;
-> start the node from a new terminal window instead. A node installed with
+> start the node from a new terminal window instead. The setting can take
+> half a minute to apply, and a node already running stays blocked: after
+> allowing Switchworks, wait a moment, then run `swk service restart node`
+> (again if it still says `no route to host`). A node installed with
 > v0.1.0 cannot be allowed at all: update the app and run
 > `swk service install` again.
 
