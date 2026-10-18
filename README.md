@@ -424,8 +424,9 @@ certificate itself rather than its PEM file: `openssl x509 -in ca.crt
 > long-lived tmux server can keep the denial after you allow the terminal;
 > start the node from a new terminal window instead. The setting can take
 > half a minute to apply, and a node already running stays blocked: after
-> allowing Switchworks, wait a moment, then run `swk service restart node`
-> (again if it still says `no route to host`). A node installed with
+> allowing Switchworks, wait at least 30 seconds, then run `swk service
+> restart node`; if it still says `no route to host`, wait another 30
+> seconds and restart it again. A node installed with
 > v0.1.0 cannot be allowed at all: update the app and run
 > `swk service install` again.
 
