@@ -120,6 +120,11 @@ check_owner node
 wait_for 30 "the coordinator to list the host as online" sh -c "\"$swk\" hosts | grep -E '^$host +online'"
 
 "$swk" service restart node || fail "service restart node"
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*)
+    # On Windows restart returns once the node has written its status file.
+    status_has node '"running":true' || fail "the node is not running right after service restart" ;;
+esac
 wait_for 90 "the node to reconnect after a restart" status_has node '"connected":true'
 
 "$swk" service stop node || fail "service stop node"
