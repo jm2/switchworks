@@ -395,8 +395,8 @@ swk service install              # the node; `swk service status` shows how it i
 
 | OS | What `swk service install` sets up |
 | --- | --- |
-| Linux | The `swk-node` systemd user unit: the packaged one, or one it writes to `~/.config/systemd/user`. Run `loginctl enable-linger "$USER"` to keep it running while you are logged out. Logs: `journalctl --user -u swk-node` |
-| macOS | A LaunchAgent, `~/Library/LaunchAgents/dev.switchworks.node.plist`, with your login shell's `PATH` so your harnesses resolve (run the install again after changing it) |
+| Linux | The `swk-node` systemd user unit: the packaged one, or one it writes to `~/.config/systemd/user`, plus a drop-in with your login shell's `PATH` so harnesses in `~/.local/bin` resolve (run the install again after changing it). Run `loginctl enable-linger "$USER"` to keep it running while you are logged out. Logs: `journalctl --user -u swk-node` |
+| macOS | A LaunchAgent, `~/Library/LaunchAgents/dev.switchworks.node.plist`, with your login shell's `PATH` so your harnesses resolve (run the install again after changing it). From the app, it starts `swk` through Switchworks, so macOS asks once to let **Switchworks** use the local network: allow it |
 | Windows | A Task Scheduler logon task that runs `swkw.exe node run` in your session, with least privilege, so it can use your sign-ins |
 
 `swk service start|stop|restart|status|uninstall` manage it; the tray icon does the same.
@@ -422,7 +422,13 @@ certificate itself rather than its PEM file: `openssl x509 -in ca.crt
 > `ping` and `curl` work. Allow the terminal app (or Switchworks) under
 > System Settings, Privacy & Security, Local Network. A
 > long-lived tmux server can keep the denial after you allow the terminal;
-> start the node from a new terminal window instead.
+> start the node from a new terminal window instead. The setting can take
+> half a minute to apply, and a node already running stays blocked: after
+> allowing Switchworks, wait at least 30 seconds, then run `swk service
+> restart node`; if it still says `no route to host`, wait another 30
+> seconds and restart it again. A node installed with
+> v0.1.0 cannot be allowed at all: update the app and run
+> `swk service install` again.
 
 ### 3. The CLI on other machines
 

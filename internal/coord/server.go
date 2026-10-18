@@ -81,6 +81,11 @@ type nodeConn struct {
 	pending map[string]chan cmdReply
 	closed  chan struct{}
 	once    sync.Once
+
+	// welcomed is closed once the welcome is sent. The node is registered
+	// (and can be sent commands) before that, and expects the welcome
+	// first: a command ahead of it would end the connection.
+	welcomed chan struct{}
 }
 
 // cmdReply is a node's answer to a command, or the transport error that
@@ -219,7 +224,7 @@ func (s *Server) handleNode(c net.Conn) {
 	_ = tc.SetDeadline(time.Time{})
 
 	n := &nodeConn{host: host, conn: wc, raw: c, hello: hello, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
-		reqs: make(chan struct{}, maxNodeReqs)}
+		reqs: make(chan struct{}, maxNodeReqs), welcomed: make(chan struct{})}
 	// The pin is checked again and the node registered under hostMu, which
 	// removing or re-enrolling the host also holds: a connection that was
 	// opened before either cannot complete after it.
@@ -255,6 +260,7 @@ func (s *Server) handleNode(c net.Conn) {
 	if err := wc.Send(wire.TWelcome, "", "", wire.Welcome{Protocol: wire.ProtocolVersion, Acked: acked}); err != nil {
 		n.close()
 	}
+	close(n.welcomed)
 
 	go s.pinger(n)
 	s.router.poke() // deliver messages that waited for this host
@@ -877,6 +883,15 @@ func (s *Server) command(ctx context.Context, host string, cmd wire.Cmd, timeout
 	if !ok {
 		return wire.Result{}, ErrOffline
 	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case <-n.welcomed:
+	case <-n.closed:
+		return wire.Result{}, ErrOffline
+	case <-ctx.Done():
+		return wire.Result{}, fmt.Errorf("%s: %w", host, ctx.Err())
+	}
 	id := ulid.New()
 	ch := make(chan cmdReply, 1)
 	n.mu.Lock()
@@ -888,8 +903,6 @@ func (s *Server) command(ctx context.Context, host string, cmd wire.Cmd, timeout
 		n.mu.Unlock()
 		return wire.Result{}, fmt.Errorf("send to %s: %v: %w", host, err, ErrOffline)
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	select {
 	case rep := <-ch:
 		if rep.err != nil {

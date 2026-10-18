@@ -14,6 +14,8 @@ import (
 )
 
 func TestStatusFromFiles(t *testing.T) {
+	queryState = func(string) (state, error) { return state{}, nil }
+	t.Cleanup(func() { queryState = query })
 	home := t.TempDir()
 	t.Setenv("SWK_HOME", home)
 	t.Setenv("SWK_CLI_CONFIG", filepath.Join(home, "cli.json"))

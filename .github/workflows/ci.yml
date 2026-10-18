@@ -439,3 +439,33 @@ jobs:
           pgrep -x Switchworks
           osascript -e 'quit app "Switchworks"' || pkill -x Switchworks
           hdiutil detach /tmp/swk-dmg
+
+      # The LaunchAgents start swk through the app, which macOS can ask about
+      # Local Network access; a bare helper is denied without a prompt.
+      - name: Check the app starts swk for the LaunchAgents
+        run: |
+          set -euo pipefail
+          app=/Applications/Switchworks.app/Contents
+          plutil -extract NSLocalNetworkUsageDescription raw -o - "$app/Info.plist"
+          codesign -dv "$app/MacOS/swk" 2>&1 | grep -x 'Identifier=io.github.jm2.Switchworks.swk'
+          "$app/MacOS/Switchworks" --swk version | grep -q '^swk v0.0.0-ci'
+          if "$app/MacOS/Switchworks" --swk no-such-command 2>/dev/null; then exit 1; fi
+          "$app/MacOS/swk" service install --no-start node
+          plist=~/Library/LaunchAgents/dev.switchworks.node.plist
+          plutil -extract ProgramArguments.0 raw -o - "$plist" | grep -qx "$app/MacOS/Switchworks"
+          plutil -extract ProgramArguments.1 raw -o - "$plist" | grep -qx -- --swk
+          "$app/MacOS/swk" service uninstall node
+          # A launcher running a service does not stop the menu-bar app
+          # from starting, and passes SIGTERM on to swk.
+          "$app/MacOS/Switchworks" --swk dev mock-provider --codex-home "$RUNNER_TEMP/mock" &
+          launcher=$!
+          sleep 2
+          child=$(pgrep -P "$launcher" -x swk)
+          open -g /Applications/Switchworks.app
+          sleep 5
+          test "$(pgrep -x Switchworks | wc -l)" -eq 2
+          kill -TERM "$launcher"
+          wait "$launcher" || true
+          for _ in $(seq 20); do kill -0 "$child" 2>/dev/null || break; sleep 0.5; done
+          if kill -0 "$child" 2>/dev/null; then echo "swk outlived its launcher" >&2; exit 1; fi
+          osascript -e 'quit app "Switchworks"' || pkill -x Switchworks

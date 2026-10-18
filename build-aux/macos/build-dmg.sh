@@ -46,8 +46,9 @@ sign_opts=(--force --sign "$identity")
 if [[ $identity != "-" ]]; then
   sign_opts+=(--options runtime --timestamp)
 fi
-# Inside out: the nested binary first, then the bundle.
-codesign "${sign_opts[@]}" "$app/Contents/MacOS/swk"
+# Inside out: the nested binary first, then the bundle. The helper gets an
+# identifier of the app's, not the Go linker's swk-<hash>.
+codesign "${sign_opts[@]}" --identifier io.github.jm2.Switchworks.swk "$app/Contents/MacOS/swk"
 codesign "${sign_opts[@]}" "$app"
 codesign --verify --strict --verbose=2 "$app"
 

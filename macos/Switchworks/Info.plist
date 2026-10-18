@@ -16,6 +16,9 @@
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <!-- A menu-bar app: no Dock icon, no main menu. -->
   <key>LSUIElement</key><true/>
+  <!-- Shown when macOS asks to let the node (which the app starts, see
+       `Switchworks --swk`) reach the coordinator on the local network. -->
+  <key>NSLocalNetworkUsageDescription</key><string>Switchworks connects this Mac's node to your coordinator and lets it reach other machines in your fleet.</string>
   <key>NSHumanReadableCopyright</key><string>GPL-3.0-or-later. Switchworks Contributors.</string>
 </dict>
 </plist>

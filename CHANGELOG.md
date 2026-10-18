@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS node blocked from the LAN** — The LaunchAgent now starts the node through Switchworks,
+  which macOS asks about Local Network access; v0.1.0's was denied without a prompt. Run
+  `swk service install` again after updating.
+- **Harnesses in `~/.local/bin` on Linux** — `swk service install` gives the node's user unit
+  your login shell's `PATH`, so codex, goose and agy installed there are found.
+- **Node dropped while connecting** — A command sent to a node in the moment between its
+  connection and the coordinator's welcome no longer ends the connection.
 - **Defender quarantined `swk.exe` on Windows** — `swk service install` wrote the logon task to a
   file in `%TEMP%` and ran `schtasks.exe` on it, which Microsoft Defender's behavior monitoring
   flagged as `Behavior:Win32/Persistence.A!ml`. Switchworks now uses the Task Scheduler API

@@ -341,9 +341,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-// One menu-bar icon per user session.
+// MARK: - Running swk for the LaunchAgents
+
+// The pid of the swk that launchSwk started, for the signal handlers, and a
+// signal that arrived before it started.
+var swkChild: pid_t = 0
+var swkPendingSignal: Int32 = 0
+
+// `Switchworks --swk <args>` runs the bundled swk with args as its child and
+// exits with its status. `swk service install` has launchd start swk this
+// way, so that the app is the responsible process: macOS asks about Local
+// Network access for Switchworks, an app it knows (NSLocalNetworkUsageDescription
+// in Info.plist), and remembers the answer. A helper binary that launchd
+// starts directly is denied without a prompt. launchd's SIGTERM and a
+// SIGINT are passed on, so swk stops its sessions cleanly.
+func launchSwk(_ args: [String]) -> Never {
+    // Before the child starts, so a stop request is never lost. The child
+    // still gets the default handlers: exec resets caught signals.
+    for sig in [SIGTERM, SIGINT] {
+        signal(sig) { sig in
+            if swkChild > 0 {
+                kill(swkChild, sig)
+            } else {
+                swkPendingSignal = sig
+            }
+        }
+    }
+    let process = Process()
+    process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swk")
+    process.arguments = args
+    do {
+        try process.run()
+    } catch {
+        FileHandle.standardError.write("Switchworks: cannot run swk: \(error.localizedDescription)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    swkChild = process.processIdentifier
+    if swkPendingSignal != 0 {
+        kill(swkChild, swkPendingSignal)
+    }
+    process.waitUntilExit()
+    if process.terminationReason == .uncaughtSignal {
+        exit(128 + process.terminationStatus)
+    }
+    exit(process.terminationStatus)
+}
+
+if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--swk" {
+    launchSwk(Array(CommandLine.arguments.dropFirst(2)))
+}
+
+// One menu-bar icon per user session. Only another menu-bar app counts, not
+// a `Switchworks --swk` running a service.
 let bundleID = Bundle.main.bundleIdentifier ?? "io.github.jm2.Switchworks"
-if NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count > 1 {
+let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter {
+    $0.processIdentifier != getpid() && $0.activationPolicy == .accessory
+}
+if !others.isEmpty {
     exit(0)
 }
 

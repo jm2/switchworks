@@ -5,8 +5,11 @@
 package service
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUnitText(t *testing.T) {
@@ -44,5 +47,48 @@ func TestSystemdQuote(t *testing.T) {
 		if _, err := unitText(Roles[0], in); err == nil {
 			t.Errorf("unitText accepted %q", in)
 		}
+	}
+}
+
+func TestDropInText(t *testing.T) {
+	b, err := dropInText(`/home/dev/.local/bin:/home/dev/100%/bin:/home/dev/a"b\c:/usr/bin`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[Service]\nEnvironment=\"PATH=/home/dev/.local/bin:/home/dev/100%%/bin:/home/dev/a\\\"b\\\\c:/usr/bin\"\n"
+	if s := string(b); !strings.HasPrefix(s, generatedMarker) || !strings.HasSuffix(s, want) {
+		t.Fatalf("drop-in:\n%s\nwant it to end with:\n%s", s, want)
+	}
+	if _, err := dropInText("/usr/bin\nExecStartPre=/bin/evil"); err == nil {
+		t.Fatal("a PATH with a newline was accepted")
+	}
+}
+
+func TestLoginPATH(t *testing.T) {
+	t.Setenv("SHELL", "")
+	t.Setenv("HOME", "/home/dev")
+	t.Setenv("PATH", ".:bin:/custom/bin::/usr/bin")
+	got := loginPATH("/usr/local/bin:/usr/bin")
+	if got != "/custom/bin:/usr/bin:/home/dev/.local/bin:/usr/local/bin" {
+		t.Fatalf("loginPATH = %q", got)
+	}
+}
+
+// A profile that leaves a process holding stdout does not hang the install
+// or lose the PATH.
+func TestLoginPATHHeldPipe(t *testing.T) {
+	sh := filepath.Join(t.TempDir(), "sh")
+	script := "#!/bin/sh\nsleep 30 &\nPATH=/from/profile:$PATH\nexec /bin/sh \"$@\"\n"
+	if err := os.WriteFile(sh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", sh)
+	start := time.Now()
+	got := loginPATH("/usr/bin")
+	if time.Since(start) > 4*time.Second {
+		t.Fatalf("loginPATH took %v", time.Since(start))
+	}
+	if !strings.HasPrefix(got, "/from/profile:") {
+		t.Fatalf("loginPATH = %q", got)
 	}
 }

@@ -4,6 +4,7 @@ package coord
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,7 +25,8 @@ func fakeNode(t *testing.T, s *Server, host string, answer func(wire.Cmd) wire.R
 	t.Helper()
 	a, b := net.Pipe()
 	n := &nodeConn{host: host, conn: wire.NewConn(a), raw: a, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
-		reqs: make(chan struct{}, 1), hello: wire.Hello{Host: host, Adapters: []string{"codex"}}}
+		reqs: make(chan struct{}, 1), hello: wire.Hello{Host: host, Adapters: []string{"codex"}}, welcomed: make(chan struct{})}
+	close(n.welcomed)
 	s.mu.Lock()
 	s.nodes[host] = n
 	s.mu.Unlock()
@@ -178,5 +180,67 @@ func TestForgetSessionLogNotRemoved(t *testing.T) {
 		default:
 			t.Fatal("session_removed not published")
 		}
+	}
+}
+
+// A node is registered before its welcome is sent. A command in that window
+// waits for the welcome: sent first, it would end the node's handshake.
+func TestCommandWaitsForWelcome(t *testing.T) {
+	s := pruneServer(t)
+	a, b := net.Pipe()
+	n := &nodeConn{host: "devbox", conn: wire.NewConn(a), raw: a, pending: map[string]chan cmdReply{}, closed: make(chan struct{}),
+		reqs: make(chan struct{}, 1), welcomed: make(chan struct{})}
+	s.mu.Lock()
+	s.nodes["devbox"] = n
+	s.mu.Unlock()
+	go s.readNode(n)
+	t.Cleanup(func() { n.close(); b.Close() })
+
+	got := make(chan string, 4)
+	nc := wire.NewConn(b)
+	go func() {
+		for {
+			env, err := nc.Recv()
+			if err != nil {
+				return
+			}
+			got <- env.Type
+			if env.Type == wire.TCmd {
+				_ = nc.Send(wire.TResult, "", env.ID, wire.Result{OK: true})
+			}
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.command(context.Background(), "devbox", wire.Cmd{Op: wire.OpStop}, 5*time.Second)
+		done <- err
+	}()
+	select {
+	case typ := <-got:
+		t.Fatalf("%q sent before the welcome", typ)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := n.conn.Send(wire.TWelcome, "", "", wire.Welcome{}); err != nil {
+		t.Fatal(err)
+	}
+	close(n.welcomed)
+	if typ := <-got; typ != wire.TWelcome {
+		t.Fatalf("first envelope %q, want the welcome", typ)
+	}
+	if typ := <-got; typ != wire.TCmd {
+		t.Fatalf("then %q, want the command", typ)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	// A node that goes away before its welcome fails the command at once.
+	n2 := &nodeConn{host: "laptop", pending: map[string]chan cmdReply{}, closed: make(chan struct{}), welcomed: make(chan struct{})}
+	s.mu.Lock()
+	s.nodes["laptop"] = n2
+	s.mu.Unlock()
+	close(n2.closed)
+	if _, err := s.command(context.Background(), "laptop", wire.Cmd{Op: wire.OpStop}, 5*time.Second); !errors.Is(err, ErrOffline) {
+		t.Fatalf("command to a node closed before its welcome: %v", err)
 	}
 }
