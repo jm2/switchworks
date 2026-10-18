@@ -187,6 +187,19 @@ Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\
 coordinator's system service, if you set one up, is separate: `swk service uninstall --system
 coordinator` from an elevated prompt removes it.
 
+The binaries are not code-signed yet, and Microsoft Defender has quarantined `swk.exe` as
+`Behavior:Win32/Persistence.A!ml` after `swk service install`. The node keeps running (its task
+runs `swkw.exe`), but the `swk` command is gone. Check that its SHA-256 matches the `swk.exe`
+in the release's `.zip`, then restore it from Windows Security → Virus & threat protection →
+Protection history, or from an elevated PowerShell (`-FilePath` cannot be combined with `-Name`
+or `-All`):
+
+```powershell
+& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Restore -FilePath C:\Users\<you>\AppData\Local\Programs\Switchworks\swk.exe
+```
+
+Please also report it as a false positive at <https://www.microsoft.com/wdsi/filesubmission>.
+
 ### Podman (coordinator only)
 
 The coordinator also ships as a container image, `ghcr.io/jm2/switchworks-coordinator`

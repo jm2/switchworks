@@ -334,6 +334,20 @@ func run(name string, args ...string) (string, error) {
 	return out, nil
 }
 
+// waitRunning waits for a role's process to write a fresh status file.
+func waitRunning(role string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // waitStopped waits for a role's status file to go away or go stale.
 func waitStopped(role string, d time.Duration) bool {
 	deadline := time.Now().Add(d)

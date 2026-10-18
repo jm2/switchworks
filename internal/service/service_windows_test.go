@@ -6,9 +6,10 @@ package service
 
 import (
 	"encoding/xml"
+	"errors"
 	"strings"
+	"syscall"
 	"testing"
-	"unicode/utf16"
 )
 
 func TestTaskXML(t *testing.T) {
@@ -33,16 +34,27 @@ func TestTaskXML(t *testing.T) {
 	if !strings.HasSuffix(task.Command, `swkw.exe`) {
 		t.Fatalf("command = %q", task.Command)
 	}
-	enc := utf16File(s)
-	if enc[0] != 0xFF || enc[1] != 0xFE {
-		t.Fatal("no UTF-16LE byte-order mark")
+}
+
+func TestHResultError(t *testing.T) {
+	notFound := hresultError(0x80070002)
+	if !errors.Is(notFound, syscall.ERROR_FILE_NOT_FOUND) || errors.Is(notFound, syscall.ERROR_ACCESS_DENIED) {
+		t.Fatal("0x80070002 does not match only ERROR_FILE_NOT_FOUND")
 	}
-	u := make([]uint16, (len(enc)-2)/2)
-	for i := range u {
-		u[i] = uint16(enc[2+2*i]) | uint16(enc[3+2*i])<<8
+	if hresult(0) != nil || hresult(1) != nil {
+		t.Fatal("S_OK or S_FALSE is an error")
 	}
-	if string(utf16.Decode(u)) != s {
-		t.Fatal("UTF-16 round trip changed the text")
+	if err := hresult(0x80041318); err == nil || err.Error() == "" {
+		t.Fatal("SCHED_E_MALFORMEDXML is not an error with a message")
+	}
+}
+
+// TestQueryMissingTask asks the real Task Scheduler about a task that does
+// not exist, which proves the COM calls work without changing anything.
+func TestQueryMissingTask(t *testing.T) {
+	st, err := query("no-such-role-" + t.Name())
+	if err != nil || st.installed {
+		t.Fatalf("query = %+v, %v", st, err)
 	}
 }
 

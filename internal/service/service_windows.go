@@ -17,7 +17,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf16"
 
 	"github.com/jm2/switchworks/internal/runstatus"
 )
@@ -33,16 +32,6 @@ func command(name string, args ...string) *exec.Cmd {
 	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	return c
 }
-
-func schtasksExe() string {
-	root := os.Getenv("SystemRoot")
-	if root == "" {
-		root = `C:\Windows`
-	}
-	return filepath.Join(root, "System32", "schtasks.exe")
-}
-
-func schtasks(args ...string) (string, error) { return run(schtasksExe(), args...) }
 
 // Task names are machine-wide, so they carry the user's name and SID: two
 // people on one PC, even a local and a domain account with the same short
@@ -63,11 +52,14 @@ func unitName(role string) string {
 
 func query(role string) (state, error) {
 	var st state
-	// The exit status is all that is used: the text is localized.
-	if command(schtasksExe(), "/Query", "/TN", unitName(role)).Run() == nil {
-		st.installed, st.enabled = true, true
+	t, err := queryTask(unitName(role))
+	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
+		return st, nil
 	}
-	// Whether it runs comes from the node's status file (see Query).
+	if err != nil {
+		return st, err
+	}
+	st.installed, st.enabled, st.active = true, t.enabled, t.running
 	return st, nil
 }
 
@@ -133,18 +125,6 @@ func taskXML(role, sid, exe, args, workDir string) string {
 `
 }
 
-// utf16File encodes s as UTF-16LE with a byte-order mark, the encoding
-// schtasks /XML expects to match the XML declaration.
-func utf16File(s string) []byte {
-	u := utf16.Encode([]rune(s))
-	b := make([]byte, 2, 2+2*len(u))
-	b[0], b[1] = 0xFF, 0xFE
-	for _, c := range u {
-		b = append(b, byte(c), byte(c>>8))
-	}
-	return b
-}
-
 // backgroundExe picks swkw.exe, the windowless build of swk, beside exe:
 // a console program started at logon would open a console window.
 func backgroundExe(exe string) (string, bool) {
@@ -170,20 +150,8 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp("", "swk-task-*.xml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(utf16File(taskXML(role, u.Uid, bg, args, home))); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
 	name := unitName(role)
-	if _, err := schtasks("/Create", "/TN", name, "/XML", f.Name(), "/F"); err != nil {
+	if err := registerTask(name, taskXML(role, u.Uid, bg, args, home)); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Registered the logon task %q (runs %s; log %s)\n", name, bg, logFile)
@@ -191,8 +159,12 @@ func install(role, exe string, noStart bool, out io.Writer) error {
 	if noStart {
 		return nil
 	}
-	if _, err := schtasks("/Run", "/TN", name); err != nil {
+	if err := runTask(name); err != nil {
 		return err
+	}
+	if !waitRunning(role, startWait) {
+		fmt.Fprintf(out, "Started it, but it has not reported running after %s; see %s\n", startWait, logFile)
+		return nil
 	}
 	fmt.Fprintln(out, "Started it.")
 	return nil
@@ -205,7 +177,7 @@ func uninstall(role string, out io.Writer) error {
 		return nil
 	}
 	_ = stop(role)
-	if _, err := schtasks("/Delete", "/TN", unitName(role), "/F"); err != nil {
+	if err := deleteTask(unitName(role)); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Removed the logon task %q\n", unitName(role))
@@ -232,19 +204,30 @@ func removeLegacy(role string, out io.Writer) {
 	if err != nil || name == unitName(role) {
 		return
 	}
-	x, err := schtasks("/Query", "/TN", name, "/XML")
-	if err != nil || !strings.Contains(x, "<UserId>"+u.Uid+"</UserId>") {
+	t, err := queryTask(name)
+	if err != nil || !strings.Contains(t.xml, "<UserId>"+u.Uid+"</UserId>") {
 		return
 	}
-	_, _ = schtasks("/End", "/TN", name)
-	if _, err := schtasks("/Delete", "/TN", name, "/F"); err == nil {
+	_ = stopTask(name)
+	if err := deleteTask(name); err == nil {
 		fmt.Fprintf(out, "Removed the old logon task %q\n", name)
 	}
 }
 
+// startWait is how long start waits for the process to report running.
+const startWait = 30 * time.Second
+
+// start runs the task and waits for the process to write its status file,
+// so that a status check right after start or restart sees it running.
 func start(role string) error {
-	_, err := schtasks("/Run", "/TN", unitName(role))
-	return err
+	if err := runTask(unitName(role)); err != nil {
+		return err
+	}
+	if !waitRunning(role, startWait) {
+		return fmt.Errorf("%s: started, but it has not reported running after %s; see %s",
+			role, startWait, filepath.Join(LogDir(role), role+".log"))
+	}
+	return nil
 }
 
 var (
@@ -282,7 +265,7 @@ func stop(role string) error {
 	if err == nil && waitExit(role, pid, 30*time.Second) {
 		return nil
 	}
-	if _, endErr := schtasks("/End", "/TN", unitName(role)); endErr != nil && err == nil {
+	if endErr := stopTask(unitName(role)); endErr != nil && err == nil {
 		return endErr
 	}
 	if err != nil && !errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
@@ -295,7 +278,12 @@ func restart(role string) error {
 	if err := stop(role); err != nil {
 		return err
 	}
-	// Task Scheduler refuses /Run while it still counts the old instance.
-	time.Sleep(time.Second)
+	// Task Scheduler ignores a run while it still counts the old instance
+	// as running (MultipleInstancesPolicy IgnoreNew).
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		if t, err := queryTask(unitName(role)); err != nil || !t.running {
+			break
+		}
+	}
 	return start(role)
 }
