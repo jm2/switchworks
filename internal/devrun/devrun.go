@@ -42,6 +42,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	sandbox := fs.String("sandbox", "workspace-write", "sandbox: read-only, workspace-write, danger-full-access (agy: danger-full-access adds --dangerously-skip-permissions)")
 	codexBin := fs.String("codex-bin", "", "codex binary (default: codex on PATH)")
 	codexHome := fs.String("codex-home", "", "CODEX_HOME for app-server (default: codex's own)")
+	codexPerms := fs.String("codex-permissions", "", "codex permission profile (config.toml [permissions.<id>]) for -sandbox workspace-write, sent instead of the sandbox mode")
 	agyBin := fs.String("agy-bin", "", "agy binary (default: agy on PATH)")
 	agyPerTurn := fs.Bool("agy-per-turn", false, "agy: one process per turn instead of a long-lived stream-json process")
 	gooseBin := fs.String("goose-bin", "", "goose binary (default: goose on PATH)")
@@ -89,7 +90,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if *logs {
 		harnessStderr = render.Safe(rawStderr)
 	}
-	opts := harness.Options{CodexBin: *codexBin, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
+	opts := harness.Options{CodexBin: *codexBin, CodexPermissions: *codexPerms, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
 		Logf: func(f string, a ...any) {
 			if *verbose {
 				fmt.Fprintf(stderr, "swk: "+f+"\n", a...)

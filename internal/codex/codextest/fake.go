@@ -67,7 +67,8 @@ type server struct {
 	nextReq  int
 	waiting  map[string]chan json.RawMessage // our request id -> response
 	threads  map[string]bool
-	turns    map[string]*turn // threadId -> active turn
+	sandbox  map[string]string // threadId -> sandbox and permissions of its last start or resume
+	turns    map[string]*turn  // threadId -> active turn
 	turnSeq  int
 	initDone bool
 
@@ -131,7 +132,7 @@ func newID() string {
 func Run(in io.Reader, out io.Writer, stateDir string) {
 	s := &server{
 		out: json.NewEncoder(out), stateDir: stateDir,
-		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, turns: map[string]*turn{},
+		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, sandbox: map[string]string{}, turns: map[string]*turn{},
 	}
 	s.loadThreads()
 	br := bufio.NewReaderSize(in, 1<<20)
@@ -237,6 +238,12 @@ func (s *server) handle(line []byte) {
 		s.fail(m.ID, -32600, "Not initialized")
 		return
 	}
+	// Like app-server, a thread takes a sandbox mode or a permission
+	// profile, not both.
+	if (m.Method == "thread/start" || m.Method == "thread/resume") && str("sandbox") != "" && str("permissions") != "" {
+		s.fail(m.ID, -32600, "`permissions` cannot be combined with `sandbox`")
+		return
+	}
 	switch m.Method {
 	case "initialize":
 		s.initDone = true
@@ -247,6 +254,7 @@ func (s *server) handle(line []byte) {
 		id := newID()
 		s.mu.Lock()
 		s.saveThread(id)
+		s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
 		s.mu.Unlock()
 		cwd := str("cwd")
 		s.mcp.setConfig(id, parseMCPConfig(p))
@@ -258,6 +266,9 @@ func (s *server) handle(line []byte) {
 		id := str("threadId")
 		s.mu.Lock()
 		ok := s.threads[id]
+		if ok {
+			s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
+		}
 		s.mu.Unlock()
 		if !ok {
 			s.fail(m.ID, -32600, "thread not found: "+id)
@@ -380,6 +391,10 @@ func (s *server) runTurn(t *turn, text string) {
 		os.Exit(3)
 	case strings.Contains(text, "POLICY"):
 		reply = "policy: " + t.policy
+	case strings.Contains(text, "SANDBOX"):
+		s.mu.Lock()
+		reply = s.sandbox[t.thread]
+		s.mu.Unlock()
 	case strings.Contains(text, "APPROVE"):
 		s.note("thread/status/changed", map[string]any{"threadId": t.thread, "status": map[string]any{"type": "active", "activeFlags": []any{"waitingOnApproval"}}})
 		res := s.request("item/commandExecution/requestApproval", map[string]any{

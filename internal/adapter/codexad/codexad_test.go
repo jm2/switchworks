@@ -87,7 +87,13 @@ func completedText(sub string) func(adapter.Event) bool {
 
 func newFake(t *testing.T, state string) *Adapter {
 	t.Helper()
-	a := New(Config{Bin: os.Args[0], Args: []string{"app-server"}, Env: codextest.Env(state), Logf: t.Logf})
+	return newFakeWith(t, Config{Env: codextest.Env(state)})
+}
+
+func newFakeWith(t *testing.T, cfg Config) *Adapter {
+	t.Helper()
+	cfg.Bin, cfg.Args, cfg.Logf = os.Args[0], []string{"app-server"}, t.Logf
+	a := New(cfg)
 	t.Cleanup(func() { a.Close() })
 	return a
 }
@@ -378,4 +384,54 @@ func TestSetApprovalPolicy(t *testing.T) {
 	}
 	turn(i + 1)
 	col.waitFor(t, i+1, "the new policy on the next turn", completedText("policy: never"))
+}
+
+// TestPermissionProfile checks that workspace-write sessions run under the
+// configured permission profile, on start and on resume, and that other
+// sandbox modes are sent as they are.
+func TestPermissionProfile(t *testing.T) {
+	state := t.TempDir()
+	ctx := context.Background()
+	sandboxOf := func(h adapter.Handle, col *collector, want string) {
+		t.Helper()
+		col.waitFor(t, 0, "idle", status(model.StatusIdle))
+		if err := h.Deliver(ctx, adapter.Input{Text: "SANDBOX"}, adapter.DeliverQueue); err != nil {
+			t.Fatal(err)
+		}
+		col.waitFor(t, 0, want, completedText(want))
+	}
+
+	a1 := newFakeWith(t, Config{Env: codextest.Env(state), Permissions: "swk"})
+	col := &collector{}
+	h, err := a1.Start(ctx, adapter.StartSpec{Name: "devbox/ww", Cwd: "/work", Sandbox: "workspace-write"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxOf(h, col, "sandbox= permissions=swk")
+	ref := h.Ref()
+
+	colRO := &collector{}
+	ro, err := a1.Start(ctx, adapter.StartSpec{Name: "devbox/ro", Cwd: "/work", Sandbox: "read-only"}, colRO.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxOf(ro, colRO, "sandbox=read-only permissions=")
+	a1.Close()
+
+	a2 := newFakeWith(t, Config{Env: codextest.Env(state), Permissions: "swk"})
+	col2 := &collector{}
+	h2, err := a2.Resume(ctx, ref, adapter.StartSpec{Cwd: "/work", Sandbox: "workspace-write"}, col2.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxOf(h2, col2, "sandbox= permissions=swk")
+
+	// Without a profile, workspace-write stays codex's sandbox mode.
+	a3 := newFake(t, state)
+	col3 := &collector{}
+	h3, err := a3.Start(ctx, adapter.StartSpec{Name: "devbox/plain", Cwd: "/work", Sandbox: "workspace-write"}, col3.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxOf(h3, col3, "sandbox=workspace-write permissions=")
 }
