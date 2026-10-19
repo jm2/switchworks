@@ -116,6 +116,10 @@ type record struct {
 type session struct {
 	n *Node
 
+	// policyMu orders approval policy changes, so the harness, the record
+	// and the session.policy events agree on the last one.
+	policyMu sync.Mutex
+
 	mu         sync.Mutex
 	rec        record
 	localReqs  int // local API requests in progress (local.go)
@@ -994,6 +998,8 @@ func (n *Node) stop(ctx context.Context, s *session) error {
 // setPolicy changes a running session's approval policy and keeps it for
 // a resume.
 func (n *Node) setPolicy(ctx context.Context, s *session, policy string) error {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
 	h, err := s.handle()
 	if err != nil {
 		return err

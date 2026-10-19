@@ -192,8 +192,9 @@ type SessionRegistered struct {
 }
 
 // SessionPolicy records a change of the session's approval policy. The
-// coordinator's record takes the value from the command it sent, not from
-// this event.
+// coordinator's record takes the value from the command it sent; it
+// projects this event (as a node-reported policy) only when the record
+// differs, such as after a restart that lost the change.
 type SessionPolicy struct {
 	ApprovalPolicy string `json:"approval_policy"`
 }

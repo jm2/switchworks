@@ -1118,7 +1118,7 @@ function sessionView(id, full) {
     es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
-      'message.failed', 'usage', 'error', 'warning', 'session.settled'];
+      'message.failed', 'usage', 'error', 'warning', 'session.settled', 'session.policy'];
     for (const k of kinds) {
       es.addEventListener(k, (e) => {
         // EventSource's own connection errors share the name "error" but

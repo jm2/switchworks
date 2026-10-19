@@ -36,7 +36,8 @@ system; the choice is kept per browser.
   inbox. Next to that menu, **Approvals** changes the session's approval
   policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
-  ACP agents with session modes at once. Interrupt and Stop are in the top bar; session details are at the
+  ACP agents with session modes at once. Loosening it needs a browser
+  signed in with the admin token or an owner token. Interrupt and Stop are in the top bar; session details are at the
   top of the transcript. The image button (or pasting an image) attaches
   up to four PNG, JPEG, WebP or GIF images; images in messages show as
   thumbnails in the transcript, the inbox and the traffic list, and open
