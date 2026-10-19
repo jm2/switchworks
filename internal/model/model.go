@@ -63,6 +63,9 @@ type Caps struct {
 	// Images: the session accepts image attachments (Codex, and ACP agents
 	// whose initialize response advertises promptCapabilities.image).
 	Images bool `json:"images,omitempty"`
+	// Policy: the session's approval policy can be changed while it runs
+	// (Codex, and ACP agents with session modes).
+	Policy bool `json:"policy,omitempty"`
 }
 
 // NativeRef identifies a session inside its harness.
@@ -160,6 +163,7 @@ type Event struct {
 const (
 	KindSessionRegistered = "session.registered"
 	KindSessionStatus     = "session.status"
+	KindSessionPolicy     = "session.policy"
 	KindTurnStarted       = "turn.started"
 	KindTurnCompleted     = "turn.completed"
 	KindItemStarted       = "item.started"
@@ -185,6 +189,13 @@ type SessionRegistered struct {
 	Provider  string    `json:"provider,omitempty"`
 	Caps      Caps      `json:"caps"`
 	Resumed   bool      `json:"resumed,omitempty"`
+}
+
+// SessionPolicy records a change of the session's approval policy. The
+// coordinator's record takes the value from the command it sent, not from
+// this event.
+type SessionPolicy struct {
+	ApprovalPolicy string `json:"approval_policy"`
 }
 
 type SessionStatus struct {

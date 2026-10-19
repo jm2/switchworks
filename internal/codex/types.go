@@ -231,6 +231,9 @@ type TurnStartParams struct {
 	Cwd                 string      `json:"cwd,omitempty"`
 	Model               string      `json:"model,omitempty"`
 	Effort              string      `json:"effort,omitempty"`
+	// ApprovalPolicy overrides the thread's for this turn and the ones
+	// after it.
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
 }
 
 type TurnError struct {

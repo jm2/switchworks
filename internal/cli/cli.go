@@ -47,6 +47,7 @@ var commands = map[string]command{
 	"attach":    cmdAttach,
 	"send":      cmdSend,
 	"interrupt": cmdInterrupt,
+	"policy":    cmdPolicy,
 	"approve":   cmdApprove,
 	"stop":      cmdStop,
 	"rm":        cmdRm,
@@ -431,6 +432,28 @@ func simple(name string, fn func(context.Context, *apiclient.Client, string) err
 var cmdInterrupt = simple("interrupt", func(ctx context.Context, c *apiclient.Client, id string) error { return c.Interrupt(ctx, id) })
 var cmdStop = simple("stop", func(ctx context.Context, c *apiclient.Client, id string) error { return c.Stop(ctx, id) })
 var cmdRm = simple("rm", func(ctx context.Context, c *apiclient.Client, id string) error { return c.RemoveSession(ctx, id) })
+
+func cmdPolicy(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		fmt.Fprintln(stderr, "usage: swk policy <session> <untrusted|on-request|never>\n  applies from the session's next turn (codex), or at once (ACP agents with modes)")
+		return 2
+	}
+	c, ok := client(stderr)
+	if !ok {
+		return 1
+	}
+	s, ok := resolve(c, args[0], stderr)
+	if !ok {
+		return 1
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	if err := c.SetPolicy(ctx, s.ID, args[1]); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "%s: approval policy %s\n", s.Path, args[1])
+	return 0
+}
 
 func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 3 {

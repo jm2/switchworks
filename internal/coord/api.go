@@ -61,6 +61,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/sessions/{id}/messages", scopeOperate, s.handleMessage},
 		{"POST /v1/sessions/{id}/interrupt", scopeOperate, s.handleSimple(wire.OpInterrupt)},
 		{"POST /v1/sessions/{id}/stop", scopeOperate, s.handleSimple(wire.OpStop)},
+		{"POST /v1/sessions/{id}/policy", scopeOperate, s.handlePolicy},
 		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
@@ -578,6 +579,39 @@ func (s *Server) handleSimple(op string) http.HandlerFunc {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
+}
+
+// handlePolicy changes a running session's approval policy. Only people
+// reach it (the fleet tools have no such call), so it may loosen one; the
+// record takes the value asked for, not one the node reports.
+func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ApprovalPolicy string `json:"approval_policy"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	switch body.ApprovalPolicy {
+	case "untrusted", "on-request", "never":
+	default:
+		writeErr(w, 400, fmt.Errorf("unknown approval policy %q (untrusted, on-request, never)", body.ApprovalPolicy))
+		return
+	}
+	id := r.PathValue("id")
+	_, err := s.SessionCommand(r.Context(), id, wire.Cmd{Op: wire.OpPolicy,
+		Policy: &wire.PolicyCmd{ApprovalPolicy: body.ApprovalPolicy}})
+	if s.commandError(w, err) {
+		return
+	}
+	if _, err := s.store.UpdateSession(id, func(x *model.Session) {
+		x.ApprovalPolicy, x.PoliciesReported = body.ApprovalPolicy, false
+	}); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.publishSession(id)
+	writeJSON(w, 200, map[string]string{"approval_policy": body.ApprovalPolicy})
 }
 
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {

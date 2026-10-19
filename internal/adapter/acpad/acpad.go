@@ -225,6 +225,9 @@ type handle struct {
 	// promptCapabilities.image (kept across restarts of the agent).
 	images    bool
 	agentName string
+	// setup is the agent's session setup (its modes and config options),
+	// for SetApprovalPolicy.
+	setup *acp.SessionSetup
 }
 
 type textItem struct {
@@ -245,7 +248,8 @@ func (h *handle) Ref() model.NativeRef {
 func (h *handle) Caps() model.Caps {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return model.Caps{Message: true, Interrupt: true, Stop: true, Approve: true, Images: h.images}
+	policy := h.setup != nil && (h.setup.Modes != nil || h.setup.Option("mode") != nil)
+	return model.Caps{Message: true, Interrupt: true, Stop: true, Approve: true, Images: h.images, Policy: policy}
 }
 
 func (h *handle) Status() string {
@@ -355,6 +359,7 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 	h.sessionID = setup.SessionID
 	h.images = c.Info.AgentCapabilities.PromptCapabilities.Image
 	h.agentName = c.Info.AgentName()
+	h.setup = setup
 	h.mu.Unlock()
 	h.a.cfg.Logf("%s: session %s %s (pid %d, %s)", h.a.cfg.Harness, setup.SessionID,
 		map[bool]string{true: "reopened", false: "started"}[resumed], c.Pid(), c.Info.AgentName())
@@ -407,8 +412,11 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 			warn("%s has no model option; set its model in its own config or env", h.a.cfg.Harness)
 		}
 	}
-	strict := (h.spec.ByAgent || h.spec.CwdRoot != "") && h.spec.ApprovalPolicy != "" && h.spec.ApprovalPolicy != "never"
-	if mode := h.modeFor(s); mode != "" {
+	h.mu.Lock()
+	policy := h.spec.ApprovalPolicy // SetApprovalPolicy may change it
+	h.mu.Unlock()
+	strict := (h.spec.ByAgent || h.spec.CwdRoot != "") && policy != "" && policy != "never"
+	if mode := h.modeFor(s, policy); mode != "" {
 		if o := s.Option("mode"); o != nil {
 			if o.Current() != mode {
 				if opts, err := c.SetConfigOption(ctx, s.SessionID, "mode", mode); err != nil {
@@ -424,14 +432,14 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 				modeErr = err
 			}
 		}
-	} else if h.spec.ApprovalPolicy != "" {
+	} else if policy != "" {
 		if s.Modes != nil || s.Option("mode") != nil {
-			warn("no session mode matches approval policy %q; using the agent's default", h.spec.ApprovalPolicy)
+			warn("no session mode matches approval policy %q; using the agent's default", policy)
 		}
-		modeErr = fmt.Errorf("no session mode matches approval policy %q", h.spec.ApprovalPolicy)
+		modeErr = fmt.Errorf("no session mode matches approval policy %q", policy)
 	}
 	if strict && modeErr != nil {
-		return fmt.Errorf("%s: cannot apply approval policy %q to a session spawned by an agent: %w", h.a.cfg.Harness, h.spec.ApprovalPolicy, modeErr)
+		return fmt.Errorf("%s: cannot apply approval policy %q to a session spawned by an agent: %w", h.a.cfg.Harness, policy, modeErr)
 	}
 	if o := s.Option("model"); o != nil {
 		h.modelName = o.Current()
@@ -446,9 +454,8 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 	return nil
 }
 
-// modeFor picks the agent's mode for the session's approval policy.
-func (h *handle) modeFor(s *acp.SessionSetup) string {
-	p := h.spec.ApprovalPolicy
+// modeFor picks the agent's mode for approval policy p.
+func (h *handle) modeFor(s *acp.SessionSetup, p string) string {
 	if p == "" {
 		return ""
 	}
@@ -473,6 +480,47 @@ func (h *handle) modeFor(s *acp.SessionSetup) string {
 		}
 	}
 	return ""
+}
+
+// SetApprovalPolicy switches the session to the agent's mode for policy.
+// With the agent not running, the policy applies when it next starts.
+func (h *handle) SetApprovalPolicy(ctx context.Context, policy string) error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return adapter.ErrClosed
+	}
+	c, sid, setup := h.c, h.sessionID, h.setup
+	if c == nil || setup == nil {
+		h.spec.ApprovalPolicy = policy
+		h.mu.Unlock()
+		return nil
+	}
+	mode := h.modeFor(setup, policy)
+	useOption := setup.Option("mode") != nil
+	h.mu.Unlock()
+	if mode == "" {
+		return fmt.Errorf("%s has no session mode for approval policy %q", h.a.cfg.Harness, policy)
+	}
+	var opts []acp.ConfigOption
+	var err error
+	if useOption {
+		opts, err = c.SetConfigOption(ctx, sid, "mode", mode)
+	} else {
+		err = c.SetMode(ctx, sid, mode)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: setting mode %q: %w", h.a.cfg.Harness, mode, err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.spec.ApprovalPolicy = policy
+	if len(opts) > 0 {
+		setup.ConfigOptions = opts
+	} else if setup.Modes != nil {
+		setup.Modes.CurrentModeID = mode
+	}
+	return nil
 }
 
 // watch handles the agent process exiting.

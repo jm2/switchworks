@@ -100,6 +100,12 @@ button:disabled { opacity: .5; cursor: default; }
   background: var(--side); border-right: 1px solid var(--line);
   padding: calc(10px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom));
 }
+/* the sidebar's right edge: drag (or arrow keys) to resize it */
+.side-resize { position: absolute; top: 0; bottom: 0; right: 0; width: 5px; cursor: col-resize; touch-action: none; }
+.side-resize:hover, .side-resize:focus-visible, body.resizing .side-resize {
+  background: color-mix(in srgb, var(--accent) 45%, transparent); outline: none;
+}
+body.resizing { cursor: col-resize; user-select: none; }
 .shell { margin-left: var(--side-w); min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 10px; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 16px; color: var(--ink); letter-spacing: -.01em; }

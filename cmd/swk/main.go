@@ -30,6 +30,8 @@ Fleet:
   swk attach <session>           stream a session live (host/name or id)
   swk send <session> <text>      queue a message into a session (--steer, --interrupt)
   swk interrupt <session>        cancel a session's active turn
+  swk policy <session> <policy>  change a running session's approval policy
+                                 (untrusted, on-request, never; from its next turn)
   swk approve <session> <approval-id> <decision>
   swk stop <session>             stop managing a session
   swk rm <session>               delete a stopped session's record and events

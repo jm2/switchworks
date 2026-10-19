@@ -115,6 +115,7 @@ const (
 	OpInterrupt = "interrupt"
 	OpResolve   = "resolve"
 	OpStop      = "stop"
+	OpPolicy    = "policy"
 )
 
 type Cmd struct {
@@ -123,6 +124,7 @@ type Cmd struct {
 	Spawn   *SpawnCmd      `json:"spawn,omitempty"`
 	Message *MessageCmd    `json:"message,omitempty"`
 	Resolve *ResolveCmd    `json:"resolve,omitempty"`
+	Policy  *PolicyCmd     `json:"policy,omitempty"`
 	Extra   map[string]any `json:"extra,omitempty"`
 }
 
@@ -179,6 +181,11 @@ type NodeReq struct {
 	Op      string          `json:"op"`
 	Session string          `json:"session"` // calling session id (must belong to the node)
 	Args    json.RawMessage `json:"args,omitempty"`
+}
+
+// PolicyCmd changes a running session's approval policy (OpPolicy).
+type PolicyCmd struct {
+	ApprovalPolicy string `json:"approval_policy"`
 }
 
 type ResolveCmd struct {
