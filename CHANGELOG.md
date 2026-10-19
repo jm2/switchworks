@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-10-19
+
 ### Added
 
 - **Codex permission profiles** — `codex.permissions` in `node.json` names a Codex permission
@@ -128,7 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Running sessions grow without bound** — Only ended sessions are deleted.
 - **Web UI tested in Chromium only** — Safari on iOS has not been tried.
 
-[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/jm2/switchworks/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/jm2/switchworks/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/jm2/switchworks/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jm2/switchworks/releases/tag/v0.1.0
