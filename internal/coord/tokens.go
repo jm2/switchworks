@@ -152,6 +152,25 @@ func (s *Server) grantLive(g grant, now time.Time) bool {
 	return true
 }
 
+// credential names the credential behind a request's grant, as messages
+// from people carry it ("admin", or "token:<name>"), and whether it is the
+// owner's: the admin token is, an API token if marked so (live, so marking
+// or unmarking one applies to the browsers it signed in too). ok is false
+// outside an authenticated request, such as an agent's fleet operation.
+func (s *Server) credential(ctx context.Context) (via string, owner, ok bool) {
+	g := grantFrom(ctx)
+	if !g.scope.valid() {
+		return "", false, false
+	}
+	if g.tokenID == "" {
+		return "admin", true, true
+	}
+	if t, found := s.store.APIToken(g.tokenID); found {
+		return "token:" + t.Name, t.Owner, true
+	}
+	return "token:" + g.tokenID, false, true
+}
+
 // grantName names a grant's credential for logs.
 func (s *Server) grantName(g grant) string {
 	if g.tokenID == "" {
@@ -217,7 +236,7 @@ func (s *Server) requireAuth(api *http.ServeMux, scopes map[string]scope) http.H
 }
 
 func tokenInfo(t store.APIToken) apiclient.TokenInfo {
-	return apiclient.TokenInfo{ID: t.ID, Name: t.Name, Scope: t.Scope, Created: t.Created, LastUsed: t.LastUsed, Expires: t.Expires}
+	return apiclient.TokenInfo{ID: t.ID, Name: t.Name, Scope: t.Scope, Created: t.Created, LastUsed: t.LastUsed, Expires: t.Expires, Owner: t.Owner}
 }
 
 // maxTokenTTL bounds an expiring token's lifetime (10 years), so the
@@ -251,7 +270,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	secret := pki.RandomSecret(32)
-	t := store.APIToken{ID: ulid.New(), Name: body.Name, Scope: body.Scope, Hash: pki.HashSecret(secret), Created: now.Truncate(time.Second)}
+	t := store.APIToken{ID: ulid.New(), Name: body.Name, Scope: body.Scope, Hash: pki.HashSecret(secret), Created: now.Truncate(time.Second),
+		Owner: body.Owner}
 	if ttl > 0 {
 		t.Expires = now.Add(ttl).Truncate(time.Second)
 	}
@@ -263,8 +283,38 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, status, err)
 		return
 	}
-	s.logf("created API token %s (%s scope, by %s)", t.Name, t.Scope, s.grantName(grantFrom(r.Context())))
+	s.logf("created API token %s (%s scope%s, by %s)", t.Name, t.Scope, map[bool]string{true: ", owner"}[t.Owner], s.grantName(grantFrom(r.Context())))
 	writeJSON(w, 201, apiclient.NewToken{TokenInfo: tokenInfo(t), Secret: secret})
+}
+
+// handleTokenOwner marks a token (by id or name) as the owner's, or not.
+func (s *Server) handleTokenOwner(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Owner bool `json:"owner"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	ref := r.PathValue("id")
+	for _, t := range s.store.APITokens() {
+		if t.ID != ref && t.Name != ref {
+			continue
+		}
+		if err := s.store.SetAPITokenOwner(t.ID, body.Owner); err != nil {
+			status := 500
+			if errors.Is(err, store.ErrNotFound) {
+				status = 404
+			}
+			writeErr(w, status, err)
+			return
+		}
+		s.logf("token %s: owner %v (by %s)", t.Name, body.Owner, s.grantName(grantFrom(r.Context())))
+		t.Owner = body.Owner
+		writeJSON(w, 200, tokenInfo(t))
+		return
+	}
+	writeErr(w, 404, fmt.Errorf("token %q: %w", ref, store.ErrNotFound))
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {

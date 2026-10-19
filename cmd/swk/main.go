@@ -46,9 +46,12 @@ Messages:
   swk ui-link [--scope S]        print a one-time sign-in link for the web UI
 
 Access:
-  swk token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config]
+  swk token create <name> --scope read|operate|admin [--owner] [--ttl 720h] [--cli-config]
                                  make a named API token (secret shown once);
-                                 --cli-config prints a cli.json for another machine
+                                 --cli-config prints a cli.json for another machine;
+                                 --owner: its messages reach agents as yours (keep it
+                                 off every host where agents run)
+  swk token owner <name> on|off  mark a token as the owner's, or not
   swk token ls                   list API tokens
   swk token rm <name-or-id>      revoke a token and the web sessions it signed in
 

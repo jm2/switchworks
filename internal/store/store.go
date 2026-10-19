@@ -43,6 +43,10 @@ type APIToken struct {
 	Created  time.Time `json:"created"`
 	LastUsed time.Time `json:"last_used,omitzero"`
 	Expires  time.Time `json:"expires,omitzero"` // zero: never
+	// Owner: messages sent with it (or by a browser it signed in) reach
+	// agents as the owner's, without a header. Only for credentials kept
+	// off every host where agents run.
+	Owner bool `json:"owner,omitempty"`
 }
 
 // Expired reports whether the token has passed its expiry.
@@ -108,6 +112,8 @@ type Store interface {
 	// TouchAPIToken records that a token was used. It is coarse and saved
 	// with the next snapshot, not at once.
 	TouchAPIToken(id string, now time.Time)
+	// SetAPITokenOwner marks a token as the owner's, or not.
+	SetAPITokenOwner(id string, owner bool) error
 
 	// PutMessage creates or replaces a message record.
 	PutMessage(m model.Message) error

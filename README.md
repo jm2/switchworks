@@ -448,16 +448,25 @@ swk token create devbox --scope operate --cli-config > devbox-cli.json
 | `operate` | `read`, plus day-to-day control: send, ask and reply, approve or decline, interrupt, stop, and spawn sessions. |
 | `admin` | Everything, including enrollment tokens, `swk hosts rm` and managing tokens. The token `init` made is admin. |
 
-**Put only `read` or `operate` tokens on machines where agents run.**
-Harness sandboxes limit writes, not reads, so an agent there can read any
-`cli.json` on the machine. With an operate token it can do what you can do
-from that CLI, but cannot enroll hosts, revoke them or make tokens, and you
-can cut it off with one command. Note that `operate` includes spawning:
-sessions you spawn run with the options you give them, outside the guards
-that confine agents' own spawns. Use `read` where that is too much.
+**Put at most a `read` token on machines where agents run.** Harness
+sandboxes limit writes, not reads, so an agent there can read any
+`cli.json` on the machine and use it as you would. With `read` it can
+only look. With `operate` it could also approve its own prompts, change
+its approval policy, spawn sessions outside the guards that confine
+agents' own spawns, and message other sessions. It still cannot enroll
+hosts, revoke them or make tokens, and `swk token rm` cuts it off.
+
+Messages you send reach agents without a header, as yours, only when they
+come from the admin token or an **owner** token (`--owner`, or `swk token
+owner <name> on`), or from a browser one of those signed in. Messages sent
+with any other token carry a header naming it (`[switchworks msg=…
+from=user:cli via=token:devbox kind=notify]`), so an agent can tell them
+from yours. That only holds while owner tokens stay off every machine
+where agents run: make one for your phone or laptop, not for a workstation.
 
 ```bash
-swk token ls                      # name, scope, last use, expiry; never the secret
+swk token create phone --scope operate --owner --ttl 720h   # for a device without agents
+swk token ls                      # name, scope, owner, last use, expiry; never the secret
 swk token rm devbox               # revoke it; browsers it signed in are signed out
 swk token create phone --scope read --ttl 720h    # prints just the secret, once
 ```

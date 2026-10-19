@@ -17,7 +17,8 @@ import (
 func init() { commands["token"] = cmdToken }
 
 const tokenUsage = `usage:
-  swk token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]
+  swk token create <name> --scope read|operate|admin [--owner] [--ttl 720h] [--cli-config [--api URL]]
+  swk token owner <name-or-id> on|off
   swk token ls [--json]
   swk token rm <name-or-id>`
 
@@ -31,6 +32,27 @@ func cmdToken(args []string, stdout, stderr io.Writer) int {
 		return cmdTokenCreate(args[1:], stdout, stderr)
 	case "ls", "list":
 		return cmdTokenList(args[1:], stdout, stderr)
+	case "owner":
+		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
+			fmt.Fprintln(stderr, "usage: swk token owner <name-or-id> on|off\n  "+ownerHelp)
+			return 2
+		}
+		c, ok := client(stderr)
+		if !ok {
+			return 1
+		}
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		t, err := c.SetTokenOwner(ctx, args[1], args[2] == "on")
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if t.Owner {
+			fmt.Fprintf(stdout, "%s is an owner token: its messages reach agents as yours. Keep it off every host where agents run.\n", t.Name)
+		} else {
+			fmt.Fprintf(stdout, "%s is not an owner token: its messages reach agents with a header naming it.\n", t.Name)
+		}
+		return 0
 	case "rm", "remove", "revoke":
 		if len(args) != 2 {
 			fmt.Fprintln(stderr, "usage: swk token rm <name-or-id>")
@@ -52,15 +74,18 @@ func cmdToken(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
+const ownerHelp = "an owner token's messages (and those of browsers it signs in) reach agents as yours, without a header; never put one on a host where agents run"
+
 func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("token create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	scope := fs.String("scope", "", "read (look only), operate (read, plus send, approve, interrupt, stop, spawn) or admin (everything)")
 	ttl := fs.Duration("ttl", 0, "lifetime, e.g. 720h (default: until revoked)")
+	owner := fs.Bool("owner", false, ownerHelp)
 	cliConfig := fs.Bool("cli-config", false, "print a complete cli.json with the new token, for another machine")
 	api := fs.String("api", "", "with --cli-config: the API URL that machine dials (default: this CLI's)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swk token create <name> --scope read|operate|admin [--ttl 720h] [--cli-config [--api URL]]")
+		fmt.Fprintln(stderr, "usage: swk token create <name> --scope read|operate|admin [--owner] [--ttl 720h] [--cli-config [--api URL]]")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -86,7 +111,7 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	t, err := c.CreateToken(ctx, pos[0], *scope, *ttl)
+	t, err := c.CreateTokenWith(ctx, apiclient.CreateTokenRequest{Name: pos[0], Scope: *scope, TTLSeconds: int64(*ttl / time.Second), Owner: *owner})
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -94,7 +119,11 @@ func cmdTokenCreate(args []string, stdout, stderr io.Writer) int {
 	if !t.Expires.IsZero() {
 		expires = "expires " + t.Expires.Local().Format(time.RFC3339)
 	}
-	fmt.Fprintf(stderr, "created token %s (%s scope, %s, id %s)\n", t.Name, t.Scope, expires, t.ID)
+	kind := ""
+	if t.Owner {
+		kind = ", owner"
+	}
+	fmt.Fprintf(stderr, "created token %s (%s scope%s, %s, id %s)\n", t.Name, t.Scope, kind, expires, t.ID)
 	if *cliConfig {
 		cfg := c.Config()
 		cfg.Token = t.Secret
@@ -140,13 +169,17 @@ func cmdTokenList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSCOPE\tCREATED\tLAST USED\tEXPIRES\tID")
+	fmt.Fprintln(tw, "NAME\tSCOPE\tOWNER\tCREATED\tLAST USED\tEXPIRES\tID")
 	for _, t := range toks {
 		exp := "never"
 		if !t.Expires.IsZero() {
 			exp = t.Expires.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Scope, t.Created.Local().Format("2006-01-02"), ago(t.LastUsed), exp, t.ID)
+		owner := "-"
+		if t.Owner {
+			owner = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Scope, owner, t.Created.Local().Format("2006-01-02"), ago(t.LastUsed), exp, t.ID)
 	}
 	tw.Flush()
 	return 0
