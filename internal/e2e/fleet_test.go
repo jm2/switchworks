@@ -241,6 +241,18 @@ func TestFleetHopLimit(t *testing.T) {
 	b, _ := c.Spawn(ctx, model.SpawnSpec{Host: "devbox", Name: "pong", Cwd: work})
 	wa := watch(c, a.ID)
 	defer wa.cancel()
+	wb := watch(c, b.ID)
+	defer wb.cancel()
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpStream(t, "pong", wb)
+			if msgs, err := c.Messages(ctx, apiclient.MessageQuery{Limit: 50}); err == nil {
+				for _, m := range msgs {
+					t.Logf("message %s %s -> %s %s hops=%d err=%q", m.ID, m.From, m.ToPath, m.State, m.Hops, m.Error)
+				}
+			}
+		}
+	})
 	waitStatus(t, c, a.ID, model.StatusIdle)
 	waitStatus(t, c, b.ID, model.StatusIdle)
 	// Nest the CALLs: each delivered message's last line is the next CALL.
@@ -256,4 +268,17 @@ func TestFleetHopLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	wa.waitFor(t, "hop limit", 0, agentSaidAll("tool fleet_send: Error:", "hop limit"))
+}
+
+// dumpStream logs a watched session's events, with long payloads cut.
+func dumpStream(t *testing.T, name string, w *watcher) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.evs {
+		p := string(e.Payload)
+		if len(p) > 300 {
+			p = p[:300] + "…"
+		}
+		t.Logf("%s %d %s %s", name, e.Seq, e.Kind, p)
+	}
 }
