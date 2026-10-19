@@ -77,6 +77,17 @@ func policyNode(t *testing.T, a *policyAdapter) (*Node, string) {
 		t.Fatal(err)
 	}
 	n := &Node{dir: dir, logf: t.Logf, adapters: map[string]adapter.Adapter{"fake": a}, sessions: map[string]*session{}}
+	// Windows cannot remove the temp dir while a spool file is open.
+	t.Cleanup(func() {
+		for _, s := range n.sessionList() {
+			s.mu.Lock()
+			if s.spool != nil {
+				_ = s.spool.Close()
+				s.spool = nil
+			}
+			s.mu.Unlock()
+		}
+	})
 	id := ulid.New()
 	_, err := n.spawn(context.Background(), &wire.SpawnCmd{Session: model.Session{ID: id, Path: "devbox/a"},
 		Spec: model.SpawnSpec{Harness: "fake", Cwd: t.TempDir(), ApprovalPolicy: "untrusted"}})
