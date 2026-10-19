@@ -34,6 +34,9 @@ type Server struct {
 	ca    *pki.CA
 	logf  func(string, ...any)
 
+	// policyLocks orders approval policy changes per session.
+	policyLocks keyedLocks
+
 	mu    sync.Mutex
 	nodes map[string]*nodeConn
 	subs  map[string]map[chan model.Event]struct{}
@@ -715,6 +718,18 @@ func (s *Server) project(ev model.Event) {
 			var p model.SessionStatus
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				sess.Status = p.Status
+			}
+		case model.KindSessionPolicy:
+			// handlePolicy records the value it sent; this event keeps a
+			// change the record missed (a coordinator that stopped before
+			// saving it). It is the node's word, so like the policies a node
+			// reports at spawn it counts only on that node's host.
+			var p model.SessionPolicy
+			if json.Unmarshal(ev.Payload, &p) == nil && p.ApprovalPolicy != sess.ApprovalPolicy {
+				switch p.ApprovalPolicy {
+				case "untrusted", "on-request", "never":
+					sess.ApprovalPolicy, sess.PoliciesReported = p.ApprovalPolicy, true
+				}
 			}
 		case model.KindUsage:
 			// The session's usage is the sum of what each event added

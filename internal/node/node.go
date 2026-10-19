@@ -116,6 +116,10 @@ type record struct {
 type session struct {
 	n *Node
 
+	// policyMu orders approval policy changes, so the harness, the record
+	// and the session.policy events agree on the last one.
+	policyMu sync.Mutex
+
 	mu         sync.Mutex
 	rec        record
 	localReqs  int // local API requests in progress (local.go)
@@ -991,6 +995,32 @@ func (n *Node) stop(ctx context.Context, s *session) error {
 	return n.saveState()
 }
 
+// setPolicy changes a running session's approval policy and keeps it for
+// a resume.
+func (n *Node) setPolicy(ctx context.Context, s *session, policy string) error {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+	h, err := s.handle()
+	if err != nil {
+		return err
+	}
+	ps, ok := h.(adapter.PolicySetter)
+	if !ok || !h.Caps().Policy {
+		s.mu.Lock()
+		harness := s.rec.Harness
+		s.mu.Unlock()
+		return fmt.Errorf("%s sessions cannot change their approval policy while running", harness)
+	}
+	if err := ps.SetApprovalPolicy(ctx, policy); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.rec.Spec.ApprovalPolicy = policy
+	s.mu.Unlock()
+	s.emit(model.KindSessionPolicy, model.SessionPolicy{ApprovalPolicy: policy})
+	return n.saveState()
+}
+
 // handleCmd executes a coordinator command.
 func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
@@ -1028,6 +1058,11 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 			return h.Resolve(ctx, cmd.Resolve.ApprovalID, cmd.Resolve.Decision)
 		case wire.OpStop:
 			return n.stop(ctx, s)
+		case wire.OpPolicy:
+			if cmd.Policy == nil {
+				return errors.New("policy: missing body")
+			}
+			return n.setPolicy(ctx, s, cmd.Policy.ApprovalPolicy)
 		}
 		return fmt.Errorf("unknown op %q", cmd.Op)
 	}()

@@ -57,16 +57,17 @@ func TestEveryRouteDeclaresScope(t *testing.T) {
 	}
 	// A few routes whose scope is a security decision, pinned explicitly.
 	for pattern, want := range map[string]scope{
-		"GET /v1/stream":               scopeRead,
-		"GET /v1/attachments/{sha256}": scopeRead,
-		"POST /v1/ui-links":            scopeRead,
-		"POST /v1/sessions":            scopeOperate,
-		"DELETE /v1/hosts/{id}":        scopeAdmin,
-		"POST /v1/enroll-tokens":       scopeAdmin,
-		"POST /v1/tokens":              scopeAdmin,
-		"GET /v1/tokens":               scopeAdmin,
-		"DELETE /v1/tokens/{id}":       scopeAdmin,
-		"POST /v1/tokens/{id}/owner":   scopeAdmin,
+		"GET /v1/stream":                scopeRead,
+		"GET /v1/attachments/{sha256}":  scopeRead,
+		"POST /v1/ui-links":             scopeRead,
+		"POST /v1/sessions":             scopeOperate,
+		"POST /v1/sessions/{id}/policy": scopeOperate,
+		"DELETE /v1/hosts/{id}":         scopeAdmin,
+		"POST /v1/enroll-tokens":        scopeAdmin,
+		"POST /v1/tokens":               scopeAdmin,
+		"GET /v1/tokens":                scopeAdmin,
+		"DELETE /v1/tokens/{id}":        scopeAdmin,
+		"POST /v1/tokens/{id}/owner":    scopeAdmin,
 	} {
 		if scopes[pattern] != want {
 			t.Errorf("%s: scope %s, want %s", pattern, scopes[pattern], want)

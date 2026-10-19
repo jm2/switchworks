@@ -338,6 +338,12 @@ func (c *Client) Interrupt(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/interrupt", nil, nil)
 }
 
+// SetPolicy changes a running session's approval policy.
+func (c *Client) SetPolicy(ctx context.Context, id, policy string) error {
+	return c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/policy",
+		map[string]string{"approval_policy": policy}, nil)
+}
+
 func (c *Client) Approve(ctx context.Context, id, approvalID, decision string) error {
 	return c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/approvals/"+url.PathEscape(approvalID),
 		map[string]string{"decision": decision}, nil)

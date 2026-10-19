@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Change a running session's approval policy** — `swk policy <session> untrusted|on-request|never`,
+  or the Approvals menu in the web UI's composer. Codex applies it from the next turn; Goose and
+  ACP agents with session modes switch mode at once. It survives a resume. Loosening a policy
+  needs the admin token or an owner token.
+- **Resizable sidebar** — Drag the web UI sidebar's edge (or use the arrow keys on it) to see
+  long session names; the width is kept per browser.
+
 ### Security
 
 - **Messages from people name their credential** — A person's message reached agents without a

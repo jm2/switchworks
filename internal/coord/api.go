@@ -61,6 +61,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/sessions/{id}/messages", scopeOperate, s.handleMessage},
 		{"POST /v1/sessions/{id}/interrupt", scopeOperate, s.handleSimple(wire.OpInterrupt)},
 		{"POST /v1/sessions/{id}/stop", scopeOperate, s.handleSimple(wire.OpStop)},
+		{"POST /v1/sessions/{id}/policy", scopeOperate, s.handlePolicy},
 		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
@@ -581,6 +582,102 @@ func (s *Server) handleSimple(op string) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
+	}
+}
+
+// policyRank orders approval policies from strictest to loosest. An
+// unknown or empty policy ranks as the strictest, so any other counts as
+// loosening it.
+func policyRank(p string) int {
+	switch p {
+	case "on-request", "on-failure":
+		return 1
+	case "never":
+		return 2
+	}
+	return 0
+}
+
+// handlePolicy changes a running session's approval policy. Tightening
+// takes any operate credential; loosening takes the admin token or an
+// owner token (or a browser one signed in), which are kept off hosts where
+// agents run, so an agent that reads a token there cannot lift its own
+// approvals. The fleet tools have no such call. Changes to one session are
+// made one at a time, and the record takes the value asked for, not one
+// the node reports.
+func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ApprovalPolicy string `json:"approval_policy"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	switch body.ApprovalPolicy {
+	case "untrusted", "on-request", "never":
+	default:
+		writeErr(w, 400, fmt.Errorf("unknown approval policy %q (untrusted, on-request, never)", body.ApprovalPolicy))
+		return
+	}
+	id := r.PathValue("id")
+	unlock := s.policyLocks.lock(id)
+	defer unlock()
+	sess, ok := s.store.Session(id)
+	if !ok {
+		writeErr(w, 404, store.ErrNotFound)
+		return
+	}
+	if _, owner, _ := s.credential(r.Context()); !owner && policyRank(body.ApprovalPolicy) > policyRank(sess.ApprovalPolicy) {
+		writeErr(w, 403, fmt.Errorf("loosening %s's approval policy (%s to %s) needs the admin token or an owner token",
+			sess.Path, orDefault(sess.ApprovalPolicy, "unknown"), body.ApprovalPolicy))
+		return
+	}
+	_, err := s.SessionCommand(r.Context(), id, wire.Cmd{Op: wire.OpPolicy,
+		Policy: &wire.PolicyCmd{ApprovalPolicy: body.ApprovalPolicy}})
+	if s.commandError(w, err) {
+		return
+	}
+	if _, err := s.store.UpdateSession(id, func(x *model.Session) {
+		x.ApprovalPolicy, x.PoliciesReported = body.ApprovalPolicy, false
+	}); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.publishSession(id)
+	writeJSON(w, 200, map[string]string{"approval_policy": body.ApprovalPolicy})
+}
+
+// keyedLocks is a mutex per key, kept only while in use.
+type keyedLocks struct {
+	mu sync.Mutex
+	m  map[string]*keyedLock
+}
+
+type keyedLock struct {
+	sync.Mutex
+	users int
+}
+
+func (k *keyedLocks) lock(key string) (unlock func()) {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[string]*keyedLock{}
+	}
+	l := k.m[key]
+	if l == nil {
+		l = &keyedLock{}
+		k.m[key] = l
+	}
+	l.users++
+	k.mu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.m, key)
+		}
+		k.mu.Unlock()
 	}
 }
 

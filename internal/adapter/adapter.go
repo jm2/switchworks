@@ -127,6 +127,13 @@ type Handle interface {
 	Stop(ctx context.Context) error
 }
 
+// PolicySetter is implemented by handles whose approval policy can change
+// while the session runs (Caps.Policy). The new policy applies from the
+// next turn, and to a resume.
+type PolicySetter interface {
+	SetApprovalPolicy(ctx context.Context, policy string) error
+}
+
 // Discoverer is implemented by adapters that can list sessions they did not
 // start (observed mode). Not implemented yet.
 type Discoverer interface {

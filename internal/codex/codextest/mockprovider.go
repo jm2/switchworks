@@ -20,8 +20,9 @@ import (
 // with a model_providers entry (see WriteCodexHome).
 //
 // Behavior, keyed on the latest user message:
-//   - "RUN: <cmd>": the model calls exec_command with <cmd>; once Codex sends
-//     the function_call_output back, the model answers "Command finished."
+//   - "RUN: <cmd>", or a message whose last line is "$ <cmd>": the model
+//     calls exec_command with <cmd>; once Codex sends the
+//     function_call_output back, the model answers "Command finished."
 //   - a line "CALL <tool> <json args>": the model calls MCP tool <tool> of
 //     the swk server (namespace mcp__swk) and then answers
 //     "tool <tool>: <output>"
@@ -219,8 +220,8 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 			args = "{}"
 		}
 		call("mcp__swk", callM[1], args)
-	case !sawOutput && strings.HasPrefix(lastUser, "RUN: "):
-		args, _ := json.Marshal(map[string]any{"cmd": strings.TrimPrefix(lastUser, "RUN: ")})
+	case !sawOutput && mockCommand(lastUser) != "":
+		args, _ := json.Marshal(map[string]any{"cmd": mockCommand(lastUser)})
 		item := map[string]any{"type": "function_call", "id": fmt.Sprintf("fc_%d", n), "call_id": fmt.Sprintf("call_%d", n),
 			"name": "exec_command", "arguments": string(args)}
 		ev(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item})
@@ -254,4 +255,17 @@ func (m *MockProvider) serve(w http.ResponseWriter, r *http.Request) {
 	ev(map[string]any{"type": "response.completed", "response": map[string]any{"id": respID, "usage": map[string]any{
 		"input_tokens": 120, "input_tokens_details": map[string]any{"cached_tokens": 40},
 		"output_tokens": 7, "output_tokens_details": map[string]any{"reasoning_tokens": 0}, "total_tokens": 127}}})
+}
+
+// mockCommand is the command a user message asks the mock to run: after
+// "RUN: ", or on a last line starting "$ " (which reads better in demos).
+func mockCommand(msg string) string {
+	if cmd, ok := strings.CutPrefix(msg, "RUN: "); ok {
+		return cmd
+	}
+	lines := strings.Split(strings.TrimSpace(msg), "\n")
+	if cmd, ok := strings.CutPrefix(lines[len(lines)-1], "$ "); ok && len(lines) > 1 {
+		return strings.TrimSpace(cmd)
+	}
+	return ""
 }

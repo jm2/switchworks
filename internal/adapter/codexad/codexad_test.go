@@ -347,3 +347,35 @@ func TestStopWhileAppServerRestarts(t *testing.T) {
 		t.Fatalf("after restart: %d thread(s) registered, status %s", n, hh.Status())
 	}
 }
+
+func TestSetApprovalPolicy(t *testing.T) {
+	a := newFake(t, t.TempDir())
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Name: "devbox/test", Cwd: "/work", ApprovalPolicy: "untrusted"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.Caps().Policy {
+		t.Fatal("codex sessions should report Caps.Policy")
+	}
+	col.waitFor(t, 0, "idle", status(model.StatusIdle))
+	turn := func(from int) int {
+		t.Helper()
+		if err := h.Deliver(ctx, adapter.Input{Text: "POLICY"}, adapter.DeliverQueue); err != nil {
+			t.Fatal(err)
+		}
+		i := col.waitFor(t, from, "turn.completed", kind(model.KindTurnCompleted))
+		for h.Status() != model.StatusIdle {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return i
+	}
+	i := turn(0)
+	col.waitFor(t, 0, "the spawn policy on the first turn", completedText("policy: untrusted"))
+	if err := h.(adapter.PolicySetter).SetApprovalPolicy(ctx, "never"); err != nil {
+		t.Fatal(err)
+	}
+	turn(i + 1)
+	col.waitFor(t, i+1, "the new policy on the next turn", completedText("policy: never"))
+}

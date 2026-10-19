@@ -34,6 +34,7 @@ by the tools you already use, under your own sign-ins.
 | Start, stop, interrupt and resume sessions on any host | ✅ Sessions resume after a node or coordinator restart |
 | Approval prompts relayed to the web UI and CLI | ✅ Codex, Goose and other ACP agents |
 | Steer a running turn | ✅ Codex; other harnesses queue the message for the next turn |
+| Change a running session's approval policy (`swk policy`, the composer's Approvals menu) | ✅ Codex (from its next turn), Goose and ACP agents with session modes; not agy |
 | Agent-to-agent messaging across machines (`fleet_ask`, `fleet_send`, `fleet_spawn`, ...) | ✅ Hop limits, rate limits, spawn depth and a daily token budget |
 | Questions from agents to you, with an inbox | ✅ |
 | Images in messages and prompts (screenshots between agents, from the CLI and web UI) | ✅ Codex and Goose (ACP agents that advertise image prompts); agy is text only |
@@ -451,9 +452,9 @@ swk token create devbox --scope operate --cli-config > devbox-cli.json
 **Put at most a `read` token on machines where agents run.** Harness
 sandboxes limit writes, not reads, so an agent there can read any
 `cli.json` on the machine and use it as you would. With `read` it can
-only look. With `operate` it could also approve its own prompts, change
-its approval policy, spawn sessions outside the guards that confine
-agents' own spawns, and message other sessions. It still cannot enroll
+only look. With `operate` it could also approve its own prompts, spawn
+sessions outside the guards that confine agents' own spawns, and message
+other sessions (though not loosen an approval policy). It still cannot enroll
 hosts, revoke them or make tokens, and `swk token rm` cuts it off.
 
 Messages you send reach agents without a header, as yours, only when they
@@ -529,12 +530,22 @@ swk send myapp "also update the changelog"           # next turn
 swk send --steer myapp "skip the docs for now"       # into the running turn (Codex)
 swk send --image shot.png myapp "does this look right?"    # with an image (up to 4)
 swk approve myapp <approval-id> accept    # or answer in the web UI
+swk policy myapp never                    # approvals: untrusted, on-request or never
 swk interrupt myapp
 swk stop myapp                            # history is kept
 swk rm myapp                              # delete a stopped session's history (admin)
 ```
 
 A bare session name works when it is unique across the fleet.
+
+`swk policy` (or the Approvals menu next to the delivery menu in the web UI's composer) changes
+a running session's approval policy: `untrusted` asks before anything not known to be safe,
+`on-request` lets the agent ask when it needs to, `never` never asks. Codex applies it from the
+next turn, Goose and ACP agents with session modes switch mode at once, and agy cannot change
+it while running. The session keeps the new policy when it resumes, and sessions it spawns
+inherit it. Any `operate` credential can tighten a policy; loosening it needs the admin token or
+an owner token (or a browser one signed in), so an agent that reads a token on its host cannot
+lift its own approvals. The fleet tools have no such call.
 
 Stopped sessions, and sessions whose host no longer has them, are deleted with their event logs
 90 days after they ended. Set `session_retention_days` in `coordinator.json` to change that (a

@@ -885,3 +885,34 @@ func TestGooseUsageOfFailedTurn(t *testing.T) {
 		t.Fatalf("usage %+v", evs)
 	}
 }
+
+// A running session switches to the agent's mode for a new approval
+// policy.
+func TestSetApprovalPolicy(t *testing.T) {
+	a, state := testAdapter(t, nil)
+	h, r := start(t, a, adapter.StartSpec{ApprovalPolicy: "untrusted"})
+	reg := r.waitFor(t, "registered", kind(model.KindSessionRegistered)).Payload.(model.SessionRegistered)
+	if !reg.Caps.Policy {
+		t.Fatal("an agent with session modes should report Caps.Policy")
+	}
+	mode := func() string {
+		s, err := acptest.ReadSession(state, h.Ref().ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Config["mode"]
+	}
+	if m := mode(); m != "approve" {
+		t.Fatalf("mode %q at start", m)
+	}
+	ps := h.(adapter.PolicySetter)
+	if err := ps.SetApprovalPolicy(context.Background(), "never"); err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(); m != "auto" {
+		t.Fatalf("mode %q after setting never", m)
+	}
+	if tc := r.turn(t, h, "still works"); tc.Status != "completed" {
+		t.Fatalf("turn %+v", tc)
+	}
+}

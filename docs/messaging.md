@@ -298,7 +298,8 @@ start.
   create`, in a `cli.json`) or a web sign-in. The admin token can do
   anything; an API token, and a browser it signed in, only what its scope
   allows: `read` looks, `operate` also sends, asks, replies, approves,
-  interrupts, stops, spawns and changes approval policies, `admin` also
+  interrupts, stops, spawns and tightens approval policies (loosening one
+  needs the admin token or an owner token), `admin` also
   enrolls and removes hosts and manages tokens. A person's spawn is not
   confined by the guards below. Messages carry the credential they were
   sent with; only the admin token's and owner tokens' plain messages reach
@@ -324,8 +325,9 @@ node and its agents as a separate user. In particular:
   holding one can send messages that reach other agents as yours. Give
   those machines at most a `read` token (`swk token create devbox --scope
   read --cli-config`). An `operate` token there lets an agent do what the
-  token allows: approve its own prompts, change its approval policy, spawn
-  unconfined sessions and message others (with a header naming the token).
+  token allows: approve its own prompts, spawn unconfined sessions and
+  message others (with a header naming the token), but not loosen an
+  approval policy.
   No token there can enroll a host, remove hosts or mint tokens, and `swk
   token rm devbox` cuts it off without touching the other machines.
 - The coordinator's directory holds the CA key and the admin `cli.json`:

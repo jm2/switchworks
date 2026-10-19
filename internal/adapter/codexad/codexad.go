@@ -351,7 +351,7 @@ func (h *handle) emit(kind string, payload any) {
 }
 
 func (h *handle) caps() model.Caps {
-	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true}
+	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true, Policy: true}
 }
 
 // attached finishes registration after thread/start or thread/resume. It
@@ -404,9 +404,12 @@ func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
 	if err := proc.CheckPinned(h.spec.CwdRoot, h.spec.Cwd); err != nil {
 		return err
 	}
+	h.mu.Lock()
+	policy := h.spec.ApprovalPolicy
+	h.mu.Unlock()
 	resp, err := c.ThreadResume(ctx, codex.ThreadResumeParams{
 		ThreadID:       h.threadID,
-		ApprovalPolicy: h.spec.ApprovalPolicy,
+		ApprovalPolicy: policy,
 		Sandbox:        h.spec.Sandbox,
 		ExcludeTurns:   true,
 		Config:         mcpConfig(h.spec.MCP),
@@ -478,6 +481,18 @@ func (h *handle) Ref() model.NativeRef {
 }
 
 func (h *handle) Caps() model.Caps { return h.caps() }
+
+// SetApprovalPolicy changes the policy the next turn starts with; a turn
+// already running keeps its own.
+func (h *handle) SetApprovalPolicy(_ context.Context, policy string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return adapter.ErrClosed
+	}
+	h.spec.ApprovalPolicy = policy
+	return nil
+}
 
 func (h *handle) Status() string {
 	h.mu.Lock()
@@ -761,6 +776,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	h.mu.Lock()
 	active := h.activeTurn
 	status := h.status
+	policy := h.spec.ApprovalPolicy
 	h.mu.Unlock()
 	switch mode {
 	case adapter.DeliverSteer:
@@ -785,8 +801,11 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		if err != nil {
 			return err
 		}
+		// Every turn carries the policy, so a change (SetApprovalPolicy)
+		// takes effect with the next one.
 		resp, err := c.TurnStart(ctx, codex.TurnStartParams{
 			ThreadID: h.threadID, Input: input, ClientUserMessageID: in.ClientMessageID,
+			ApprovalPolicy: policy,
 		})
 		if err != nil {
 			h.adoptFiles("", paths, err)

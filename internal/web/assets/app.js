@@ -319,6 +319,7 @@ function connectFleet() {
 // ---------- icons (drawn for Switchworks: 24px grid, 1.6px strokes) ----------
 
 const ICONS = {
+  shield: 'M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z',
   menu: 'M4 7h16M4 12h16M4 17h10',
   close: 'M6 6l12 12M18 6L6 18',
   plus: 'M12 5v14M5 12h14',
@@ -430,14 +431,71 @@ function renderSide() {
     const list = hostSessions(host.id, false);
     return h('div', {class: 'host'},
       h('div', {class: 'host-row' + (host.connected ? '' : ' off')},
-        icon('host'), h('span', {class: 'name', text: host.id}),
+        icon('host'), h('span', {class: 'name', text: host.id, title: host.id}),
         host.connected ? iconLink('plus', `New session on ${host.id}`, spawnHref(host.id)) : null),
       list.length ? list.map((s) => h('a', {class: 'sess-row' + (s.id === current.session ? ' on' : ''), href: '#/s/' + s.id},
         h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
-        h('span', {class: 'name', text: s.name}),
+        h('span', {class: 'name', text: s.name, title: s.name}),
         h('span', {class: 'age', text: ago(s.updated_at)})))
         : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
   }) : h('div', {class: 'none', text: 'No hosts enrolled yet'}));
+}
+
+// Sidebar width on wide screens: drag its right edge, or focus it and use
+// the arrow keys (Shift for bigger steps); double-click resets it. Kept
+// per browser.
+const SIDE_MIN = 200;
+const SIDE_DEFAULT = 272;
+const sideMax = () => Math.max(SIDE_MIN, Math.min(640, Math.round(window.innerWidth / 2)));
+const sideWidth = () => document.getElementById('side').getBoundingClientRect().width;
+
+function setSideWidth(px, save) {
+  const w = Math.round(Math.min(sideMax(), Math.max(SIDE_MIN, px)));
+  document.documentElement.style.setProperty('--side-w', w + 'px');
+  const handle = document.getElementById('side-resize');
+  handle.setAttribute('aria-valuenow', w);
+  handle.setAttribute('aria-valuemax', sideMax());
+  if (save) {
+    try { localStorage.setItem('swk-side-w', String(w)); } catch (e) { /* this page only */ }
+  }
+}
+
+function initSideResize() {
+  const handle = document.getElementById('side-resize');
+  handle.setAttribute('aria-valuemin', SIDE_MIN);
+  let stored = 0;
+  try { stored = parseInt(localStorage.getItem('swk-side-w') || '', 10) || 0; } catch (e) { /* default width */ }
+  setSideWidth(stored || SIDE_DEFAULT, false);
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev) => setSideWidth(ev.clientX, false);
+    const done = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', done);
+      handle.removeEventListener('pointercancel', done);
+      document.body.classList.remove('resizing');
+      setSideWidth(sideWidth(), true);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', done);
+    handle.addEventListener('pointercancel', done);
+  });
+  handle.addEventListener('dblclick', () => {
+    setSideWidth(SIDE_DEFAULT, false);
+    try { localStorage.removeItem('swk-side-w'); } catch (e) { /* this page only */ }
+  });
+  handle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 64 : 16;
+    if (e.key === 'ArrowLeft') setSideWidth(sideWidth() - step, true);
+    else if (e.key === 'ArrowRight') setSideWidth(sideWidth() + step, true);
+    else return;
+    e.preventDefault();
+  });
+  // A narrower window may leave less room than the saved width.
+  window.addEventListener('resize', () => { if (!narrow.matches && sideWidth() > sideMax()) setSideWidth(sideWidth(), false); });
 }
 
 function setTop(...kids) {
@@ -566,14 +624,14 @@ function fleetView() {
       const list = hostSessions(host.id, showStopped);
       return h('div', {class: 'host'},
         h('div', {class: 'host-row' + (host.connected ? '' : ' off')},
-          icon('host'), h('span', {class: 'name', text: host.id}),
+          icon('host'), h('span', {class: 'name', text: host.id, title: host.id}),
           h('span', {class: 'hostinfo only-wide', text: host.connected
             ? (host.adapters || []).join(', ')
             : `offline, last seen ${ago(host.last_seen)} ago`}),
           host.connected ? iconLink('plus', `New session on ${host.id}`, spawnHref(host.id)) : null),
         list.length ? list.map((s) => h('a', {class: 'sess-row' + (liveSession(s) ? '' : ' stopped'), href: '#/s/' + s.id},
           h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
-          h('span', {class: 'name', text: s.name}),
+          h('span', {class: 'name', text: s.name, title: s.name}),
           h('span', {class: 'age', text: ago(s.updated_at)}),
           s.preview ? h('span', {class: 'preview', text: s.preview}) : null))
           : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
@@ -679,6 +737,14 @@ function parseRouted(text) {
 }
 
 const defaultDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'];
+// Approval policies a running session can switch between, mildest last.
+const policyLabel = {untrusted: 'Ask first', 'on-request': 'Ask if needed', never: 'Never ask'};
+const policyHelp = {
+  untrusted: 'Ask before running anything not known to be safe',
+  'on-request': 'The agent asks when it needs to go beyond its sandbox',
+  never: 'Never ask; what the sandbox refuses goes back to the agent',
+};
+
 const decisionLabel = {
   accept: 'Allow once', acceptForSession: 'Allow for this session', acceptWithExecpolicyAmendment: 'Always allow this command',
   decline: 'Decline', declineAlways: 'Always decline', cancel: 'Decline and stop',
@@ -765,9 +831,15 @@ function sessionView(id, full) {
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
   const sendBtn = h('button', {type: 'submit', class: 'send', 'aria-label': 'Send', title: 'Send'}, icon('send'));
+  // Approval policy, for sessions that can change it while running.
+  const policy = h('select', {'aria-label': 'Approval policy'},
+    h('option', {value: '', text: 'Approvals', hidden: true}),
+    Object.entries(policyLabel).map(([v, t]) => h('option', {value: v, text: t, title: policyHelp[v]})));
+  const policyChip = h('label', {class: 'chip lead', title: 'Approval policy'}, icon('shield'), policy, icon('chevron', 'chev'));
+  policy.addEventListener('change', setPolicy);
   const picker = imagePicker();
   const form = h('form', {class: 'composer', onsubmit: send}, picker.tray, input,
-    h('div', {class: 'bar'}, picker.btn, h('label', {class: 'chip', title: 'How to deliver'}, mode, icon('chevron', 'chev')), sendBtn));
+    h('div', {class: 'bar'}, picker.btn, h('label', {class: 'chip', title: 'How to deliver'}, mode, icon('chevron', 'chev')), policyChip, sendBtn));
   const dock = h('div', {class: 'dock'}, approvals, form);
   input.addEventListener('paste', picker.onPaste);
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
@@ -806,6 +878,23 @@ function sessionView(id, full) {
     }
   }
 
+  async function setPolicy() {
+    const want = policy.value;
+    const s = S.sessions.get(id);
+    const busy = s && (s.status === 'active' || s.status === 'waiting_approval');
+    policy.disabled = true;
+    try {
+      await api('POST', `/v1/sessions/${encodeURIComponent(id)}/policy`, {approval_policy: want});
+      if (s) s.approval_policy = want;
+      toast(`Approvals: ${policyLabel[want]}${busy && s.harness === 'codex' ? ', from the next turn' : ''}`);
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      policy.disabled = false;
+      renderHead();
+    }
+  }
+
   function renderHead() {
     const s = S.sessions.get(id);
     if (!s) {
@@ -836,6 +925,7 @@ function sessionView(id, full) {
       h('summary', {}, icon('chevron'), h('span', {text: [s.harness, s.model].filter(Boolean).join(', ') + (u ? `, ${human(u.total_tokens)} tokens` : '')})),
       h('dl', {},
         row('Session', s.path), row('Harness', s.harness), row('Model', s.model), row('Folder', s.cwd),
+        row('Approvals', policyLabel[s.approval_policy] || s.approval_policy),
         row('Tokens', u ? `${human(u.input_tokens)} in (${human(u.cached_input_tokens)} cached), ${human(u.output_tokens)} out` : ''),
         row('Started by', parent ? h('a', {href: '#/s/' + parent.id, text: parent.path}) : ''),
         row('Started', kids.length ? kids.map((k, i) => [i ? ', ' : '', h('a', {href: '#/s/' + k.id, text: k.name})]) : ''),
@@ -843,6 +933,9 @@ function sessionView(id, full) {
     info.open = open;
     fill(approvals, ...(s.approvals || []).map((a) => approvalCard(id, a)));
     form.hidden = !liveSession(s);
+    policyChip.hidden = !(s.caps && s.caps.policy);
+    if (!policy.disabled) policy.value = policyLabel[s.approval_policy] ? s.approval_policy : '';
+    policyChip.title = 'Approval policy' + (policyHelp[s.approval_policy] ? ': ' + policyHelp[s.approval_policy] : '');
   }
 
   function add(el) { log.append(el); return el; }
@@ -877,6 +970,9 @@ function sessionView(id, full) {
         }
         break;
       }
+      case 'session.policy':
+        add(h('div', {class: 'sys', text: `Approvals: ${policyLabel[p.approval_policy] || p.approval_policy}`}));
+        break;
       case 'approval.resolved':
         if (p.decision !== 'cleared') add(h('div', {class: 'sys', text: `Approval: ${decisionLabel[p.decision] || p.decision}`}));
         break;
@@ -1022,7 +1118,7 @@ function sessionView(id, full) {
     es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
-      'message.failed', 'usage', 'error', 'warning', 'session.settled'];
+      'message.failed', 'usage', 'error', 'warning', 'session.settled', 'session.policy'];
     for (const k of kinds) {
       es.addEventListener(k, (e) => {
         // EventSource's own connection errors share the name "error" but
@@ -1283,6 +1379,7 @@ function route() {
 
 document.addEventListener('DOMContentLoaded', () => {
   applyTheme(storedTheme());
+  initSideResize();
   document.getElementById('settings').addEventListener('click', (e) => openMenu(e.currentTarget));
   document.getElementById('side-close').addEventListener('click', () => openDrawer(false));
   document.getElementById('scrim').addEventListener('click', () => openDrawer(false));

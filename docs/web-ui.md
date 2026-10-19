@@ -10,7 +10,10 @@ framework, and nothing loaded from anywhere else.
 ## Layout
 
 On a wide screen a sidebar holds New session, Inbox, Traffic and Usage,
-every host with its sessions, a host filter and Settings. On a phone the
+every host with its sessions, a host filter and Settings. Drag its right
+edge to widen it for long session names (or focus the edge and use the
+arrow keys); double-click the edge to reset it. The width is kept per
+browser, and a name that is still cut off shows in full on hover. On a phone the
 same sidebar opens from the menu button, the home screen is the host list,
 and the composer is docked at the bottom of the screen.
 
@@ -30,7 +33,11 @@ system; the choice is kept per browser.
   approvals sit above the composer with the decisions the harness offers.
   The composer delivers on the **next turn**, **steers** the running one,
   **interrupts and sends**, or **asks** with the answer going to your
-  inbox. Interrupt and Stop are in the top bar; session details are at the
+  inbox. Next to that menu, **Approvals** changes the session's approval
+  policy (Ask first, Ask if needed, Never ask) for sessions whose harness
+  can change it while running: Codex from its next turn, Goose and other
+  ACP agents with session modes at once. Loosening it needs a browser
+  signed in with the admin token or an owner token. Interrupt and Stop are in the top bar; session details are at the
   top of the transcript. The image button (or pasting an image) attaches
   up to four PNG, JPEG, WebP or GIF images; images in messages show as
   thumbnails in the transcript, the inbox and the traffic list, and open

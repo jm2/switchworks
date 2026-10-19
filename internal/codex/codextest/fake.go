@@ -80,6 +80,7 @@ type turn struct {
 	stop    chan string // receives "interrupted" or steer text
 	images  [][]byte    // image inputs, read when the turn started
 	content []any       // the input as sent, echoed in the userMessage item
+	policy  string      // the turn's approvalPolicy override, if any
 }
 
 // readInput decodes a turn's UserInput list: the text of the first text
@@ -282,7 +283,7 @@ func (s *server) handle(line []byte) {
 			return
 		}
 		s.turnSeq++
-		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4), images: images, content: content}
+		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4), images: images, content: content, policy: str("approvalPolicy")}
 		s.turns[tid] = t
 		s.mu.Unlock()
 		s.reply(m.ID, map[string]any{"turn": map[string]any{"id": t.id, "items": []any{}, "status": "inProgress", "error": nil}})
@@ -377,6 +378,8 @@ func (s *server) runTurn(t *turn, text string) {
 		reply = seen
 	case strings.Contains(text, "CRASH"):
 		os.Exit(3)
+	case strings.Contains(text, "POLICY"):
+		reply = "policy: " + t.policy
 	case strings.Contains(text, "APPROVE"):
 		s.note("thread/status/changed", map[string]any{"threadId": t.thread, "status": map[string]any{"type": "active", "activeFlags": []any{"waitingOnApproval"}}})
 		res := s.request("item/commandExecution/requestApproval", map[string]any{
