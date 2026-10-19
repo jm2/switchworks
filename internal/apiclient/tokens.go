@@ -23,6 +23,8 @@ type TokenInfo struct {
 	Created  time.Time `json:"created"`
 	LastUsed time.Time `json:"last_used,omitzero"`
 	Expires  time.Time `json:"expires,omitzero"`
+	// Owner: messages sent with this token reach agents as the owner's.
+	Owner bool `json:"owner,omitempty"`
 }
 
 // NewToken is a token just created: the only time its secret is shown.
@@ -36,12 +38,24 @@ type CreateTokenRequest struct {
 	Name       string `json:"name"`
 	Scope      string `json:"scope"`
 	TTLSeconds int64  `json:"ttl_seconds,omitempty"` // 0: never expires
+	Owner      bool   `json:"owner,omitempty"`
 }
 
 // CreateToken creates a named API token with a scope (ttl 0: no expiry).
 func (c *Client) CreateToken(ctx context.Context, name, scope string, ttl time.Duration) (NewToken, error) {
+	return c.CreateTokenWith(ctx, CreateTokenRequest{Name: name, Scope: scope, TTLSeconds: int64(ttl / time.Second)})
+}
+
+// CreateTokenWith creates an API token as req describes.
+func (c *Client) CreateTokenWith(ctx context.Context, req CreateTokenRequest) (NewToken, error) {
 	var out NewToken
-	return out, c.do(ctx, "POST", "/v1/tokens", CreateTokenRequest{Name: name, Scope: scope, TTLSeconds: int64(ttl / time.Second)}, &out)
+	return out, c.do(ctx, "POST", "/v1/tokens", req, &out)
+}
+
+// SetTokenOwner marks a token (by name or id) as the owner's, or not.
+func (c *Client) SetTokenOwner(ctx context.Context, ref string, owner bool) (TokenInfo, error) {
+	var out TokenInfo
+	return out, c.do(ctx, "POST", "/v1/tokens/"+url.PathEscape(ref)+"/owner", map[string]bool{"owner": owner}, &out)
 }
 
 // Tokens lists the API tokens.

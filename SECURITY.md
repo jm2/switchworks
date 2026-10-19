@@ -29,11 +29,12 @@ or tailnet:
 - An agent that can run commands as the node's user can read that node's key and session
   tokens, and any `cli.json` there; harness sandboxes limit writes and network, not reads.
   See the trust model in [`docs/messaging.md`](docs/messaging.md#trust-model).
-- The admin token is kept off every machine where agents run (in a password manager, or on
-  one trusted machine). Machines with agents carry at most a `read` or `operate` API token
-  (`swk token create`), which cannot enroll or remove hosts or manage tokens, and can be
-  revoked on its own. An `operate` token can still spawn sessions with any options on any
-  host, which is as much as a person at that CLI can do.
+- The admin token and owner tokens are kept off every machine where agents run (in a password
+  manager, or on devices without agents). Machines with agents carry at most a `read` API
+  token (`swk token create`), which only looks. An `operate` token there would let an agent do
+  what a person at that CLI can: approve prompts, spawn sessions with any options on any host
+  and send messages, which reach other agents with a header naming the token rather than as
+  the owner's.
 - The coordinator's directory (CA key, `coordinator.json`, the admin `cli.json`) is readable
   by anything running as its user. Do not run agents as that user on the coordinator's
   machine. A rootless container under the same user is not a boundary (`podman unshare` and
@@ -54,6 +55,9 @@ or tailnet:
 - The fleet tools: whether an agent can escape the guards in `coordinator.json` (spawn
   confinement, hop limits, rate limits, steer/stop/read rules) or pose as a person or another
   session.
+- Message provenance: whether a message can reach an agent without a header (as the owner's)
+  other than from the admin token, an owner token or a browser one of those signed in, or carry
+  a credential (`via=`) other than the one it was sent with.
 - The node's local API used by `swk mcp`, and files the node writes into workspaces (agy's
   `.agents/mcp_config.json`, `.git/info/exclude`).
 - Image attachments: whether an agent can make its node read a file outside its working

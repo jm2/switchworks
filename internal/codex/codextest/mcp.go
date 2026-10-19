@@ -173,7 +173,7 @@ func (m *mcpState) client(thread string) (*mcpClient, error) {
 
 var (
 	callRe = regexp.MustCompile(`(?m)^CALL (\S+)\s*(.*)$`)
-	askRe  = regexp.MustCompile(`^\[switchworks msg=(\S+) from=(\S+) kind=ask`)
+	askRe  = regexp.MustCompile(`^\[switchworks msg=(\S+) from=(\S+)(?: via=\S+)? kind=ask`)
 )
 
 // toolCall runs one MCP tool call inside a turn, emitting the mcpToolCall

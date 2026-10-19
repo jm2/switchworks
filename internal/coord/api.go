@@ -73,6 +73,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/tokens", scopeAdmin, s.handleCreateToken},
 		{"GET /v1/tokens", scopeAdmin, s.handleListTokens},
 		{"DELETE /v1/tokens/{id}", scopeAdmin, s.handleDeleteToken},
+		{"POST /v1/tokens/{id}/owner", scopeAdmin, s.handleTokenOwner},
 	}
 }
 
@@ -358,7 +359,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("unknown mode %q (queue, steer, interrupt)", body.Mode))
 		return
 	}
-	from, err := userSender(body.From)
+	from, err := s.userSender(r.Context(), body.From)
 	if err != nil {
 		writeErr(w, 400, err)
 		return
@@ -398,7 +399,9 @@ func routeStatus(err error) int {
 }
 
 // userSender validates a "user:<name>" sender (default user:cli).
-func userSender(from string) (sender, error) {
+// userSender is a person's sender: the name they give, and the credential
+// the request was made with.
+func (s *Server) userSender(ctx context.Context, from string) (sender, error) {
 	if from == "" {
 		from = "user:cli"
 	}
@@ -408,7 +411,8 @@ func userSender(from string) (sender, error) {
 	if err := model.ValidateName("user", strings.TrimPrefix(from, "user:")); err != nil {
 		return sender{}, err
 	}
-	return sender{user: from}, nil
+	via, owner, _ := s.credential(ctx)
+	return sender{user: from, via: via, owner: owner}, nil
 }
 
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +421,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	from, err := userSender(body.From)
+	from, err := s.userSender(r.Context(), body.From)
 	if err != nil {
 		writeErr(w, 400, err)
 		return
@@ -484,7 +488,7 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	from, err := userSender(body.From)
+	from, err := s.userSender(r.Context(), body.From)
 	if err != nil {
 		writeErr(w, 400, err)
 		return

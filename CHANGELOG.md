@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Messages from people name their credential** — A person's message reached agents without a
+  header whichever token sent it, so an agent that read an `operate` token on its host could
+  send messages that looked like its owner's. Messages and first prompts now carry the
+  credential they were sent with (`via=token:<name>`), and only the admin token's and owner
+  tokens' plain messages arrive without a header. Mark the tokens on your own devices with
+  `swk token owner <name> on` (or `swk token create --owner`), and keep owner tokens off every
+  host where agents run; those hosts should carry at most a `read` token.
+
 ## [0.1.1] — 2026-10-18
 
 ### Fixed

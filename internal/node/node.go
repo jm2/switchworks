@@ -84,6 +84,8 @@ const compactBytes = 1 << 20
 type queuedMsg struct {
 	ID      string `json:"id"`
 	From    string `json:"from"`
+	Via     string `json:"via,omitempty"`   // a person's credential
+	Owner   bool   `json:"owner,omitempty"` // it is the owner's: no header
 	Text    string `json:"text"`
 	Kind    string `json:"kind,omitempty"`
 	ReplyTo string `json:"reply_to,omitempty"`
@@ -676,7 +678,8 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	s.mu.Lock()
 	s.h = h
 	if strings.TrimSpace(spec.Prompt) != "" {
-		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Text: spec.Prompt, Attachments: metas})
+		s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "user:spawn", Via: cmd.PromptVia, Owner: cmd.PromptOwner,
+			Text: spec.Prompt, Attachments: metas})
 	}
 	ref, sp := s.rec.NativeRef, s.rec.Spec
 	s.mu.Unlock()
@@ -749,18 +752,24 @@ func quoteHeaders(text string) string {
 }
 
 // formatMessage renders a queued message for the agent. Plain messages
-// from people are passed through; everything else carries a one-line header
-// saying who sent it and how to answer.
+// sent with the owner's credential are passed through; everything else,
+// including a person's message sent with any other token (which an agent
+// on a host holding it could send too), carries a one-line header saying
+// who sent it, with which credential, and how to answer.
 func formatMessage(m queuedMsg) string {
 	kind := m.Kind
 	if kind == "" {
 		kind = model.MsgNotify
 	}
-	if strings.HasPrefix(m.From, "user:") && kind == model.MsgNotify {
+	if strings.HasPrefix(m.From, "user:") && kind == model.MsgNotify && m.Owner {
 		return m.Text
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%s msg=%s from=%s kind=%s", version.Slug, m.ID, m.From, kind)
+	fmt.Fprintf(&b, "[%s msg=%s from=%s", version.Slug, m.ID, m.From)
+	if m.Via != "" {
+		fmt.Fprintf(&b, " via=%s", m.Via)
+	}
+	fmt.Fprintf(&b, " kind=%s", kind)
 	if m.ReplyTo != "" {
 		fmt.Fprintf(&b, " re=%s", m.ReplyTo)
 	}
@@ -830,7 +839,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		s.rec.Seen = s.rec.Seen[len(s.rec.Seen)-seenCap:]
 	}
 	s.mu.Unlock()
-	msg := queuedMsg{ID: m.ID, From: m.From, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo, Attachments: model.MetaOnly(images)}
+	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo,
+		Attachments: model.MetaOnly(images)}
 	unseen := func() {
 		s.mu.Lock()
 		for i, id := range s.rec.Seen {

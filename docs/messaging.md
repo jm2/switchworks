@@ -68,14 +68,31 @@ what is 6x7?
 ```
 
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
-notice), `system` (delivery failures and expiry). Plain messages from people
-(`swk send`) are passed through without a header. A line in a relayed
-message that looks like a header is prefixed with `(quoted) `, so an agent
-cannot pass its text off as a person's.
+notice), `system` (delivery failures and expiry). A line in a relayed
+message that looks like a header is prefixed with `(quoted) `, so no
+sender can put a header of its own in its text.
 
-A spawned session's first prompt arrives the same way: from a person it is
-passed through; from an agent's `fleet_spawn` it is a `kind=notify` message
-from that agent.
+Messages from people name the credential they were sent with, which the
+coordinator takes from the request (the `from=user:<name>` part is only
+the name the client gave):
+
+```
+[switchworks msg=01M41… from=user:cli via=token:devbox kind=notify]
+run the tests again
+```
+
+Only a plain message (`kind=notify`) sent with the admin token or an
+**owner** token (`swk token create --owner`, `swk token owner`), or from a
+browser one of those signed in, is passed through without a header. So an
+agent can take a message without a header as its owner's, as long as no
+owner token is readable on a host where agents run: an agent that reads a
+token can send with it. Nodes from before 0.1.2 pass every plain message
+from a person through without a header; a node from 0.1.2 under an older
+coordinator puts a header (without `via`) on all of them.
+
+A spawned session's first prompt arrives the same way: from a person it
+follows the same rule; from an agent's `fleet_spawn` it is a `kind=notify`
+message from that agent.
 
 A message with images says so under its header, and the images are part
 of the same turn's input:
@@ -281,8 +298,12 @@ start.
   create`, in a `cli.json`) or a web sign-in. The admin token can do
   anything; an API token, and a browser it signed in, only what its scope
   allows: `read` looks, `operate` also sends, asks, replies, approves,
-  interrupts, stops and spawns, `admin` also enrolls and removes hosts and
-  manages tokens. A person's spawn is not confined by the guards below.
+  interrupts, stops, spawns and changes approval policies, `admin` also
+  enrolls and removes hosts and manages tokens. A person's spawn is not
+  confined by the guards below. Messages carry the credential they were
+  sent with; only the admin token's and owner tokens' plain messages reach
+  agents without a header (see
+  [What the receiving agent sees](#what-the-receiving-agent-sees)).
 - **Nodes** hold a certificate for one host. A node can only report on and
   run sessions of its own host. `swk hosts rm <host>` revokes a host's
   certificate, and enrolling a host again replaces it.
@@ -299,12 +320,14 @@ node and its agents as a separate user. In particular:
 
 - Do not put the admin token on a machine where agents run: an agent that
   reads it, sandboxed or not, can get it to one that can use it, and the
-  admin token controls the fleet. Give those machines a `read` or
-  `operate` token instead (`swk token create devbox --scope operate
-  --cli-config`). An agent that reads that can still do what the token
-  allows, including spawning unconfined sessions with `operate`, but it
-  cannot enroll a host of its own, remove hosts or mint tokens, and
-  `swk token rm devbox` cuts it off without touching the other machines.
+  admin token controls the fleet. The same goes for owner tokens: an agent
+  holding one can send messages that reach other agents as yours. Give
+  those machines at most a `read` token (`swk token create devbox --scope
+  read --cli-config`). An `operate` token there lets an agent do what the
+  token allows: approve its own prompts, change its approval policy, spawn
+  unconfined sessions and message others (with a header naming the token).
+  No token there can enroll a host, remove hosts or mint tokens, and `swk
+  token rm devbox` cuts it off without touching the other machines.
 - The coordinator's directory holds the CA key and the admin `cli.json`:
   do not run agents as the coordinator's user on its machine. Running the
   coordinator in a rootless Podman container under that same user does not

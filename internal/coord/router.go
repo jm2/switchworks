@@ -89,6 +89,11 @@ var (
 type sender struct {
 	sess *model.Session
 	user string // "user:<name>"
+	// via names a person's credential ("admin" or "token:<name>"), and
+	// owner says whether it is the owner's; set from the request, never
+	// from what the client says.
+	via   string
+	owner bool
 }
 
 func (s sender) addr() string {
@@ -624,7 +629,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	now := time.Now().UTC()
 	var out []model.Message
 	for _, t := range targets {
-		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(),
+		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
 			To: args.To, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		if t.sess != nil {
@@ -690,7 +695,8 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 		}
 	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
-		ID: m.ID, From: m.From, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo, Attachments: images}}, 30*time.Second)
+		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
+		Attachments: images}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -949,7 +955,7 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		return fleet.ReplyResult{}, errors.New("only the recipient of an ask can reply to it")
 	}
 	now := time.Now().UTC()
-	rep := model.Message{ID: ulid.New(), Kind: model.MsgReply, From: from.addr(), FromSession: from.sessionID(),
+	rep := model.Message{ID: ulid.New(), Kind: model.MsgReply, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
 		To: ask.From, ReplyTo: ask.ID, Text: args.Text, Hops: ask.Hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	switch {

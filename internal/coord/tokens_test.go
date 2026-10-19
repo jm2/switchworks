@@ -66,6 +66,7 @@ func TestEveryRouteDeclaresScope(t *testing.T) {
 		"POST /v1/tokens":              scopeAdmin,
 		"GET /v1/tokens":               scopeAdmin,
 		"DELETE /v1/tokens/{id}":       scopeAdmin,
+		"POST /v1/tokens/{id}/owner":   scopeAdmin,
 	} {
 		if scopes[pattern] != want {
 			t.Errorf("%s: scope %s, want %s", pattern, scopes[pattern], want)
