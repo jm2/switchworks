@@ -135,7 +135,13 @@ enabled = true
 "~/.ssh" = "deny"
 ```
 
-and name it in `node.json`:
+Those are the Linux paths. On macOS, deny
+`~/Library/Application Support/swk` in place of `~/.config/swk`. On
+Windows, deny `~/AppData/Roaming/swk`, `~/AppData/Roaming/GitHub CLI` and
+`~/AppData/Roaming/Block/goose` in place of the three `~/.config` entries
+(write `~/` and forward slashes).
+
+Then name the profile in `node.json`:
 
 ```json
 "codex": {"permissions": "swk"}
@@ -148,8 +154,9 @@ and `danger-full-access` sessions are unchanged. A profile `config.toml`
 does not define fails the spawn or resume ("refers to undefined
 profile"), so define it before setting `codex.permissions` and restarting
 the node. Check a profile with
-`codex sandbox -P swk -- <command>`, or through Switchworks with
-`swk dev run --codex-permissions swk`.
+`codex sandbox -P swk -- ls ~/.ssh`, which should fail, or through
+Switchworks with
+`swk dev run --codex-permissions swk "Run ls ~/.ssh and say whether it worked"`.
 
 As of Codex 0.155 to 0.161:
 
