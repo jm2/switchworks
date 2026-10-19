@@ -104,6 +104,77 @@ Anthropic endpoints have been exercised only through the mock provider's
 Anthropic Messages emulation (`swk dev mock-provider`), not with real keys.
 Keys in `node.json` are plain text (0600).
 
+## Codex: network without exposing credentials
+
+Codex's `workspace-write` sandbox limits writes and, by default, the
+network. It does not limit reads: a sandboxed command can read your home
+directory, including Codex's `config.toml` (provider keys), `~/.ssh`, the
+GitHub CLI's token and Switchworks's `cli.json` and node key.
+`[sandbox_workspace_write] network_access = true` turns the network on
+with all of that readable, so one prompt-injected command can send any of
+it out. Don't use it.
+
+A Codex permission profile can turn the network on and deny reads of
+chosen paths. Define one in `config.toml` (Codex requires
+`default_permissions` once a profile exists):
+
+```toml
+default_permissions = "swk"  # before any table
+
+[permissions.swk]
+extends = ":workspace"
+
+[permissions.swk.network]
+enabled = true
+
+[permissions.swk.filesystem]
+"~/.codex/config.toml" = "deny"
+"~/.config/gh" = "deny"
+"~/.config/goose" = "deny"
+"~/.config/swk" = "deny"
+"~/.ssh" = "deny"
+```
+
+Those are the Linux paths. On macOS, deny
+`~/Library/Application Support/swk` in place of `~/.config/swk`. On
+Windows, deny `~/AppData/Roaming/swk`, `~/AppData/Roaming/GitHub CLI` and
+`~/AppData/Roaming/Block/goose` in place of the three `~/.config` entries
+(write `~/` and forward slashes).
+
+Then name the profile in `node.json`:
+
+```json
+"codex": {"permissions": "swk"}
+```
+
+Codex ignores profiles for a thread given a sandbox mode, which is how
+Switchworks starts and resumes sessions. With `codex.permissions` set,
+`workspace-write` sessions run under that profile instead; `read-only`
+and `danger-full-access` sessions are unchanged. A profile `config.toml`
+does not define fails the spawn or resume ("refers to undefined
+profile"), so define it before setting `codex.permissions` and restarting
+the node. Check a profile with
+`codex sandbox -P swk -- ls ~/.ssh`, which should fail, or through
+Switchworks with
+`swk dev run --codex-permissions swk "Run ls ~/.ssh and say whether it worked"`.
+
+As of Codex 0.155 to 0.161:
+
+- On Linux, bubblewrap fails when a profile denies more than one file
+  ("Can't write data to file … Bad file descriptor"). Deny directories
+  and one file. Don't deny `~/.codex` itself: the Codex binary and its
+  helpers live there.
+- On Windows, deny rules need the elevated sandbox
+  (`[windows] sandbox = "elevated"`); the default sandbox refuses to run
+  commands under a profile that has them. A missing deny path is created
+  as a folder, so list only paths that exist.
+- Codex before 0.161 may drop a profile's deny rules for a command you
+  approve to run outside the sandbox.
+- With the GitHub CLI's config and `~/.ssh` denied, `gh` and `git push`
+  fail inside the sandbox. Approve pushes instead (approval
+  `on-request`), or give the agents a token of their own, scoped to their
+  repositories, in a path the profile leaves readable.
+
 ## Images and the vision probe
 
 Messages and first prompts can carry images ([messaging.md](messaging.md#images)

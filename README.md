@@ -626,7 +626,10 @@ the node's `node.json` (in `~/.config/swk/node/` on Linux,
 and providers, fleet tools, and what each supports.
 
 `node.json` also sets spawn defaults (`default_approval_policy`,
-`default_sandbox`) and the harness binaries (`codex.bin`, `agy.bin`, ...).
+`default_sandbox`), the harness binaries (`codex.bin`, `agy.bin`, ...),
+and `codex.permissions`: a Codex permission profile for `workspace-write`
+sessions, which can give them the network while denying reads of your
+credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)).
 
 ### Trying it without spending tokens
 

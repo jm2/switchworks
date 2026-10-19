@@ -36,6 +36,12 @@ type Config struct {
 	Stderr io.Writer         // app-server logs
 	Tap    jsonrpc.Tap       // raw protocol capture
 	Logf   func(format string, args ...any)
+
+	// Permissions names a permission profile in codex's config.toml
+	// ([permissions.<id>]) for workspace-write sessions to run under in
+	// place of codex's legacy workspace-write sandbox. Codex ignores a
+	// profile, and its deny rules, for a thread given a sandbox mode.
+	Permissions string
 }
 
 // Adapter manages one app-server process and its threads.
@@ -258,12 +264,14 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 	if err != nil {
 		return nil, err
 	}
+	sandbox, perms := a.sandboxFor(spec.Sandbox)
 	resp, err := c.ThreadStart(ctx, codex.ThreadStartParams{
 		Cwd:            spec.Cwd,
 		Model:          spec.Model,
 		ModelProvider:  spec.Provider,
 		ApprovalPolicy: spec.ApprovalPolicy,
-		Sandbox:        spec.Sandbox,
+		Sandbox:        sandbox,
+		Permissions:    perms,
 		ServiceName:    "switchworks",
 		Config:         mcpConfig(spec.MCP),
 	})
@@ -280,6 +288,15 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 		}
 	}
 	return h, nil
+}
+
+// sandboxFor returns the sandbox mode and permission profile to send for a
+// session's sandbox: the configured profile for workspace-write, if any.
+func (a *Adapter) sandboxFor(mode string) (sandbox, permissions string) {
+	if mode == "workspace-write" && a.cfg.Permissions != "" {
+		return "", a.cfg.Permissions
+	}
+	return mode, ""
 }
 
 // Resume reattaches to an existing thread.
@@ -407,10 +424,12 @@ func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
 	h.mu.Lock()
 	policy := h.spec.ApprovalPolicy
 	h.mu.Unlock()
+	sandbox, perms := h.a.sandboxFor(h.spec.Sandbox)
 	resp, err := c.ThreadResume(ctx, codex.ThreadResumeParams{
 		ThreadID:       h.threadID,
 		ApprovalPolicy: policy,
-		Sandbox:        h.spec.Sandbox,
+		Sandbox:        sandbox,
+		Permissions:    perms,
 		ExcludeTurns:   true,
 		Config:         mcpConfig(h.spec.MCP),
 	})

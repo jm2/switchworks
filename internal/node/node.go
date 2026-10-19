@@ -51,6 +51,11 @@ type Config struct {
 		Bin  string   `json:"bin,omitempty"`
 		Home string   `json:"home,omitempty"` // CODEX_HOME override
 		Args []string `json:"args,omitempty"`
+		// Permissions names a permission profile in codex's config.toml
+		// for workspace-write sessions, e.g. one that turns the network on
+		// but denies reads of credentials. Without it they get codex's
+		// legacy workspace-write sandbox, which ignores profiles.
+		Permissions string `json:"permissions,omitempty"`
 	} `json:"codex"`
 	Agy struct {
 		Bin  string   `json:"bin,omitempty"`

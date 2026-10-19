@@ -27,7 +27,9 @@ or tailnet:
   exposure.
 - `http_listen`, when set, must be a loopback address for a reverse proxy on the same machine.
 - An agent that can run commands as the node's user can read that node's key and session
-  tokens, and any `cli.json` there; harness sandboxes limit writes and network, not reads.
+  tokens, and any `cli.json` there; harness sandboxes limit writes and network, not reads,
+  unless a Codex permission profile denies them
+  ([`docs/harnesses.md`](docs/harnesses.md#codex-network-without-exposing-credentials)).
   See the trust model in [`docs/messaging.md`](docs/messaging.md#trust-model).
 - The admin token and owner tokens are kept off every machine where agents run (in a password
   manager, or on devices without agents). Machines with agents carry at most a `read` API

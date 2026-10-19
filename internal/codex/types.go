@@ -104,11 +104,14 @@ type Thread struct {
 }
 
 type ThreadStartParams struct {
-	Cwd                   string         `json:"cwd,omitempty"`
-	Model                 string         `json:"model,omitempty"`
-	ModelProvider         string         `json:"modelProvider,omitempty"`
-	ApprovalPolicy        string         `json:"approvalPolicy,omitempty"`
-	Sandbox               string         `json:"sandbox,omitempty"`
+	Cwd            string `json:"cwd,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ModelProvider  string `json:"modelProvider,omitempty"`
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
+	// Permissions names a permission profile from config.toml (experimental
+	// API). app-server rejects it together with Sandbox.
+	Permissions           string         `json:"permissions,omitempty"`
 	DeveloperInstructions string         `json:"developerInstructions,omitempty"`
 	ServiceName           string         `json:"serviceName,omitempty"`
 	Config                map[string]any `json:"config,omitempty"`
@@ -132,6 +135,7 @@ type ThreadResumeParams struct {
 	ModelProvider  string         `json:"modelProvider,omitempty"`
 	ApprovalPolicy string         `json:"approvalPolicy,omitempty"`
 	Sandbox        string         `json:"sandbox,omitempty"`
+	Permissions    string         `json:"permissions,omitempty"`
 	ExcludeTurns   bool           `json:"excludeTurns,omitempty"`
 	Config         map[string]any `json:"config,omitempty"`
 }

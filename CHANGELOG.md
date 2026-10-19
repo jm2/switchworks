@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Codex permission profiles** — `codex.permissions` in `node.json` names a Codex permission
+  profile that `workspace-write` sessions run under, on start and on resume. A profile can turn
+  the sandbox's network on while denying reads of credentials; Codex ignores profiles for a
+  thread given a sandbox mode, so they had no effect on Switchworks sessions before.
+  `swk dev run --codex-permissions` does the same for one turn.
+
+### Security
+
+- **Sandbox network and credentials** — The docs now warn against
+  `[sandbox_workspace_write] network_access = true`, which lets sandboxed commands send out
+  anything they can read (provider keys, SSH keys, the GitHub CLI's token, Switchworks tokens),
+  and describe a permission profile that denies those reads instead.
+
 ## [0.1.2] — 2026-10-18
 
 ### Added
