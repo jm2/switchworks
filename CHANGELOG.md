@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Harness tabs in Windows Terminal** — On Windows the node started codex, goose and agy with
+  a console of their own, which Windows Terminal (the default terminal) showed as a tab in your
+  window; closing it ended the harness. They now run with a hidden console.
+- **Codex app-server restart loop** — An app-server that exits soon after it starts is restarted
+  after growing waits and left down after 8 restarts in a row, instead of every second for
+  good. The node log gives its exit code and how long it ran.
+
 ## [0.1.3] — 2026-10-19
 
 ### Added

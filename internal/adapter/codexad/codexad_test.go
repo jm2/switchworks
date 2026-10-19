@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ func TestMain(m *testing.M) {
 	if codextest.MaybeRun() {
 		return
 	}
+	restartBackoff = time.Millisecond
 	os.Exit(m.Run())
 }
 
@@ -351,6 +353,53 @@ func TestStopWhileAppServerRestarts(t *testing.T) {
 	a.mu.Unlock()
 	if n != 0 || hh.Status() != model.StatusStopped {
 		t.Fatalf("after restart: %d thread(s) registered, status %s", n, hh.Status())
+	}
+}
+
+// An app-server that keeps exiting right after it starts is restarted with
+// growing waits, then left down; the log gives each exit's code.
+func TestQuickExitsGiveUp(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	a := New(Config{Bin: os.Args[0], Args: []string{"app-server"}, Env: codextest.Env(t.TempDir()),
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			logs = append(logs, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		}})
+	t.Cleanup(func() { a.Close() })
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "idle", status(model.StatusIdle))
+	for i := 1; i <= maxRestarts+1; i++ {
+		from := len(col.snapshot())
+		if err := h.Deliver(ctx, adapter.Input{Text: "CRASH now"}, adapter.DeliverQueue); err != nil {
+			t.Fatalf("crash %d: %v", i, err)
+		}
+		if i <= maxRestarts {
+			col.waitFor(t, from, fmt.Sprintf("resume after crash %d", i), status(model.StatusIdle))
+		}
+	}
+	col.waitFor(t, 0, "giving up", func(e adapter.Event) bool {
+		p, ok := e.Payload.(model.SessionStatus)
+		return ok && p.Status == model.StatusError && strings.Contains(p.Detail, "keeps exiting")
+	})
+	time.Sleep(100 * time.Millisecond)
+	if _, ok := a.Info(); ok {
+		t.Fatal("app-server was restarted after giving up")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	all := strings.Join(logs, "\n")
+	if n := strings.Count(all, "codex app-server exited (exit code 3 after "); n != maxRestarts+1 {
+		t.Fatalf("%d exits logged with their code:\n%s", n, all)
+	}
+	if !strings.Contains(all, fmt.Sprintf("%d times in a row within %s of starting; not restarting it", maxRestarts+1, quickExit)) {
+		t.Fatalf("no give-up line:\n%s", all)
 	}
 }
 

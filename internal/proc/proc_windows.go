@@ -30,6 +30,7 @@ const (
 	processSetQuota                   = 0x0100
 	processTerminate                  = 0x0001
 	createNewProcessGroup             = 0x00000200
+	createNoWindow                    = 0x08000000
 )
 
 type ioCounters struct {
@@ -67,8 +68,13 @@ type platformState struct {
 	released bool
 }
 
+// setupCmd gives the child a console with no window. The node runs as
+// swkw.exe, which has none, so a console program would otherwise get a new
+// one: with Windows Terminal as the default terminal it opens as a tab in the
+// user's window, and closing that tab ends the harness. The child's own
+// console programs share the hidden console.
 func setupCmd(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNewProcessGroup | createNoWindow}
 }
 
 // attach puts the child in a kill-on-close job. There is a short window
