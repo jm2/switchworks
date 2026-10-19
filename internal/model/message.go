@@ -41,11 +41,16 @@ type Message struct {
 	Kind        string `json:"kind"`
 	From        string `json:"from"`                   // session path, "user:<name>" or "swk"
 	FromSession string `json:"from_session,omitempty"` // sender session id
-	To          string `json:"to"`                     // the address as given
-	ToSession   string `json:"to_session,omitempty"`   // resolved target session id
-	ToPath      string `json:"to_path,omitempty"`
-	ToUser      string `json:"to_user,omitempty"` // "user:<name>" for the human inbox
-	Text        string `json:"text"`
+	// Via names the credential a person sent it with ("admin" or
+	// "token:<name>"), and Owner says whether that is the owner's; the
+	// coordinator sets both from the request.
+	Via       string `json:"via,omitempty"`
+	Owner     bool   `json:"owner,omitempty"`
+	To        string `json:"to"`                   // the address as given
+	ToSession string `json:"to_session,omitempty"` // resolved target session id
+	ToPath    string `json:"to_path,omitempty"`
+	ToUser    string `json:"to_user,omitempty"` // "user:<name>" for the human inbox
+	Text      string `json:"text"`
 	// Attachments are images sent with the message. A stored record holds
 	// their metadata only (no Data); the coordinator keeps the bytes in its
 	// attachment store while they are needed (see docs/messaging.md).

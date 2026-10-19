@@ -107,13 +107,15 @@ func TestScopedCLI(t *testing.T) {
 	}
 	w := watch(op, sess.ID)
 	defer w.cancel()
-	i := w.waitFor(t, "first reply", 0, agentSaid("echo: hello"))
+	// devbox-cli is not an owner token: its prompt arrives with a header
+	// naming it, so an agent can tell it from the owner's own messages.
+	i := w.waitFor(t, "first reply", 0, agentSaidAll("from=user:spawn via=token:devbox-cli kind=notify]", "hello"))
 	i = w.waitFor(t, "first turn done", i, turnEnded("completed"))
 	waitStatus(t, op, sess.ID, model.StatusIdle)
 	if _, err := op.Send(ctx, sess.ID, "again", "queue", ""); err != nil {
 		t.Fatal(err)
 	}
-	w.waitFor(t, "second reply", i, agentSaid("echo: again"))
+	w.waitFor(t, "second reply", i, agentSaidAll("via=token:devbox-cli kind=notify]", "again"))
 	_, err = op.EnrollToken(ctx, "intruder", time.Hour)
 	wantForbidden(t, "enroll token with an operate token", err)
 	_, err = op.CreateToken(ctx, "escalate", "admin", 0)
@@ -142,7 +144,7 @@ func TestScopedCLI(t *testing.T) {
 	}
 	rw := watch(rc, sess.ID)
 	defer rw.cancel()
-	rw.waitFor(t, "stream with a read token", 0, agentSaid("echo: again"))
+	rw.waitFor(t, "stream with a read token", 0, agentSaidAll("via=token:devbox-cli", "again"))
 	_, err = rc.Send(ctx, sess.ID, "nope", "queue", "")
 	wantForbidden(t, "send with a read token", err)
 	wantForbidden(t, "stop with a read token", rc.Stop(ctx, sess.ID))

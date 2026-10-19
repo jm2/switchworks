@@ -982,8 +982,11 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 		return model.Session{}, err
 	}
 	s.publishSession(sess.ID)
-	res, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID,
-		Spawn: &wire.SpawnCmd{Session: sess, Spec: spec}}, 2*time.Minute)
+	sc := &wire.SpawnCmd{Session: sess, Spec: spec}
+	// A person's first prompt carries their credential, like their
+	// messages; an agent's arrives as its own routed message.
+	sc.PromptVia, sc.PromptOwner, _ = s.credential(ctx)
+	res, err := s.command(ctx, spec.Host, wire.Cmd{Op: wire.OpSpawn, Session: sess.ID, Spawn: sc}, 2*time.Minute)
 	if err != nil {
 		if rej := (*errRejected)(nil); errors.As(err, &rej) {
 			// The node refused (e.g. no such cwd), so nothing ran: forget

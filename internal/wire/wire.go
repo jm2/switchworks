@@ -132,6 +132,11 @@ type Cmd struct {
 type SpawnCmd struct {
 	Session model.Session   `json:"session"`
 	Spec    model.SpawnSpec `json:"spec"`
+	// PromptVia and PromptOwner describe the credential of a person's
+	// spawn, for its first prompt (see MessageCmd). Here, not in Spec, so a
+	// client cannot set them.
+	PromptVia   string `json:"prompt_via,omitempty"`
+	PromptOwner bool   `json:"prompt_owner,omitempty"`
 }
 
 // SpawnResult answers OpSpawn.
@@ -145,8 +150,12 @@ type SpawnResult struct {
 }
 
 type MessageCmd struct {
-	ID      string `json:"id"`
-	From    string `json:"from"`
+	ID   string `json:"id"`
+	From string `json:"from"`
+	// Via and Owner: see model.Message. A message from a person reaches
+	// the agent without a header only when Owner is set.
+	Via     string `json:"via,omitempty"`
+	Owner   bool   `json:"owner,omitempty"`
 	Text    string `json:"text"`
 	Mode    string `json:"mode,omitempty"` // queue (default) | steer | interrupt
 	Kind    string `json:"kind,omitempty"` // notify | ask | reply | done | system

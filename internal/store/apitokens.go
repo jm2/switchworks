@@ -95,6 +95,19 @@ func (s *FileStore) DeleteAPIToken(id string) error {
 	return nil
 }
 
+func (s *FileStore) SetAPITokenOwner(id string, owner bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.apiToks[id]
+	if !ok || t.Expired(time.Now()) {
+		return fmt.Errorf("token %q: %w", id, ErrNotFound)
+	}
+	t.Owner = owner
+	s.apiToks[id] = t
+	s.dirty = true
+	return s.saveLocked()
+}
+
 func (s *FileStore) TouchAPIToken(id string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
