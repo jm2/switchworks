@@ -165,7 +165,9 @@ func (a *Adapter) watch(c *codex.Client) {
 	}
 	// One that keeps exiting right after it starts would otherwise be
 	// restarted every second for good: wait longer each time, and give up
-	// after as many as for failed starts.
+	// after as many as for failed starts. A session started later still
+	// gets one more app-server; if that one exits as quickly, it is not
+	// restarted either.
 	if quick > maxRestarts {
 		a.cfg.Logf("codex app-server exited (%s), %d times in a row within %s of starting; not restarting it", how, quick, quickExit)
 		for _, h := range live {
