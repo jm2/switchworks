@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Longer Codex deny list** — The permission-profile docs now list the other credential stores a
+  sandboxed command can read (other agents' logins, package and cloud tokens, GnuPG, keyrings,
+  browser profiles, Codex's own transcripts), note that Linux needs Codex 0.163, and explain why
+  Windows nodes stay without sandbox network for now.
+
 ## [0.1.4] — 2026-10-19
 
 ### Fixed
