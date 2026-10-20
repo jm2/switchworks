@@ -129,17 +129,37 @@ enabled = true
 
 [permissions.swk.filesystem]
 "~/.codex/config.toml" = "deny"
+"~/.codex/auth.json" = "deny"
+"~/.codex/history.jsonl" = "deny"
+"~/.codex/sessions" = "deny"
+"~/.codex/archived_sessions" = "deny"
 "~/.config/gh" = "deny"
 "~/.config/goose" = "deny"
 "~/.config/swk" = "deny"
 "~/.ssh" = "deny"
+"~/.claude" = "deny"
+"~/.claude.json" = "deny"
+"~/.gemini" = "deny"
+"~/.gnupg" = "deny"
 ```
 
+That short list is not enough on its own. Deny every credential store on
+the host: other agents' logins (Claude Code's `~/.claude` and
+`~/.claude.json`, agy's `~/.gemini` and `~/.antigravity`), package and
+cloud tokens (`~/.config/copr`, `~/.npmrc`, `~/.pypirc`,
+`~/.git-credentials`, `~/.netrc`, `~/.cargo/credentials.toml`, `~/.aws`,
+`~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker`), GnuPG and
+`~/.password-store`, the keyring (`~/.local/share/keyrings`), and browser
+profiles, which hold signed-in cookies. On Linux and macOS a deny path
+that doesn't exist yet is fine, so list the ones a later login would
+create too. Codex's own transcripts (`sessions`, `history.jsonl`) can
+hold pasted secrets. Don't deny `~/.codex` itself: the Codex binary and
+its helpers live there.
+
 Those are the Linux paths. On macOS, deny
-`~/Library/Application Support/swk` in place of `~/.config/swk`. On
-Windows, deny `~/AppData/Roaming/swk`, `~/AppData/Roaming/GitHub CLI` and
-`~/AppData/Roaming/Block/goose` in place of the three `~/.config` entries
-(write `~/` and forward slashes).
+`~/Library/Application Support/swk` in place of `~/.config/swk`, and the
+apps' folders under `~/Library/Application Support` (Claude, Antigravity,
+Code, browsers) plus `~/Library/Cookies`.
 
 Then name the profile in `node.json`:
 
@@ -153,21 +173,35 @@ Switchworks starts and resumes sessions. With `codex.permissions` set,
 and `danger-full-access` sessions are unchanged. A profile `config.toml`
 does not define fails the spawn or resume ("refers to undefined
 profile"), so define it before setting `codex.permissions` and restarting
-the node. Check a profile with
-`codex sandbox -P swk -- ls ~/.ssh`, which should fail, or through
-Switchworks with
+the node. Restart the node after changing the list, so running sessions
+pick it up.
+
+Check a profile from inside the sandbox, and check a file inside each
+denied directory as well as the directory:
+`codex sandbox -- sh -c 'head -c1 ~/.claude.json >/dev/null 2>&1 && echo READABLE'`
+should print nothing. Through Switchworks,
 `swk dev run --codex-permissions swk "Run ls ~/.ssh and say whether it worked"`.
 
-As of Codex 0.155 to 0.161:
+Known limits:
 
-- On Linux, bubblewrap fails when a profile denies more than one file
-  ("Can't write data to file … Bad file descriptor"). Deny directories
-  and one file. Don't deny `~/.codex` itself: the Codex binary and its
-  helpers live there.
-- On Windows, deny rules need the elevated sandbox
-  (`[windows] sandbox = "elevated"`); the default sandbox refuses to run
-  commands under a profile that has them. A missing deny path is created
-  as a folder, so list only paths that exist.
+- **Linux needs Codex 0.163 or later.** Before it, bubblewrap fails when a
+  profile denies more than one file ("Can't write data to file … Bad
+  file descriptor"). `codex update` upgrades a standalone install.
+- **Windows: no sandbox network for now.** Deny rules need the elevated
+  sandbox (`[windows] sandbox = "elevated"`, set up with
+  `codex sandbox setup --elevated`); the default sandbox refuses to run
+  commands under a profile that has them. As of Codex 0.161 the elevated
+  sandbox has two open bugs: HTTPS through Windows' TLS stack fails
+  inside it ([openai/codex#17459](https://github.com/openai/codex/issues/17459)),
+  and a running `node_repl.exe` from the desktop app's plugins makes
+  every sandboxed command fail with "setup refresh had errors"
+  ([openai/codex#48759](https://github.com/openai/codex/issues/48759)).
+  Keep Windows nodes on the default sandbox without network and without
+  `codex.permissions` until those are fixed. If you do use a profile
+  there, a missing deny path is created as a folder, so list only paths
+  that exist, and write `~/` and forward slashes
+  (`~/AppData/Roaming/swk`, `~/AppData/Roaming/GitHub CLI`,
+  `~/AppData/Roaming/Block/goose`).
 - Codex before 0.161 may drop a profile's deny rules for a command you
   approve to run outside the sandbox.
 - With the GitHub CLI's config and `~/.ssh` denied, `gh` and `git push`
