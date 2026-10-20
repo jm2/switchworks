@@ -108,6 +108,10 @@ func (c *Client) Close() error { return c.proc.Stop(4 * time.Second) }
 // Kill ends the app-server process tree at once.
 func (c *Client) Kill() error { return c.proc.Kill() }
 
+// ExitErr returns how the app-server process exited, once it has: nil for
+// exit code 0.
+func (c *Client) ExitErr() error { return c.proc.Err() }
+
 // Pid returns the app-server process id.
 func (c *Client) Pid() int { return c.proc.Pid() }
 

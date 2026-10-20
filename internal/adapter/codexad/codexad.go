@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -54,7 +55,17 @@ type Adapter struct {
 	early   map[string][]note // notifications for threads not yet registered
 	closed  bool
 	restart sync.Mutex
+	started time.Time // when client started
+	quick   int       // app-servers in a row that exited within quickExit of starting
 }
+
+// Restart pacing; variables so tests can shorten them.
+var (
+	restartBackoff = time.Second      // first wait before a restart; doubles up to 30s
+	quickExit      = 30 * time.Second // an app-server that exits sooner counts toward giving up
+)
+
+const maxRestarts = 8
 
 type note struct {
 	method string
@@ -117,6 +128,7 @@ func (a *Adapter) getClient(ctx context.Context) (*codex.Client, error) {
 	}
 	a.mu.Lock()
 	a.client = c
+	a.started = time.Now()
 	a.mu.Unlock()
 	a.cfg.Logf("codex app-server started (pid %d, codex home %s)", c.Pid(), c.Info.CodexHome)
 	go a.watch(c)
@@ -136,16 +148,41 @@ func (a *Adapter) watch(c *codex.Client) {
 	for _, h := range a.threads {
 		live = append(live, h)
 	}
+	lived := time.Since(a.started).Round(time.Second)
+	if lived < quickExit {
+		a.quick++
+	} else {
+		a.quick = 0
+	}
+	quick := a.quick
 	a.mu.Unlock()
 	// Its stdout closed; make sure the process and anything it started
 	// are gone too.
 	_ = c.Kill()
-	a.cfg.Logf("codex app-server exited; restarting and resuming %d thread(s)", len(live))
+	how := fmt.Sprintf("%s after %s", exitStatus(c.ExitErr()), lived)
 	for _, h := range live {
 		h.lostClient()
 	}
-	backoff := time.Second
-	for attempt := 0; attempt < 8; attempt++ {
+	// One that keeps exiting right after it starts would otherwise be
+	// restarted every second for good: wait longer each time, and give up
+	// after as many as for failed starts. A session started later still
+	// gets one more app-server; if that one exits as quickly, it is not
+	// restarted either.
+	if quick > maxRestarts {
+		a.cfg.Logf("codex app-server exited (%s), %d times in a row within %s of starting; not restarting it", how, quick, quickExit)
+		for _, h := range live {
+			if !h.isClosed() {
+				h.setStatus(model.StatusError, "codex app-server keeps exiting right after it starts")
+			}
+		}
+		return
+	}
+	a.cfg.Logf("codex app-server exited (%s); restarting and resuming %d thread(s)", how, len(live))
+	backoff := restartBackoff
+	if quick > 1 {
+		time.Sleep(min(restartBackoff<<(quick-2), 30*time.Second))
+	}
+	for attempt := 0; attempt < maxRestarts; attempt++ {
 		a.mu.Lock()
 		closed := a.closed
 		a.mu.Unlock()
@@ -176,6 +213,21 @@ func (a *Adapter) watch(c *codex.Client) {
 			h.setStatus(model.StatusError, "codex app-server could not be restarted")
 		}
 	}
+}
+
+// exitStatus describes how a process ended. Windows status codes, such as
+// 0xC000013A for a closed console, are in hex.
+func exitStatus(err error) string {
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return "exit code 0"
+	case errors.As(err, &ee) && ee.ExitCode() > 255:
+		return fmt.Sprintf("exit code 0x%X", uint32(ee.ExitCode()))
+	case errors.As(err, &ee) && ee.ExitCode() >= 0:
+		return fmt.Sprintf("exit code %d", ee.ExitCode())
+	}
+	return err.Error()
 }
 
 // Close stops app-server.
