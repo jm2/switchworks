@@ -7,7 +7,7 @@
 # --printsrcinfo > .SRCINFO`, and check the sums against the release's
 # SHA256SUMS.txt.
 pkgname=switchworks-bin
-pkgver=0.1.3
+pkgver=0.1.4
 pkgrel=1
 pkgdesc="Control plane for coding agents across your machines (swk, tray icon, systemd units)"
 arch=('x86_64' 'aarch64')
