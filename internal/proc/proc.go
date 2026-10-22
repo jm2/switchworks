@@ -50,6 +50,10 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	if opts.Stderr != nil {
 		cmd.Stderr = opts.Stderr
 	}
+	// A descendant outside the process group can keep the stderr pipe
+	// open after the leader exits; Wait (and so Stop and Kill) must not
+	// wait for it forever.
+	cmd.WaitDelay = 5 * time.Second
 	setupCmd(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
