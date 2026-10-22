@@ -209,6 +209,106 @@ Known limits:
   `on-request`), or give the agents a token of their own, scoped to their
   repositories, in a path the profile leaves readable.
 
+## Codex: other ways out of the sandbox
+
+A deny list keeps a sandboxed command from *reading* secrets. It does not
+stop the command from asking something outside the sandbox to act for it.
+Close these too.
+
+**Sockets (Linux).** Codex's bubblewrap sandbox keeps `/run/user/<uid>`
+reachable, and a read-only mount doesn't stop a program from connecting to
+a socket. Through the session bus, `systemd-run --user …` runs a command
+as you, outside the sandbox. The real `/tmp` holds `/tmp/.X11-unix`, and
+Xwayland lets your own user connect without a cookie, so an agent could
+type into your terminals. Deny them, and turn the bus off for commands:
+
+```toml
+[permissions.swk.filesystem]
+"/run/user/1000" = "deny"     # your uid; covers the bus, systemd, keyring, podman
+"/tmp/.X11-unix" = "deny"
+"/run/dbus" = "deny"          # the system bus
+"/run/libvirt" = "deny"
+
+[shell_environment_policy.set]
+DBUS_SESSION_BUS_ADDRESS = "disabled:"
+```
+
+A deny inside a denied directory makes bubblewrap fail ("Can't create file
+… Read-only file system"), so drop entries such as
+`/run/user/1000/containers` when you deny `/run/user/1000`. Check from
+inside the sandbox that
+`systemd-run --user --wait touch /var/tmp/escape-test` fails and creates no
+file. With the network on, the sandbox shares the host's network
+namespace, so *abstract* Unix sockets (names starting with `@` in
+`ss -xl`) stay reachable whatever the deny list says. Check that none of
+them belongs to your desktop session (Xwayland listening on
+`@/tmp/.X11-unix/X0`, for example); only turning the network off, or a
+proxy-only network, closes that.
+
+**Allow rules.** Codex's execpolicy rules in `$CODEX_HOME/rules/*.rules`
+with `decision = "allow"` approve a matching command in advance. In a
+session whose approval policy lets the agent ask to run a command outside
+the sandbox (`on-request`, `untrusted`), the agent can then do that without
+anyone being asked. (Under `never`, Codex refuses every such request.)
+"Don't ask again" in interactive Codex writes such rules, and Switchworks
+sessions share that CODEX_HOME unless `codex.home` gives them their own.
+A rule like `["gh", "api"]` hands every agent your GitHub token. Keep
+managed sessions' rules to `forbidden` ones (for example
+`gh pr merge`, `git push origin main`), or give them a CODEX_HOME of their
+own. Forbidden wins over allow for the same prefix, but a forbid on
+`gh pr merge` doesn't stop `gh api …/merge`.
+
+**Connectors.** A Codex app connector, such as the ChatGPT GitHub app, acts
+with your account on the vendor's side, whatever token the sandbox has.
+Turn apps off for managed sessions (`-c features.apps=false`).
+
+**Git for agents.** To let agents commit, pull and push without your
+credentials:
+- Give them a fine-grained token for their repositories only (Contents,
+  Pull requests and Issues read/write), in a folder the profile leaves
+  readable, and point `GH_CONFIG_DIR` and a git credential helper at it
+  through `[shell_environment_policy.set]`.
+- `:workspace` keeps `.git` read-only. On Linux and macOS you can make it
+  writable while keeping hooks and config out of reach:
+
+  ```toml
+  [permissions.swk.filesystem.":workspace_roots"]
+  ".git" = "write"
+  ".git/hooks" = "read"
+  ".git/config" = "read"
+  ".git/modules" = "read"
+  ```
+
+  Don't do this on Windows. There a read-only child of a writable folder
+  can be deleted or replaced, so an agent could plant `core.hooksPath`,
+  which then runs outside the sandbox on your next git command.
+- On Windows, agents can't commit. Have them hand patches to an agent on
+  Linux or macOS that pushes them. Check every handed-off patch for secrets
+  before pushing (see below).
+
+**Windows: the default sandbox can read everything you can.** Without
+`[windows] sandbox = "elevated"`, Codex runs commands with your own,
+restricted token. Deny rules only apply to the elevated sandbox's
+separate accounts, so a sandboxed command can read the node's key
+(`%APPDATA%\swk\node\node.key`), `~\.codex\auth.json` and `config.toml`
+with its provider keys. Windows sandboxes have no network, but an agent can
+still put what it reads into a message or a patch. Treat their output as
+untrusted until the elevated sandbox works
+([openai/codex#48759](https://github.com/openai/codex/issues/48759)).
+
+**GPU access.** The sandbox hides `/dev/dri`, so Vulkan and GL fall back to
+llvmpipe, and a profile entry can't add it back. An allow rule doesn't help
+either: under approval `never` Codex refuses every escalation. Instead,
+run GPU work through a small service outside the sandbox that starts each
+command in its own bubblewrap sandbox with `--dev-bind /dev/dri`, the
+workspace writable, `.git` read-only, the profile's deny list hidden and
+`--unshare-all` (no network, no sockets). Give the service a fixed
+environment and apply the agent's environment only inside bubblewrap,
+after `--clearenv`: a helper script that runs outside the sandbox with
+the agent's `BASH_ENV`, `PATH` or `LD_PRELOAD` runs the agent's code as
+you. Tests without a display can use SDL's offscreen driver, which still
+renders on the real GPU.
+
 ## Images and the vision probe
 
 Messages and first prompts can carry images ([messaging.md](messaging.md#images)
