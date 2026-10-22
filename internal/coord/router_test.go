@@ -367,7 +367,7 @@ func TestCompletionNotice(t *testing.T) {
 
 	// The parent asked and got its answer: no notice on top.
 	res := r.ask(ctx, from(p), fleet.AskArgs{To: "workbox/c", Text: "q", WaitSeconds: new(int)})
-	r.onDelivered(c.ID, res.MessageID)
+	r.onDelivered(c.ID, res.MessageID, "queue")
 	if _, err := r.reply(ctx, from(c), fleet.ReplyArgs{MessageID: res.MessageID, Text: "a"}); err != nil {
 		t.Fatal(err)
 	}

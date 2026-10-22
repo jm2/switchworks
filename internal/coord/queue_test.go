@@ -210,3 +210,65 @@ func TestSteerRules(t *testing.T) {
 		t.Fatalf("fleet_send default mode %q", m.Mode)
 	}
 }
+
+// A queued message belongs to the token that sent it, by id: a token made
+// later under a revoked one's name does not inherit its messages. A record
+// from before ids were stored matches by name only a token that already
+// existed when it was sent.
+func TestQueuedMessageTokenReuse(t *testing.T) {
+	s := testServer(t, Guards{})
+	sess := addSession(t, s, "offbox", "a", func(x *model.Session) { x.ID = ulid.New() })
+	old := store.APIToken{ID: ulid.New(), Name: "laptop", Scope: "operate", Hash: "h1", Created: time.Now().Add(-time.Hour)}
+	if err := s.store.AddAPIToken(old); err != nil {
+		t.Fatal(err)
+	}
+	asOld := withGrant(context.Background(), grant{scope: scopeOperate, tokenID: old.ID})
+	from, _ := s.userSender(asOld, "user:web")
+	msgs, err := s.router.send(asOld, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: "x"})
+	if err != nil || msgs[0].ViaToken != old.ID || msgs[0].Via != "token:laptop" {
+		t.Fatalf("send: %+v %v", msgs, err)
+	}
+	legacy := msgs[0]
+	legacy.ID, legacy.ViaToken = ulid.New(), ""
+	if err := s.store.PutMessage(legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.store.DeleteAPIToken(old.ID); err != nil {
+		t.Fatal(err)
+	}
+	reused := store.APIToken{ID: ulid.New(), Name: "laptop", Scope: "operate", Hash: "h2", Created: time.Now().Add(time.Second)}
+	if err := s.store.AddAPIToken(reused); err != nil {
+		t.Fatal(err)
+	}
+	asReused := withGrant(context.Background(), grant{scope: scopeOperate, tokenID: reused.ID})
+	cancel := func(ctx context.Context, id string) int {
+		r := httptest.NewRequest("POST", "/v1/messages/"+id+"/cancel", nil).WithContext(ctx)
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		s.handleCancel(w, r)
+		return w.Code
+	}
+	for _, id := range []string{msgs[0].ID, legacy.ID} {
+		if code := cancel(asReused, id); code != 403 {
+			t.Fatalf("a token reusing the name cancelled %s: %d", id, code)
+		}
+	}
+	// Its own messages are its to cancel.
+	from, _ = s.userSender(asReused, "user:web")
+	mine, err := s.router.send(asReused, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := cancel(asReused, mine[0].ID); code != 200 {
+		t.Fatalf("cancelling its own: %d", code)
+	}
+	legacy.ID = ulid.New()
+	legacy.CreatedAt = time.Now().Add(2 * time.Second)
+	if err := s.store.PutMessage(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if code := cancel(asReused, legacy.ID); code != 200 {
+		t.Fatalf("an old-style record sent after the token was made: %d", code)
+	}
+}

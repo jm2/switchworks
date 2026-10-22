@@ -423,7 +423,7 @@ func (s *Server) userSender(ctx context.Context, from string) (sender, error) {
 		return sender{}, err
 	}
 	via, owner, _ := s.credential(ctx)
-	return sender{user: from, via: via, owner: owner}, nil
+	return sender{user: from, via: via, owner: owner, token: grantFrom(ctx).tokenID}, nil
 }
 
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {

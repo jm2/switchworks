@@ -84,7 +84,7 @@ func TestMessageCredential(t *testing.T) {
 	}
 
 	// Marking the token takes effect on its next message.
-	r := httptest.NewRequest("POST", "/v1/tokens/antec-cli/owner", strings.NewReader(`{"owner":true}`))
+	r := httptest.NewRequest("POST", "/v1/tokens/antec-cli/owner", strings.NewReader(`{"owner":true}`)).WithContext(asAdmin)
 	r.SetPathValue("id", "antec-cli")
 	w := httptest.NewRecorder()
 	s.handleTokenOwner(w, r)
@@ -94,7 +94,7 @@ func TestMessageCredential(t *testing.T) {
 	if _, m := send(asToken, `{"text":"ship it"}`); m.Via != "token:antec-cli" || !m.Owner {
 		t.Fatalf("after marking: %+v", m)
 	}
-	r = httptest.NewRequest("POST", "/v1/tokens/nope/owner", strings.NewReader(`{"owner":true}`))
+	r = httptest.NewRequest("POST", "/v1/tokens/nope/owner", strings.NewReader(`{"owner":true}`)).WithContext(asAdmin)
 	r.SetPathValue("id", "nope")
 	w = httptest.NewRecorder()
 	s.handleTokenOwner(w, r)

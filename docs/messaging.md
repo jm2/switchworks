@@ -150,12 +150,15 @@ It is there for an agent that wants to look back:
   yet, oldest first, at most `limit` (default 20, max 200; `more` says how
   many are left). The coordinator keeps a cursor per session, the newest
   message the session has seen, which moves on when `fleet_inbox` returns
-  messages and when a message is delivered as a turn. Messages still
-  pending (in flight, or a reply held for a waiting `fleet_ask`) and
-  replies handed straight to a waiting `fleet_ask` are not listed. With
-  nothing new it returns `{"messages": []}`.
+  messages and when a message is delivered as a turn. Only messages that
+  went into the session's input are listed: not ones still pending (in
+  flight, or a reply held for a waiting `fleet_ask`) or waiting in the
+  session's queue (they arrive as a turn), not ones cancelled, expired or
+  failed before they reached it, and not replies handed straight to a
+  waiting `fleet_ask`. With nothing new it returns `{"messages": []}`.
 - `all: true` lists recent messages to and from the session, newest
-  first, seen or not, and does not move the cursor.
+  first, seen or not, and does not move the cursor. Of the messages to the
+  session it too lists only those that went into its input.
 - Each message is compact: `{id, kind, from, created_at, text, re}`
   (`re` on replies; on messages the session sent, `to`, `state`,
   `delivered_at` and `seen_at`, so an agent checks a message's
@@ -374,8 +377,9 @@ it runs this version.
   (`session.queue`); `fleet_list`, `fleet_status`, `GET /v1/sessions` and
   the web UI show it. Older nodes do not report it.
 - A queued message can be sent now or cancelled, by its sender (the same
-  credential) or an owner (the admin token, an owner token, or a browser
-  one of those signed in): `POST /v1/messages/{id}/promote` with `mode`
+  credential: the same API token by id, so a token made later under a
+  revoked one's name gets none of its messages) or an owner (the admin
+  token, an owner token, or a browser one of those signed in): `POST /v1/messages/{id}/promote` with `mode`
   `steer` (into the running turn; with none running it goes next, ahead of
   the queue) or `interrupt`, and `POST /v1/messages/{id}/cancel`, after
   which the node never delivers it. The node records `message.promoted`
@@ -410,7 +414,10 @@ it runs this version.
 `delivered` (for a message that is not an ask), `seen` (likewise),
 `answered`, `expired`, `failed` and `cancelled` are final. An ask moves on
 from `delivered` or `seen` to `answered`, or to `failed` if its target
-stops first.
+stops first; a `fleet_reply` to an ask that is `cancelled`, `expired` or
+`failed` (its sender has been told it will not be answered) is refused.
+A delivery the node reports again, or only after the message was seen,
+changes neither its state nor its `delivered_at`.
 
 ### Receipts
 
@@ -491,13 +498,21 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
 
-The coordinator keeps at most 256 MiB of messages; past that the oldest
-delivered (answered or not), failed or expired ones are dropped first.
+The coordinator keeps at most 256 MiB of messages (their text, and the
+names and digests of their images and files; the bytes themselves are in
+the attachment store, under its own limits); past that the oldest
+delivered (answered or not), failed or expired ones are dropped first, and
+stay dropped across a restart.
 
-People are not rate limited. Hops count from the message that started the
+People are not rate limited. Hops count from the messages that started the
 sender's current work: a person's message is hop 0, the agent's message to
-another agent is hop 1, and so on. A spawn counts as a hop too, so a loop of
-spawns and completion notices ends at `max_hops`.
+another agent is hop 1, and so on. A turn that takes in several messages
+(a batch from the queue, or steers into the running turn) counts from the
+deepest of them, so a shallow message cannot shorten a long chain; the
+count starts over only with the next turn after the session goes idle.
+After a coordinator restart it is rebuilt from the stored messages. A
+spawn counts as a hop too, so a loop of spawns and completion notices ends
+at `max_hops`.
 
 A session an agent spawns always inherits the agent's approval policy and
 sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such
@@ -539,7 +554,10 @@ start.
   allows: `read` looks, `operate` also sends, asks, replies, approves,
   interrupts, stops, spawns and tightens approval policies (loosening one
   needs the admin token or an owner token), `admin` also
-  enrolls and removes hosts and manages tokens. A person's spawn is not
+  enrolls and removes hosts and manages tokens. Only the admin token or
+  an owner token (or a browser one of those signed in) may create an
+  owner token, mark or unmark one, or revoke one: an `admin` token that is
+  not the owner's cannot make itself one. A person's spawn is not
   confined by the guards below. Messages carry the credential they were
   sent with; only the admin token's and owner tokens' plain messages reach
   agents without a header (see

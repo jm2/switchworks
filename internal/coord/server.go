@@ -645,8 +645,14 @@ func (s *Server) route(ev model.Event) {
 	case model.KindMessageDelivered:
 		var p model.MessageEvent
 		if json.Unmarshal(ev.Payload, &p) == nil {
-			s.router.onDelivered(ev.SessionID, p.MessageID)
+			s.router.onDelivered(ev.SessionID, p.MessageID, p.Mode)
 			s.router.entered(ev.SessionID, p.MessageID, ev.TS)
+		}
+	case model.KindSessionStatus:
+		// An idle session's turn is over: the next one counts hops anew.
+		var p model.SessionStatus
+		if json.Unmarshal(ev.Payload, &p) == nil && p.Status == model.StatusIdle {
+			s.router.turnEnded(ev.SessionID)
 		}
 	case model.KindMessageSeen:
 		// The turn that carried it has completed.
@@ -734,8 +740,14 @@ func (s *Server) project(ev model.Event) {
 			}
 		case model.KindSessionStatus:
 			var p model.SessionStatus
+			// A status the coordinator does not know (a newer or broken
+			// node) is kept as error rather than stored as given: it
+			// reaches the UI, and live() and the selectors read it.
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				sess.Status = p.Status
+				if !knownStatus(p.Status) {
+					sess.Status = model.StatusError
+				}
 			}
 		case model.KindSessionQueue:
 			var p model.SessionQueue

@@ -111,18 +111,13 @@ func (s *Server) rebuildActivity() {
 			}
 			for _, ev := range evs {
 				s.track(ev)
-				// Rebuild what started each session's current work, so a
-				// restart does not hand running chains fresh hop counts.
-				if ev.Kind == model.KindMessageDelivered {
-					var p model.MessageEvent
-					if json.Unmarshal(ev.Payload, &p) == nil {
-						s.router.onDelivered(ev.SessionID, p.MessageID)
-					}
-				}
 			}
 			after = evs[len(evs)-1].Seq
 		}
 	}
+	// What started each session's current work comes from its stored
+	// messages, which do not depend on how far back the log is replayed.
+	s.router.rebuildTriggers()
 }
 
 // fillActivity adds activity to a session view.

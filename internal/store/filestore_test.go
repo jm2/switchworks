@@ -138,7 +138,7 @@ func TestPruneMessagesBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	text := strings.Repeat("x", 1<<20)
 	now := time.Now()
 	n := maxMessageBytes/(1<<20) + 20
@@ -163,6 +163,62 @@ func TestPruneMessagesBudget(t *testing.T) {
 	if _, ok := s.Message(fmt.Sprintf("01J%023d", n-1)); !ok {
 		t.Fatal("the newest message was dropped")
 	}
+	// What was dropped stays dropped after a restart.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Message(fmt.Sprintf("01J%023d", 0)); ok {
+		t.Fatal("the oldest message came back after a restart")
+	}
+	if _, ok := s.Message(fmt.Sprintf("01J%023d", n-1)); !ok {
+		t.Fatal("the newest message was lost in the restart")
+	}
+}
+
+// A message's images and files count against the byte budget with its
+// text (their metadata: the bytes are in the attachment store).
+func TestMessageBytesCountsAttachments(t *testing.T) {
+	m := model.Message{Text: "hi"}
+	plain := messageBytes(&m)
+	m.Attachments = []model.Attachment{{Name: strings.Repeat("n", 100), MIME: "image/png", SHA256: strings.Repeat("a", 64), Size: 1 << 20}}
+	m.Files = []model.Attachment{{Name: "notes.txt", MIME: "text/plain", SHA256: strings.Repeat("b", 64)}}
+	if got := messageBytes(&m); got < plain+100+9+64+9+10+64 {
+		t.Fatalf("%d bytes counted for a message with attachments (%d without)", got, plain)
+	}
+}
+
+// Expired enrollment tokens are forgotten on load and when a new one is
+// added, not kept in memory forever.
+func TestExpiredEnrollTokensSwept(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddToken("old", "devbox", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddToken("new", "devbox", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	_, kept := s.tokens["old"]
+	n := len(s.tokens)
+	s.mu.Unlock()
+	if kept || n != 1 {
+		t.Fatalf("expired token kept (%d tokens)", n)
+	}
+	if _, err := s.ConsumeToken("old"); !errors.Is(err, ErrBadToken) {
+		t.Fatalf("expired token consumed: %v", err)
+	}
+	if host, err := s.ConsumeToken("new"); err != nil || host != "devbox" {
+		t.Fatalf("live token: %q %v", host, err)
+	}
+	_ = s.Close()
 }
 
 // A running session that passes through "error" (its harness restarting)

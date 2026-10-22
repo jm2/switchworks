@@ -452,3 +452,53 @@ func TestRevocationEndsStreams(t *testing.T) {
 		}
 	})
 }
+
+// An admin-scope token that is not the owner's manages tokens, but cannot
+// make an owner token, mark one (itself included) or revoke one: that
+// takes the admin token or an owner token.
+func TestOwnerTokensNeedAnOwner(t *testing.T) {
+	e := newWebEnv(t)
+	admin := map[string]string{"Authorization": "Bearer " + e.token}
+	ops := e.createToken(t, "ops", "admin", 0)
+	asOps := map[string]string{"Authorization": "Bearer " + ops.Secret}
+
+	if r := e.do(t, "POST", "/v1/tokens", `{"name":"mine","scope":"admin","owner":true}`, asOps); r.StatusCode != 403 {
+		t.Fatalf("non-owner minted an owner token: %d", r.StatusCode)
+	}
+	if r := e.do(t, "POST", "/v1/tokens/ops/owner", `{"owner":true}`, asOps); r.StatusCode != 403 {
+		t.Fatalf("non-owner marked itself owner: %d", r.StatusCode)
+	}
+	if tk, _ := e.srv.store.APIToken(ops.ID); tk.Owner {
+		t.Fatal("ops became an owner")
+	}
+	// Plain tokens are still its to make and revoke.
+	if r := e.do(t, "POST", "/v1/tokens", `{"name":"plain","scope":"read"}`, asOps); r.StatusCode != 201 {
+		t.Fatalf("non-owner making a plain token: %d", r.StatusCode)
+	}
+	if r := e.do(t, "DELETE", "/v1/tokens/plain", "", asOps); r.StatusCode != 200 {
+		t.Fatalf("non-owner revoking a plain token: %d", r.StatusCode)
+	}
+
+	// The admin token makes owners; an owner token may too.
+	r := e.do(t, "POST", "/v1/tokens", `{"name":"boss","scope":"admin","owner":true}`, admin)
+	var boss apiclient.NewToken
+	if err := json.NewDecoder(r.Body).Decode(&boss); r.StatusCode != 201 || err != nil || !boss.Owner {
+		t.Fatalf("admin minting an owner token: %d %+v", r.StatusCode, boss)
+	}
+	if r := e.do(t, "DELETE", "/v1/tokens/boss", "", asOps); r.StatusCode != 403 {
+		t.Fatalf("non-owner revoked an owner token: %d", r.StatusCode)
+	}
+	asBoss := map[string]string{"Authorization": "Bearer " + boss.Secret}
+	if r := e.do(t, "POST", "/v1/tokens/ops/owner", `{"owner":true}`, asBoss); r.StatusCode != 200 {
+		t.Fatalf("owner token marking: %d", r.StatusCode)
+	}
+	if tk, _ := e.srv.store.APIToken(ops.ID); !tk.Owner {
+		t.Fatal("ops not marked")
+	}
+	if r := e.do(t, "POST", "/v1/tokens/ops/owner", `{"owner":false}`, admin); r.StatusCode != 200 {
+		t.Fatalf("admin unmarking: %d", r.StatusCode)
+	}
+	if r := e.do(t, "DELETE", "/v1/tokens/boss", "", admin); r.StatusCode != 200 {
+		t.Fatalf("admin revoking an owner token: %d", r.StatusCode)
+	}
+}
