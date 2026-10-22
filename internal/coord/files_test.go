@@ -118,4 +118,20 @@ func TestRouterFiles(t *testing.T) {
 	if limited == nil || !strings.Contains(limited.Error(), "MiB of files a minute") {
 		t.Fatalf("file budget: %v", limited)
 	}
+
+	// People's files count against a budget per credential, whatever
+	// name they send as.
+	limited = nil
+	for i := range personFileBytesPerMinute/(2*attach.MaxFileBytes) + 1 {
+		p := sender{user: "user:p" + string(rune('a'+i)), via: "token:laptop"}
+		if _, limited = r.send(ctx, p, model.MsgNotify, fleet.SendArgs{To: agy.Path, Text: "x", FileAttachments: big}); limited != nil {
+			break
+		}
+	}
+	if limited == nil || !strings.Contains(limited.Error(), "each credential may send") {
+		t.Fatalf("person's file budget: %v", limited)
+	}
+	if _, err := r.send(ctx, sender{user: "user:jm", via: "admin", owner: true}, model.MsgNotify, fleet.SendArgs{To: agy.Path, Text: "x", FileAttachments: big}); err != nil {
+		t.Fatalf("another credential: %v", err)
+	}
 }

@@ -5,6 +5,8 @@ package node
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jm2/switchworks/internal/codex"
@@ -54,6 +56,21 @@ var leanCodexConfig = map[string]string{
 	"web_search":                     `"disabled"`,
 	"tool_output_token_limit":        "1500",
 	"model_auto_compact_token_limit": "128000",
+}
+
+// codexHome is the CODEX_HOME sessions get: codex.home, else the
+// node's CODEX_HOME, else ~/.codex ("" when there is no home directory).
+func codexHome(cfg Config) string {
+	home := cfg.Codex.Home
+	if home == "" {
+		home = os.Getenv("CODEX_HOME")
+	}
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = filepath.Join(h, ".codex")
+		}
+	}
+	return home
 }
 
 // windowsSandboxKey is the Codex setting that picks the Windows sandbox.

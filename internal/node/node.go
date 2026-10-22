@@ -95,6 +95,20 @@ type Config struct {
 	// sessions to read (default: <user cache dir>/switchworks/files; see
 	// files.go). Keep it out of the directories a sandbox profile denies.
 	FilesDir string `json:"files_dir,omitempty"`
+	// FilesQuotaMiB caps the received files kept on this node, all
+	// sessions together (default defaultFilesQuotaMiB; -1 for no cap).
+	// A message whose files would pass it is refused.
+	FilesQuotaMiB int64 `json:"files_quota_mib,omitempty"`
+
+	// AttachDeny lists more files and directories agents may never attach
+	// (images, files), besides Switchworks's own and the credential
+	// locations the node always denies (see attachPolicy). "~/" is the
+	// home directory.
+	AttachDeny []string `json:"attach_deny,omitempty"`
+	// AttachAllow lists files and directories exempt from the rules on
+	// names that look like credentials (.env, id_ed25519) and on dot-files
+	// when a session works in the home directory. It never lifts a deny.
+	AttachAllow []string `json:"attach_allow,omitempty"`
 }
 
 // spool compaction threshold.
@@ -373,6 +387,7 @@ type Node struct {
 	imgMu sync.Mutex
 
 	stateMu sync.Mutex
+	filesMu sync.Mutex // orders writeFiles, so the quota holds
 	closing chan struct{}
 	wg      sync.WaitGroup
 
@@ -383,6 +398,9 @@ type Node struct {
 func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any)) (*Node, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	if err := checkAttachPaths(cfg); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "spool"), 0o700); err != nil {
 		return nil, err

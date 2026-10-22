@@ -12,6 +12,7 @@ import (
 
 	"github.com/jm2/switchworks/internal/adapter"
 	"github.com/jm2/switchworks/internal/attach"
+	"github.com/jm2/switchworks/internal/codex"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/paths"
 	"github.com/jm2/switchworks/internal/proc"
@@ -27,8 +28,9 @@ import (
 //     harness (Codex's localImage files). It is emptied when the session
 //     resumes (no turn survives a node restart) and removed when it stops.
 //   - Agents attach images by path through the fleet tools; resolveImages
-//     reads them under the session's working directory only (see
-//     attach.ReadWithin and docs/messaging.md).
+//     reads them under the session's working directory only, never from
+//     the places attachPolicy denies (see attach.ReadWithin and
+//     docs/messaging.md).
 
 func (n *Node) attachDir(id string) string  { return filepath.Join(n.dir, "attachments", id) }
 func (n *Node) scratchDir(id string) string { return filepath.Join(n.dir, "scratch", id) }
@@ -131,7 +133,7 @@ func (n *Node) dropImages(id string) {
 type pathArg struct {
 	paths, data string // e.g. "images" -> "attachments"
 	max         int
-	read        func(dir, name string, deny []string) (model.Attachment, error)
+	read        func(dir, name string, p attach.Policy) (model.Attachment, error)
 	normalize   func([]model.Attachment) ([]model.Attachment, error)
 }
 
@@ -206,11 +208,10 @@ func (n *Node) readPaths(s *session, a pathArg, listRaw json.RawMessage) (json.R
 	if err := proc.CheckPinned(root, cwd); err != nil {
 		return nil, err
 	}
+	pol := n.attachPolicy()
 	atts := make([]model.Attachment, 0, len(files))
 	for _, p := range files {
-		// Never Switchworks's own files (node key, session secrets,
-		// cli.json), even when they sit under the working directory.
-		at, err := a.read(cwd, p, []string{n.dir, paths.Base(), filepath.Dir(paths.CLIConfig())})
+		at, err := a.read(cwd, p, pol)
 		if err != nil {
 			return nil, err
 		}
@@ -221,4 +222,51 @@ func (n *Node) readPaths(s *session, a pathArg, listRaw json.RawMessage) (json.R
 		return nil, err
 	}
 	return json.Marshal(atts)
+}
+
+// attachPolicy is what agents may not attach on this node, whatever their
+// working directory. The node reads attachments as the user, outside any
+// sandbox, so it denies what a sandbox profile would: Switchworks's own
+// files (node key, session secrets, cli.json); the credential locations
+// of attach.CredentialPaths; CODEX_HOME; the received files of every
+// session; each path a permission profile in Codex's config.toml denies;
+// and attach_deny. It is built for each request, so an edit to
+// config.toml counts at once.
+func (n *Node) attachPolicy() attach.Policy {
+	home, _ := os.UserHomeDir()
+	p := attach.Policy{Own: []string{n.dir, paths.Base(), filepath.Dir(paths.CLIConfig())}, Home: home}
+	p.Deny = append(attach.CredentialPaths(home), n.filesRoot())
+	if ch := codexHome(n.cfg); ch != "" {
+		p.Deny = append(p.Deny, ch)
+		toml, _ := os.ReadFile(filepath.Join(ch, "config.toml"))
+		for _, d := range codex.ProfileDenyPaths(toml) {
+			if d = attach.ExpandHome(d, home); filepath.IsAbs(d) {
+				p.Deny = append(p.Deny, d)
+			}
+		}
+	}
+	for _, d := range n.cfg.AttachDeny {
+		if d = attach.ExpandHome(d, home); filepath.IsAbs(d) {
+			p.Deny = append(p.Deny, d)
+		}
+	}
+	for _, a := range n.cfg.AttachAllow {
+		if a = attach.ExpandHome(a, home); filepath.IsAbs(a) {
+			p.Allow = append(p.Allow, a)
+		}
+	}
+	return p
+}
+
+// checkAttachPaths refuses attach_deny and attach_allow entries that are
+// neither absolute nor under "~/": relative to what would be a guess.
+func checkAttachPaths(cfg Config) error {
+	for key, list := range map[string][]string{"attach_deny": cfg.AttachDeny, "attach_allow": cfg.AttachAllow} {
+		for _, p := range list {
+			if !filepath.IsAbs(p) && p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+				return fmt.Errorf("node.json %s: %q is neither absolute nor under ~/", key, p)
+			}
+		}
+	}
+	return nil
 }

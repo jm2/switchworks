@@ -658,8 +658,12 @@ and providers, fleet tools, and what each supports.
 and `codex.permissions`: a Codex permission profile for `workspace-write`
 sessions, which can give them the network while denying reads of your
 credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)),
-and `files_dir`: where files received with messages go (default
-`<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)).
+`files_dir`: where files received with messages go (default
+`<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)),
+`files_quota_mib`: how much of them the node keeps (default 1024), and
+`attach_deny` and `attach_allow`: paths agents may never attach, and
+paths exempt from the rules on dot-files and credential-like names
+(see [docs/messaging.md](docs/messaging.md#images)).
 
 ### Trying it without spending tokens
 

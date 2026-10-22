@@ -12,15 +12,7 @@ import (
 // to Codex's overrides. config.toml is read only to see whether it sets
 // one; nothing from it is logged.
 func hostCodexConfig(cfg Config, over map[string]string, logf func(string, ...any)) {
-	home := cfg.Codex.Home
-	if home == "" {
-		home = os.Getenv("CODEX_HOME")
-	}
-	if home == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			home = filepath.Join(h, ".codex")
-		}
-	}
+	home := codexHome(cfg)
 	var toml []byte
 	if home != "" {
 		toml, _ = os.ReadFile(filepath.Join(home, "config.toml"))

@@ -115,16 +115,16 @@ func TestReadFileWithin(t *testing.T) {
 	write(filepath.Join(cwd, "shot.png"), pngBytes(t, 2))
 	write(filepath.Join(cwd, "big.log"), bytes.Repeat([]byte("x"), MaxFileBytes+1))
 
-	a, err := ReadFileWithin(cwd, "out/fix.patch", []string{nodeDir})
+	a, err := ReadFileWithin(cwd, "out/fix.patch", Policy{Own: []string{nodeDir}})
 	if err != nil || !bytes.Equal(a.Data, patch) || a.Name != "fix.patch" || a.MIME != "text/x-patch" {
 		t.Fatalf("ReadFileWithin: %+v %v", a, err)
 	}
-	if _, err := ReadFileWithin(cwd, filepath.Join(cwd, "out", "fix.patch"), nil); err != nil {
+	if _, err := ReadFileWithin(cwd, filepath.Join(cwd, "out", "fix.patch"), Policy{}); err != nil {
 		t.Fatalf("absolute path: %v", err)
 	}
 	refused := func(name, why string) {
 		t.Helper()
-		a, err := ReadFileWithin(cwd, name, []string{nodeDir})
+		a, err := ReadFileWithin(cwd, name, Policy{Own: []string{nodeDir}})
 		if err == nil {
 			t.Fatalf("ReadFileWithin(%q) accepted (%d bytes)", name, len(a.Data))
 		}
@@ -167,6 +167,139 @@ func TestReadFileWithin(t *testing.T) {
 	}
 	if err := mkfifo(filepath.Join(cwd, "pipe.log")); err == nil {
 		refused("pipe.log", "not a regular file")
+	}
+}
+
+// A session working in the home directory cannot attach the credentials
+// a sandbox profile denies, nor dot-files, nor names that look like
+// secrets; attach_allow lifts the last two only.
+func TestReadFileWithinPolicy(t *testing.T) {
+	home := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(home, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".ssh/id_ed25519", ".ssh/config", ".aws/credentials", ".codex/auth.json", ".netrc",
+		".config/gh/hosts.yml", ".config/other/notes.txt", ".bashrc", "proj/.env", "proj/.env.local", "proj/.env.example",
+		"proj/keys/id_ed25519", "proj/keys/id_ed25519.pub", "proj/.github/ci.md", "proj/fix.patch", "notes.txt",
+		"private/plan.txt", "sub/home/.profile", "sub/home/ok.txt", "Library/Keychains/x.txt"} {
+		write(f, "text\n")
+	}
+	base := Policy{Deny: append(CredentialPaths(home), filepath.Join(home, "private")), Home: home}
+	try := func(p Policy, dir, name string) error {
+		t.Helper()
+		_, err := ReadFileWithin(dir, name, p)
+		return err
+	}
+	ok := func(p Policy, dir, name string) {
+		t.Helper()
+		if err := try(p, dir, name); err != nil {
+			t.Errorf("%s in %s: %v", name, dir, err)
+		}
+	}
+	refused := func(p Policy, dir, name, why string) {
+		t.Helper()
+		err := try(p, dir, name)
+		if err == nil {
+			t.Errorf("%s in %s accepted", name, dir)
+		} else if !strings.Contains(err.Error(), why) {
+			t.Errorf("%s in %s: %v (want %q)", name, dir, err, why)
+		}
+	}
+	const creds, secret, dots = "holds credentials, or", "looks like it holds credentials", "dot-file"
+	// Working in the home directory.
+	for _, f := range []string{".ssh/id_ed25519", ".ssh/config", ".aws/credentials", ".codex/auth.json", ".netrc",
+		".config/gh/hosts.yml", "private/plan.txt", filepath.Join(home, ".ssh", "id_ed25519"), "Library/Keychains/x.txt"} {
+		refused(base, home, f, creds)
+	}
+	refused(base, home, ".bashrc", dots)
+	refused(base, home, ".config/other/notes.txt", dots)
+	refused(base, home, "proj/.github/ci.md", dots)
+	refused(base, home, "proj/.env", secret)
+	ok(base, home, "notes.txt")
+	ok(base, home, "proj/fix.patch")
+	// Above the home directory: dot-files below it are refused too.
+	above := base
+	above.Home = filepath.Join(home, "sub", "home")
+	refused(above, home, "sub/home/.profile", dots)
+	ok(above, home, "sub/home/ok.txt")
+	// Inside a project: dot-files are fine, secrets are not.
+	proj := filepath.Join(home, "proj")
+	ok(base, proj, ".github/ci.md")
+	ok(base, proj, ".env.example")
+	ok(base, proj, "keys/id_ed25519.pub")
+	refused(base, proj, ".env", secret)
+	refused(base, proj, ".env.local", secret)
+	refused(base, proj, "keys/id_ed25519", secret)
+	// Working inside a denied directory.
+	refused(base, filepath.Join(home, ".ssh"), "config", creds)
+	// attach_allow lifts the name rules, never a deny.
+	allow := base
+	allow.Allow = []string{filepath.Join(home, ".bashrc"), filepath.Join(proj, ".env"), filepath.Join(home, ".ssh"), filepath.Join(home, "private")}
+	ok(allow, home, ".bashrc")
+	ok(allow, proj, ".env")
+	refused(allow, proj, ".env.local", secret)
+	refused(allow, home, ".ssh/config", creds)
+	refused(allow, home, "private/plan.txt", creds)
+
+	if runtime.GOOS == "windows" {
+		return // symlinks need privileges there
+	}
+	// A deny path given through a symlink still matches, by name and by
+	// identity.
+	link := filepath.Join(t.TempDir(), "homelink")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	viaLink := Policy{Deny: []string{filepath.Join(link, ".netrc"), filepath.Join(link, "private")}}
+	refused(viaLink, home, ".netrc", creds)
+	refused(viaLink, home, "private/plan.txt", creds)
+	refused(viaLink, proj, filepath.Join(link, "private", "plan.txt"), "outside")
+	// A hard link to a credential inside a project.
+	if err := os.Link(filepath.Join(home, ".aws", "credentials"), filepath.Join(proj, "aws.txt")); err == nil {
+		refused(base, proj, "aws.txt", "hard links")
+	}
+}
+
+// A hard link inside the working directory to a file in Switchworks's
+// directory is refused on every OS: on Windows the link count comes from
+// the open handle.
+func TestReadFileWithinHardLink(t *testing.T) {
+	root := t.TempDir()
+	cwd, nodeDir := filepath.Join(root, "work"), filepath.Join(root, "node")
+	for _, d := range []string{cwd, nodeDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := filepath.Join(nodeDir, "cli.json")
+	if err := os.WriteFile(key, []byte(`{"token":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(key, filepath.Join(cwd, "copy.json")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	_, err := ReadFileWithin(cwd, "copy.json", Policy{Own: []string{nodeDir}})
+	if err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Fatalf("hard link to cli.json: %v", err)
+	}
+}
+
+func TestSecretName(t *testing.T) {
+	for name, want := range map[string]bool{
+		".env": true, ".ENV": true, ".env.production": true, "prod.env": true, ".envrc": true, ".env.example": false,
+		"id_rsa": true, "id_ed25519_sk": true, "id_ecdsa.pub": false, ".netrc": true, ".npmrc": true, "auth.json": true,
+		".ssh": true, "credentials": true, "notes.txt": false, ".github": false, "environment.md": false,
+	} {
+		if got := SecretName(name); got != want {
+			t.Errorf("SecretName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

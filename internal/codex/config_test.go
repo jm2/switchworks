@@ -122,6 +122,46 @@ func TestConfigSetsWindowsSandbox(t *testing.T) {
 	}
 }
 
+func TestProfileDenyPaths(t *testing.T) {
+	toml := `default_permissions = "swk"
+experimental_bearer_token = "deny"
+
+[permissions.swk]
+extends = ":workspace"
+filesystem."~/.claude.json" = "deny"
+
+[permissions.swk.network]
+enabled = true
+
+[permissions.swk.filesystem]
+"~/.codex/auth.json" = "deny"   # Codex's login
+'~/.config/gh' = 'deny'
+"C:\\Users\\me\\.ssh" = "deny"
+"~/work" = "write"
+":workspace_roots" = "read"
+
+[permissions.swk.filesystem.":workspace_roots"]
+".git" = "deny"
+
+[permissions.other.filesystem]
+"/run/user/1000"="deny"` + "\r\n" + `
+[[permissions.swk.filesystem]]
+"~/.aws" = "deny"
+
+[model_providers.x.filesystem]
+"~/.x" = "deny"
+permissions.top.filesystem."~/.gnupg" = "deny"
+`
+	got := ProfileDenyPaths([]byte(toml))
+	want := []string{"~/.claude.json", "~/.codex/auth.json", "~/.config/gh", `C:\Users\me\.ssh`, "/run/user/1000", "~/.aws"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProfileDenyPaths = %q, want %q", got, want)
+	}
+	if got := ProfileDenyPaths([]byte("permissions.top.filesystem.\"~/.gnupg\" = \"deny\"\n[x]\n")); !reflect.DeepEqual(got, []string{"~/.gnupg"}) {
+		t.Fatalf("top-level dotted key: %q", got)
+	}
+}
+
 // A process that exits instead of answering initialize: its stderr comes
 // back with the error, not in its message.
 func TestStartErrorKeepsStderr(t *testing.T) {
