@@ -201,6 +201,11 @@ carry metadata only.
   returned mode says which happened.
 - `interrupt` puts the message at the head of the queue and cancels the
   running turn.
+- A queued message is delivered when its session goes idle. If the harness
+  still says it is busy (Codex reports the thread idle a moment before the
+  turn ends), the node tries again once the turn ends, or after 1, 5 and
+  then every 30 s. Every 15 s it also looks for sessions that have been
+  idle with queued messages for 30 s, logs a warning and tries again.
 
 ## Asks
 

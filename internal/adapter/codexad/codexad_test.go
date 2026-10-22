@@ -577,3 +577,30 @@ func TestEffectiveSandbox(t *testing.T) {
 		}
 	}
 }
+
+// #39: a turn id the handle holds after the thread has long been idle (its
+// turn/completed never came) does not refuse new turns forever; a fresh
+// idle status is not enough to drop it.
+func TestStaleTurnDropped(t *testing.T) {
+	a := newFake(t, t.TempDir())
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "idle", status(model.StatusIdle))
+	hh := h.(*handle)
+	hh.mu.Lock()
+	hh.activeTurn = "lost-turn"
+	hh.mu.Unlock()
+	if err := h.Deliver(ctx, adapter.Input{Text: "early"}, adapter.DeliverQueue); !errors.Is(err, adapter.ErrBusy) {
+		t.Fatalf("just idle: want ErrBusy, got %v", err)
+	}
+	defer func(d time.Duration) { staleTurnAfter = d }(staleTurnAfter)
+	staleTurnAfter = 0
+	if err := h.Deliver(ctx, adapter.Input{Text: "late"}, adapter.DeliverQueue); err != nil {
+		t.Fatalf("stale turn: %v", err)
+	}
+	col.waitFor(t, 0, "the new turn's reply", completedText("echo: late"))
+}

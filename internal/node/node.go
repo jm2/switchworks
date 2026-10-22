@@ -149,6 +149,14 @@ type session struct {
 	delivering bool
 	imgMu      sync.Mutex // orders storing queued images against gcImages
 
+	// Stall recovery (see tryDeliver and sweepQueues): redeliver is set
+	// when a trigger to deliver arrives during a delivery, busyTries counts
+	// ErrBusy answers in a row while the session is idle, and stuckSince is
+	// when a sweep first saw the session idle with a queue.
+	redeliver  bool
+	busyTries  int
+	stuckSince time.Time
+
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
 	// emitted with the last turn's outcome.
@@ -495,17 +503,23 @@ func (n *Node) wakeSender() {
 	}
 }
 
-// ticker flushes coalesced deltas and fsyncs spools.
+// ticker flushes coalesced deltas, fsyncs spools and sweeps for stalled
+// queues.
 func (n *Node) ticker() {
 	defer n.wg.Done()
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	syncEvery := 0
+	lastSweep := time.Now()
 	for {
 		select {
 		case <-t.C:
 		case <-n.closing:
 			return
+		}
+		if now := time.Now(); now.Sub(lastSweep) >= sweepEvery {
+			lastSweep = now
+			n.sweepQueues(now)
 		}
 		syncEvery++
 		flushed := false
@@ -915,11 +929,70 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	return model.Marshal(wire.DeliverResult{Mode: model.ModeQueue}), nil
 }
 
+// Queue stall recovery. A harness can answer ErrBusy while the session
+// reports idle: Codex reports the thread idle a moment before the turn's
+// turn/completed, and a turn that never completes leaves it holding a turn
+// id. The idle status that would trigger delivery has then come and gone,
+// so such a delivery is retried with backoff, and sweepQueues retries any
+// session found idle with a queue twice in a row. Variables so tests can
+// shorten them.
+var (
+	busyBackoff = []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}
+	sweepEvery  = 15 * time.Second // how often the ticker sweeps
+	stallAfter  = 30 * time.Second // idle with a queue this long counts as stalled
+)
+
+// retryBusy schedules another delivery attempt for a session whose harness
+// answered ErrBusy while idle.
+func (n *Node) retryBusy(s *session, wait time.Duration) {
+	time.AfterFunc(wait, func() {
+		select {
+		case <-n.closing:
+			return
+		default:
+		}
+		n.tryDeliver(s)
+	})
+}
+
+// sweepQueues retries delivery for sessions that have stayed idle with
+// queued messages since the last sweep, and logs a warning for each: with
+// a working harness that never lasts more than a moment.
+func (n *Node) sweepQueues(now time.Time) {
+	for _, s := range n.sessionList() {
+		s.mu.Lock()
+		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && len(s.rec.Queue) > 0 && s.h.Status() == model.StatusIdle
+		kick := false
+		switch {
+		case !stuck:
+			s.stuckSince = time.Time{}
+		case s.stuckSince.IsZero():
+			s.stuckSince = now
+		case now.Sub(s.stuckSince) >= stallAfter:
+			kick, s.stuckSince = true, now
+		}
+		path, depth := s.rec.Path, len(s.rec.Queue)
+		s.mu.Unlock()
+		if kick {
+			n.logf("warning: session %s is idle with %d queued message(s) and no turn starting; retrying delivery", path, depth)
+			go n.tryDeliver(s)
+		}
+	}
+}
+
 // tryDeliver starts a turn with the next queued message if the session is idle.
 func (n *Node) tryDeliver(s *session) {
 	for {
 		s.mu.Lock()
-		if s.delivering || s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
+		if s.delivering {
+			// Delivering already: if that attempt finds the harness busy,
+			// this trigger (often the turn.completed it was waiting for)
+			// means it should try again at once.
+			s.redeliver = true
+			s.mu.Unlock()
+			return
+		}
+		if s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
 			s.mu.Unlock()
 			return
 		}
@@ -940,7 +1013,7 @@ func (n *Node) tryDeliver(s *session) {
 			s.mu.Unlock()
 			return
 		}
-		s.delivering = true
+		s.delivering, s.redeliver = true, false
 		msg := s.rec.Queue[0]
 		h := s.h
 		// Record delivery before the turn's own events, so the log reads in
@@ -962,12 +1035,30 @@ func (n *Node) tryDeliver(s *session) {
 		s.delivering = false
 		if errors.Is(err, adapter.ErrBusy) {
 			// Not delivered after all: it stays at the head of the queue and
-			// is retried on the next idle status.
+			// is retried on the next idle status, at once if one came in
+			// meanwhile, or after a backoff if the session says it is idle
+			// already (no such status may come).
+			again := s.redeliver
+			s.redeliver = false
+			var wait time.Duration
+			if !again && s.rec.Status == model.StatusIdle {
+				wait = busyBackoff[min(s.busyTries, len(busyBackoff)-1)]
+				s.busyTries++
+			}
 			s.appendLocked(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Error: "session busy; requeued"})
+			path, tries := s.rec.Path, s.busyTries
 			s.mu.Unlock()
 			n.wakeSender()
+			switch {
+			case again:
+				continue
+			case wait > 0:
+				n.logf("session %s: harness busy although idle (attempt %d); retrying delivery in %s", path, tries, wait)
+				n.retryBusy(s, wait)
+			}
 			return
 		}
+		s.busyTries = 0
 		if len(s.rec.Queue) > 0 && s.rec.Queue[0].ID == msg.ID {
 			s.rec.Queue = s.rec.Queue[1:]
 		}

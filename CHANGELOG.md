@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Read-only Codex sessions on Windows** — Codex ran `workspace-write` threads read-only on
   Windows when `config.toml` set no Windows sandbox mode, rejecting every command. The node now
   passes `-c windows.sandbox="unelevated"` unless `config.toml` or `node.json` sets one.
+- **Stalled message queues** — A session could sit idle with hundreds of queued messages: when
+  Codex reported the thread idle just before the turn ended, the node's delivery got "busy" and
+  waited for an idle status that had already come. It now retries at once or with backoff, a
+  sweep retries any session left idle with a queue (and logs a warning), and the Codex adapter
+  drops a turn id that never completed once the thread has been idle for 10 s.
 
 ### Security
 

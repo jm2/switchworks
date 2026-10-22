@@ -388,6 +388,7 @@ type handle struct {
 	mu         sync.Mutex
 	c          *codex.Client
 	status     string
+	idleSince  time.Time // when status last became idle
 	activeTurn string
 	doneTurns  []string // recently completed turn ids (bounded)
 	approvals  map[string]pendingApproval
@@ -643,6 +644,9 @@ func (h *handle) setStatus(s, detail string) {
 	if h.status == s && detail == "" {
 		h.mu.Unlock()
 		return
+	}
+	if s == model.StatusIdle && h.status != s {
+		h.idleSince = time.Now()
 	}
 	h.status = s
 	h.mu.Unlock()
@@ -912,6 +916,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		return err
 	}
 	h.mu.Lock()
+	h.dropStaleTurnLocked()
 	active := h.activeTurn
 	status := h.status
 	policy := h.spec.ApprovalPolicy
@@ -960,6 +965,29 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		h.adoptFiles(resp.Turn.ID, paths, nil)
 		return nil
 	}
+}
+
+// staleTurnAfter is how long the thread must have been idle before a turn
+// id the handle still holds counts as stale; a variable so tests can
+// shorten it.
+var staleTurnAfter = 10 * time.Second
+
+// dropStaleTurnLocked forgets the active turn when the thread has been idle
+// for a while: its turn/completed never came (a compaction or interrupted
+// turn, say). Holding on to it would refuse every new turn with ErrBusy,
+// stalling the session's queue for good. app-server reports the thread idle
+// just before turn/completed, so a fresh idle status is not enough.
+func (h *handle) dropStaleTurnLocked() {
+	if h.activeTurn == "" || h.status != model.StatusIdle || time.Since(h.idleSince) < staleTurnAfter {
+		return
+	}
+	h.a.cfg.Logf("codex: thread %s has been idle for %s but turn %s never completed; forgetting it",
+		h.threadID, time.Since(h.idleSince).Round(time.Second), h.activeTurn)
+	h.doneTurns = append(h.doneTurns, h.activeTurn)
+	if len(h.doneTurns) > 16 {
+		h.doneTurns = h.doneTurns[len(h.doneTurns)-16:]
+	}
+	h.activeTurn = ""
 }
 
 // Interrupt cancels the active turn. app-server keeps a command the turn
