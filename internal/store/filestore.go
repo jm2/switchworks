@@ -167,6 +167,7 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		for _, t := range snap.Tokens {
 			s.tokens[t.Hash] = t
 		}
+		s.sweepTokensLocked(time.Now())
 		for _, t := range snap.APITokens {
 			s.apiToks[t.ID] = t
 		}
@@ -567,12 +568,9 @@ func (s *FileStore) openMessages() error {
 	if bad > 0 {
 		logf("store: messages.jsonl: skipped %d unparsable lines", bad)
 	}
-	cutoff := time.Now().Add(-messageRetention)
-	for id, m := range s.msgs {
-		if prunable(m) && m.CreatedAt.Before(cutoff) {
-			delete(s.msgs, id)
-		}
-	}
+	// The same pruning as while running, so messages dropped for the byte
+	// budget before a compaction could write that down stay dropped.
+	s.pruneMessagesLocked(time.Now())
 	// Compact: rewrite one line per live message.
 	if s.msgLines > len(s.msgs) || torn || bad > 0 {
 		return s.compactMessagesLocked()
@@ -595,17 +593,41 @@ func (s *FileStore) reopenMessagesLocked() error {
 	return nil
 }
 
-// maxMessageBytes bounds the text of stored messages: past it, the oldest
+// maxMessageBytes bounds what stored messages hold: past it, the oldest
 // finished messages go first, however recent.
 const maxMessageBytes = 256 << 20
 
+// messageBytes is what a message counts against maxMessageBytes: its text
+// and everything else of variable size its record keeps, the metadata of
+// its images and files among it. Their bytes are in the attachment store,
+// under that store's own limits, and are not counted twice here.
+func messageBytes(m *model.Message) int {
+	n := len(m.Text) + len(m.Error) + len(m.From) + len(m.To) + len(m.ToPath) + len(m.Via) + len(m.SeenTurn) + len(m.SeenItem)
+	for _, list := range [][]model.Attachment{m.Attachments, m.Files} {
+		for _, a := range list {
+			n += len(a.Name) + len(a.MIME) + len(a.SHA256) + len(a.Data) + 32
+		}
+	}
+	return n
+}
+
 // PruneMessages drops finished messages older than the retention, then the
-// oldest finished ones while their text exceeds maxMessageBytes, and
-// compacts messages.jsonl when most of its lines are superseded.
+// oldest finished ones while the rest exceed maxMessageBytes, and compacts
+// messages.jsonl when most of its lines are superseded, or at once after
+// dropping messages for the byte budget (their records would otherwise
+// come back from the file on the next start).
 func (s *FileStore) PruneMessages(now time.Time) {
-	cutoff := now.Add(-messageRetention)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pruneMessagesLocked(now) || s.msgLines > 2*len(s.msgs)+1000 {
+		_ = s.compactMessagesLocked()
+	}
+}
+
+// pruneMessagesLocked drops messages as PruneMessages does, and reports
+// whether it dropped any for the byte budget.
+func (s *FileStore) pruneMessagesLocked(now time.Time) bool {
+	cutoff := now.Add(-messageRetention)
 	total := 0
 	var done []*model.Message
 	for id, m := range s.msgs {
@@ -613,24 +635,25 @@ func (s *FileStore) PruneMessages(now time.Time) {
 			delete(s.msgs, id)
 			continue
 		}
-		total += len(m.Text)
+		total += messageBytes(m)
 		if prunable(m) {
 			done = append(done, m)
 		}
 	}
-	if total > maxMessageBytes {
-		sort.Slice(done, func(i, j int) bool { return done[i].ID < done[j].ID })
-		for _, m := range done {
-			if total <= maxMessageBytes {
-				break
-			}
-			total -= len(m.Text)
-			delete(s.msgs, m.ID)
+	if total <= maxMessageBytes {
+		return false
+	}
+	sort.Slice(done, func(i, j int) bool { return done[i].ID < done[j].ID })
+	dropped := false
+	for _, m := range done {
+		if total <= maxMessageBytes {
+			break
 		}
+		total -= messageBytes(m)
+		delete(s.msgs, m.ID)
+		dropped = true
 	}
-	if s.msgLines > 2*len(s.msgs)+1000 {
-		_ = s.compactMessagesLocked()
-	}
+	return dropped
 }
 
 // compactMessagesLocked rewrites messages.jsonl with one line per message.
@@ -1231,9 +1254,21 @@ func (s *FileStore) LastSeq(sessionID string) int64 {
 func (s *FileStore) AddToken(hash, host string, expires time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sweepTokensLocked(time.Now())
 	s.tokens[hash] = tokenRec{Hash: hash, Host: host, Expires: expires}
 	s.dirty = true
 	return s.saveLocked()
+}
+
+// sweepTokensLocked forgets expired enrollment tokens. Snapshots leave
+// them out already; sweeping on load and on every new token keeps them
+// from piling up in memory too.
+func (s *FileStore) sweepTokensLocked(now time.Time) {
+	for h, t := range s.tokens {
+		if now.After(t.Expires) {
+			delete(s.tokens, h)
+		}
+	}
 }
 
 func (s *FileStore) ConsumeToken(hash string) (string, error) {

@@ -84,7 +84,7 @@ func TestInboxUnread(t *testing.T) {
 
 	// Delivered as a turn: already seen.
 	four := send("four")
-	r.onDelivered(b.ID, four.ID)
+	r.onDelivered(b.ID, four.ID, "queue")
 	if got := compact(t, inbox(fleet.InboxArgs{})); len(got) != 0 {
 		t.Fatalf("message seen as a turn listed: %+v", got)
 	}

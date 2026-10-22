@@ -52,8 +52,12 @@ type Message struct {
 	// Via names the credential a person sent it with ("admin" or
 	// "token:<name>"), and Owner says whether that is the owner's; the
 	// coordinator sets both from the request.
-	Via       string `json:"via,omitempty"`
-	Owner     bool   `json:"owner,omitempty"`
+	Via   string `json:"via,omitempty"`
+	Owner bool   `json:"owner,omitempty"`
+	// ViaToken is the id of the API token it was sent with (coordinator
+	// only): who may promote or cancel it is checked by id, since a later
+	// token may take a revoked one's name. Older records have none.
+	ViaToken  string `json:"via_token,omitempty"`
 	To        string `json:"to"`                   // the address as given
 	ToSession string `json:"to_session,omitempty"` // resolved target session id
 	ToPath    string `json:"to_path,omitempty"`
@@ -111,6 +115,17 @@ func (m Message) Terminal() bool {
 // has not yet finished: delivered, or seen but (an ask) not answered.
 func (m Message) Accepted() bool {
 	return m.State == MsgDelivered || m.State == MsgSeen
+}
+
+// Entered reports whether the message went into its target's input (it has
+// a delivered_at or a receipt) and was not dropped there: one still in the
+// session's queue, or cancelled, expired or failed, has not reached it.
+func (m Message) Entered() bool {
+	switch m.State {
+	case MsgDelivered, MsgSeen, MsgAnswered:
+		return !m.DeliveredAt.IsZero() || !m.SeenAt.IsZero()
+	}
+	return false
 }
 
 // Attachment is an image sent with a message or a spawn prompt. Data is

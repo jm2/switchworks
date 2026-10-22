@@ -33,7 +33,7 @@ func TestSpawnLoopHitsHopLimit(t *testing.T) {
 		if err != nil {
 			return // refused by the hop limit: also fine
 		}
-		r.onDelivered(c.ID, msgs[0].ID)
+		r.onDelivered(c.ID, msgs[0].ID, "queue")
 		r.onSettled(c, model.Settled{TurnStatus: "completed", LastMessage: "done"})
 		var done model.Message
 		for _, m := range s.store.Messages(store.MessageFilter{Session: p.ID, Limit: 1000}) {
@@ -44,7 +44,7 @@ func TestSpawnLoopHitsHopLimit(t *testing.T) {
 		if done.ID == "" {
 			return // the completion notice was withheld at the limit
 		}
-		r.onDelivered(p.ID, done.ID)
+		r.onDelivered(p.ID, done.ID, "queue")
 	}
 	t.Fatal("a spawn loop ran 20 rounds without reaching the hop limit")
 }

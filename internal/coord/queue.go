@@ -84,8 +84,7 @@ func (s *Server) queuedMessage(w http.ResponseWriter, r *http.Request) (model.Me
 		writeErr(w, 404, store.ErrNotFound)
 		return m, false
 	}
-	via, owner, _ := s.credential(r.Context())
-	if !owner && !(m.FromSession == "" && strings.HasPrefix(m.From, "user:") && m.Via != "" && m.Via == via) {
+	if !s.isOwner(r.Context()) && !s.sameSender(r.Context(), m) {
 		writeErr(w, 403, errors.New("only the message's sender or an owner may change its delivery"))
 		return m, false
 	}

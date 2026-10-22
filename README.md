@@ -464,6 +464,8 @@ with any other token carry a header naming it (`[switchworks msg=…
 from=user:cli via=token:devbox kind=notify]`), so an agent can tell them
 from yours. That only holds while owner tokens stay off every machine
 where agents run: make one for your phone or laptop, not for a workstation.
+Only the admin token or an owner token can create, mark or revoke owner
+tokens; an `admin` token that is not one cannot.
 
 ```bash
 swk token create phone --scope operate --owner --ttl 720h   # for a device without agents

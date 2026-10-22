@@ -95,6 +95,7 @@ type sender struct {
 	// from what the client says.
 	via   string
 	owner bool
+	token string // the API token's id behind via ("" for the admin token)
 }
 
 func (s sender) addr() string {
@@ -120,11 +121,18 @@ type target struct {
 	addr string // the address it was named by
 }
 
-// trigger is what started a session's current work.
+// trigger is what started a session's current work: the deepest hop count
+// of the messages its current turn took in, and their ids.
 type trigger struct {
 	hops int
-	msg  string // message id, if a routed message
+	msgs []string // routed messages the turn took in, oldest first
+	// idle: that turn has ended, so the next message to start one starts
+	// the count over.
+	idle bool
 }
+
+// maxTriggerMsgs bounds the ids a trigger keeps (steers into a long turn).
+const maxTriggerMsgs = 64
 
 type bucket struct {
 	tokens float64
@@ -535,6 +543,17 @@ func (r *router) started(sessionID string, hops int) {
 	r.mu.Unlock()
 }
 
+// turnEnded records that a session's turn is over (it is idle): the next
+// message to start a turn starts its hop count over.
+func (r *router) turnEnded(sessionID string) {
+	r.mu.Lock()
+	if tr, ok := r.inbound[sessionID]; ok {
+		tr.idle = true
+		r.inbound[sessionID] = tr
+	}
+	r.mu.Unlock()
+}
+
 // allow applies the per-pair rate limit (token bucket).
 func (r *router) allow(key string, perMinute int) bool { return r.allowN(key, perMinute, 1) }
 
@@ -702,7 +721,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	now := time.Now().UTC()
 	var out []model.Message
 	for _, t := range targets {
-		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
+		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		m.Files = model.MetaOnly(files)
@@ -1097,6 +1116,12 @@ func (r *router) expireIn(id string, queued bool, why, cause string) {
 		r.mu.Unlock()
 		return
 	}
+	if !queued && r.inflight[id] {
+		// Its node may be taking it now: the loop looks again once that
+		// delivery has settled (delivered, or still pending and expired).
+		r.mu.Unlock()
+		return
+	}
 	cur.State, cur.Error = model.MsgExpired, why
 	_ = r.put(cur)
 	ws := r.waiters[id]
@@ -1309,7 +1334,7 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		return fleet.ReplyResult{}, errors.New("only the recipient of an ask can reply to it")
 	}
 	now := time.Now().UTC()
-	rep := model.Message{ID: ulid.New(), Kind: model.MsgReply, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
+	rep := model.Message{ID: ulid.New(), Kind: model.MsgReply, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 		To: ask.From, ReplyTo: ask.ID, Text: args.Text, Hops: ask.Hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	switch {
@@ -1322,9 +1347,17 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 	}
 
 	r.mu.Lock()
-	if cur, ok := r.s.store.Message(ask.ID); ok && cur.ReplyID != "" {
-		r.mu.Unlock()
-		return fleet.ReplyResult{}, errors.New("this ask has already been answered")
+	if cur, ok := r.s.store.Message(ask.ID); ok {
+		switch {
+		case cur.ReplyID != "":
+			r.mu.Unlock()
+			return fleet.ReplyResult{}, errors.New("this ask has already been answered")
+		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed:
+			// Its sender was told it will not be answered (and a waiting
+			// fleet_ask has returned): an answer now would contradict that.
+			r.mu.Unlock()
+			return fleet.ReplyResult{}, fmt.Errorf("this ask is %s and can no longer be answered", cur.State)
+		}
 	}
 	ws := r.waiters[ask.ID]
 	delete(r.waiters, ask.ID)
@@ -1408,7 +1441,18 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 	case from.sess == nil:
 		msgs = r.s.store.Messages(store.MessageFilter{ToUser: true, Limit: limit})
 	case args.All:
-		msgs = r.s.store.Messages(store.MessageFilter{Session: from.sess.ID, Limit: limit})
+		// What it sent, and what reached it: a message to it that never
+		// went into its input (queued, cancelled, expired, failed) is not
+		// its to read.
+		for _, m := range r.s.store.Messages(store.MessageFilter{Session: from.sess.ID}) {
+			if len(msgs) == limit {
+				break
+			}
+			if m.ToSession == from.sess.ID && m.FromSession != from.sess.ID && !m.Entered() {
+				continue
+			}
+			msgs = append(msgs, m)
+		}
 	default:
 		msgs, res.More = r.unread(from.sess.ID, limit)
 	}
@@ -1435,9 +1479,11 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 
 // unread returns the oldest limit messages to a session after its inbox
 // cursor, oldest first, with how many more there are, and moves the cursor
-// past those it returns. Messages still pending (in flight, or a reply held
-// for its asker) and replies handed straight to a waiting fleet_ask are not
-// unread: the session sees them otherwise.
+// past those it returns. Only messages that went into the session's input
+// are unread: not ones still pending (in flight, or a reply held for its
+// asker) or waiting in its queue (they arrive as a turn), not ones
+// cancelled, expired or failed before they reached it, and not replies
+// handed straight to a waiting fleet_ask (the session saw them there).
 func (r *router) unread(sessionID string, limit int) ([]model.Message, int) {
 	sess, ok := r.s.store.Session(sessionID)
 	if !ok {
@@ -1448,7 +1494,7 @@ func (r *router) unread(sessionID string, limit int) ([]model.Message, int) {
 		if m.ID <= sess.InboxRead {
 			break // newest first
 		}
-		if m.ToSession != sessionID || m.State == model.MsgPending || m.Inline {
+		if m.ToSession != sessionID || !m.Entered() || m.Inline {
 			continue
 		}
 		out = append(out, m)
@@ -1487,9 +1533,13 @@ func clipInbox(text string) string {
 	return fmt.Sprintf("%s… [%d more bytes cut]", text[:cut], len(text)-cut)
 }
 
-// onDelivered records the hops of the message that started a session's
-// next turn.
-func (r *router) onDelivered(sessionID, messageID string) {
+// onDelivered records the hops of a message that went into a session's
+// input (message.delivered, with the mode the node reports). A turn takes
+// the deepest hop count of everything it took in: the node reports each
+// message of a batch, and each steer into the running turn, one by one,
+// and none of them may lower the count. Only a message that starts a turn
+// after the last one ended (an idle session) starts it over.
+func (r *router) onDelivered(sessionID, messageID, mode string) {
 	m, ok := r.s.store.Message(messageID)
 	if !ok || m.ToSession != sessionID {
 		// Not a routed message to this session (a person's spawn prompt,
@@ -1498,11 +1548,80 @@ func (r *router) onDelivered(sessionID, messageID string) {
 		// made-up or borrowed messages.
 		return
 	}
-	r.mu.Lock()
-	r.inbound[sessionID] = trigger{hops: m.Hops, msg: m.ID}
-	r.mu.Unlock()
 	// The session has seen it: fleet_inbox need not list it as unread.
-	r.markRead(sessionID, m.ID)
+	defer r.markRead(sessionID, m.ID)
+	if !m.SeenAt.IsZero() {
+		// Its turn is over already (a late or repeated report): it starts
+		// nothing.
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tr, ok := r.inbound[sessionID]
+	switch {
+	case !ok || tr.idle && mode != model.ModeSteer:
+		tr = trigger{hops: m.Hops}
+	case contains(tr.msgs, m.ID):
+		return // reported again (a delivery retried after a busy harness)
+	default:
+		tr.hops = max(tr.hops, m.Hops)
+	}
+	if len(tr.msgs) < maxTriggerMsgs {
+		tr.msgs = append(tr.msgs, m.ID)
+	}
+	r.inbound[sessionID] = tr
+}
+
+// rebuildTriggers recovers what started each live session's current work
+// from its stored messages, so a restart does not hand running chains
+// fresh hop counts: the messages it took in since its last completed turn
+// (the current turn's), or failing those the last completed turn's.
+func (r *router) rebuildTriggers() {
+	for _, sess := range r.s.store.Sessions() {
+		if !live(sess) {
+			continue
+		}
+		var lastSeen time.Time
+		var lastTurn string
+		var entered []model.Message
+		for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
+			if m.ToSession != sess.ID || !m.Entered() {
+				continue
+			}
+			entered = append(entered, m)
+			if m.SeenAt.After(lastSeen) {
+				lastSeen, lastTurn = m.SeenAt, m.SeenTurn
+			}
+		}
+		sort.Slice(entered, func(i, j int) bool { return entered[i].ID < entered[j].ID })
+		var cur, prev trigger
+		for _, m := range entered {
+			switch {
+			case m.SeenAt.IsZero() && !m.DeliveredAt.Before(lastSeen):
+				cur.hops = max(cur.hops, m.Hops)
+				cur.msgs = append(cur.msgs, m.ID)
+			case !m.SeenAt.IsZero() && (lastTurn != "" && m.SeenTurn == lastTurn || lastTurn == "" && m.SeenAt.Equal(lastSeen)):
+				prev.hops = max(prev.hops, m.Hops)
+				prev.msgs = append(prev.msgs, m.ID)
+			}
+		}
+		tr := cur
+		if len(tr.msgs) == 0 {
+			tr = prev
+		}
+		if len(tr.msgs) == 0 {
+			continue
+		}
+		if len(tr.msgs) > maxTriggerMsgs {
+			tr.msgs = tr.msgs[len(tr.msgs)-maxTriggerMsgs:]
+		}
+		tr.idle = sess.Status == model.StatusIdle
+		r.mu.Lock()
+		if old, ok := r.inbound[sess.ID]; !ok || old.hops < tr.hops {
+			r.inbound[sess.ID] = tr
+		}
+		r.mu.Unlock()
+	}
 }
 
 // onSettled sends a completion notice to a spawned session's parent.
@@ -1520,8 +1639,8 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 	hops := tr.hops + 1
 	// The parent asked and has had its answer: a completion notice on top
 	// would only repeat it.
-	if tr.msg != "" {
-		if m, ok := r.s.store.Message(tr.msg); ok && m.Kind == model.MsgAsk && m.FromSession == parent.ID && m.State == model.MsgAnswered {
+	for _, id := range tr.msgs {
+		if m, ok := r.s.store.Message(id); ok && m.Kind == model.MsgAsk && m.FromSession == parent.ID && m.State == model.MsgAnswered {
 			return
 		}
 	}

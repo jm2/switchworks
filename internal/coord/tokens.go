@@ -171,6 +171,39 @@ func (s *Server) credential(ctx context.Context) (via string, owner, ok bool) {
 	return "token:" + g.tokenID, false, true
 }
 
+// errOwnerOnly refuses what only an owner may do to tokens: an admin-scope
+// token that is not the owner's manages tokens, but may not make owners.
+var errOwnerOnly = errors.New("only the admin token or an owner token may make, mark or revoke owner tokens")
+
+// isOwner reports whether the request's credential is the owner's.
+func (s *Server) isOwner(ctx context.Context) bool {
+	_, owner, ok := s.credential(ctx)
+	return ok && owner
+}
+
+// sameSender reports whether the request's credential is the one a
+// person's message m was sent with. API tokens are matched by id, so a
+// token that reuses a revoked one's name does not inherit its messages;
+// a message stored before ids were recorded matches by name only a token
+// that already existed when it was sent.
+func (s *Server) sameSender(ctx context.Context, m model.Message) bool {
+	if m.FromSession != "" || !strings.HasPrefix(m.From, "user:") || m.Via == "" {
+		return false
+	}
+	g := grantFrom(ctx)
+	if !g.scope.valid() {
+		return false
+	}
+	if g.tokenID == "" {
+		return m.Via == "admin"
+	}
+	if m.ViaToken != "" {
+		return m.ViaToken == g.tokenID
+	}
+	t, ok := s.store.APIToken(g.tokenID)
+	return ok && m.Via == "token:"+t.Name && !t.Created.After(m.CreatedAt)
+}
+
 // grantName names a grant's credential for logs.
 func (s *Server) grantName(g grant) string {
 	if g.tokenID == "" {
@@ -268,6 +301,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errors.New("ttl_seconds must be between 0 (no expiry) and ten years"))
 		return
 	}
+	if body.Owner && !s.isOwner(r.Context()) {
+		writeErr(w, 403, errOwnerOnly)
+		return
+	}
 	now := time.Now().UTC()
 	secret := pki.RandomSecret(32)
 	t := store.APIToken{ID: ulid.New(), Name: body.Name, Scope: body.Scope, Hash: pki.HashSecret(secret), Created: now.Truncate(time.Second),
@@ -294,6 +331,10 @@ func (s *Server) handleTokenOwner(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeErr(w, 400, err)
+		return
+	}
+	if !s.isOwner(r.Context()) {
+		writeErr(w, 403, errOwnerOnly)
 		return
 	}
 	ref := r.PathValue("id")
@@ -339,6 +380,11 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		writeErr(w, 404, fmt.Errorf("token %q: %w", ref, store.ErrNotFound))
+		return
+	}
+	if target.Owner && !s.isOwner(r.Context()) {
+		// Revoking the owner's credentials is the owner's to do.
+		writeErr(w, 403, errOwnerOnly)
 		return
 	}
 	if err := s.store.DeleteAPIToken(target.ID); err != nil {
