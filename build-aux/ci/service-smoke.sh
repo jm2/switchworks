@@ -105,7 +105,7 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 
 "$swk" version
-"$swk" coordinator init --host 127.0.0.1 || fail "coordinator init"
+"$swk" coordinator init --host 127.0.0.1 --user-cli || fail "coordinator init"
 "$swk" service install coordinator || fail "service install coordinator"
 # "running" can come from the service manager before the process has
 # written its status file; wait for the file (it carries the pid).

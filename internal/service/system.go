@@ -171,7 +171,7 @@ its files: for example
 
   sudo swk --system coordinator init --host coord.lan,10.0.0.5
   sudo swk --system coordinator enroll-token devbox | swk node enroll -
-  sudo swk --system token create "$USER" --scope operate --cli-config
+  sudo swk --system token create "$USER" --scope read --cli-config
 
 On Windows, run it from an elevated prompt instead of with sudo.`
 

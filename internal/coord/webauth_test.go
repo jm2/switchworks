@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jm2/switchworks/internal/pki"
 	"github.com/jm2/switchworks/internal/store"
 	"github.com/jm2/switchworks/internal/ulid"
 )
@@ -62,23 +63,57 @@ func TestCookies(t *testing.T) {
 	if valid(base64.RawURLEncoding.EncodeToString(raw)+"."+sig, now) {
 		t.Fatal("cookie with a forged scope accepted")
 	}
-	// A pre-token cookie (expiry and id only) is still the admin's.
+	// A pre-token cookie (expiry and id only) was the admin's, and carries
+	// no admin generation: refused.
 	legacy := make([]byte, legacyCookieLen)
 	binary.BigEndian.PutUint64(legacy, uint64(now.Add(time.Hour).Unix()))
 	lc := base64.RawURLEncoding.EncodeToString(legacy) + "." + base64.RawURLEncoding.EncodeToString(a.sign(legacy))
-	if g, ok := a.validCookie(lc, now); !ok || g != admin {
-		t.Fatalf("legacy cookie: %+v %v", g, ok)
+	if valid(lc, now) {
+		t.Fatal("admin cookie without a generation accepted")
+	}
+	// So is an admin cookie from before generations: the issued flag only.
+	pre := make([]byte, cookieIDEnd, cookieIDEnd+9)
+	binary.BigEndian.PutUint64(pre, uint64(now.Add(time.Hour).Unix()))
+	pre = append(pre, byte(scopeAdmin)|cookieIssuedFlag)
+	pre = binary.BigEndian.AppendUint64(pre, uint64(now.UnixNano()))
+	if valid(base64.RawURLEncoding.EncodeToString(pre)+"."+base64.RawURLEncoding.EncodeToString(a.sign(pre)), now) {
+		t.Fatal("admin cookie from before generations accepted")
+	}
+	// Replacing the admin token signs its browsers out, and only them.
+	a.adminGen = adminGeneration("new hash")
+	if valid(c, now) {
+		t.Fatal("admin cookie survived a new admin token")
+	}
+	if !valid(rc, now) {
+		t.Fatal("a new admin token signed out an API token's cookie")
+	}
+	if !valid(a.newCookie(now, admin, time.Time{}), now) {
+		t.Fatal("admin cookie under the new token refused")
 	}
 
 	code := a.newCode(now, time.Minute, read)
-	if g, ok := a.useCode(code, now); !ok || g != read {
+	if g, ok, _ := a.useCode(code, now); !ok || g != read {
 		t.Fatalf("login code: %+v %v", g, ok)
 	}
-	if _, ok := a.useCode(code, now); ok {
+	if _, ok, _ := a.useCode(code, now); ok {
 		t.Fatal("login code must work exactly once")
 	}
-	if late := a.newCode(now, time.Minute, admin); func() bool { _, ok := a.useCode(late, now.Add(2*time.Minute)); return ok }() {
+	if late := a.newCode(now, time.Minute, admin); func() bool { _, ok, _ := a.useCode(late, now.Add(2*time.Minute)); return ok }() {
 		t.Fatal("expired login code accepted")
+	}
+
+	// A link refused for too many sign-ins with its credential is not used
+	// up.
+	busy := grant{scope: scopeRead, tokenID: ulid.New()}
+	for i := 0; i < maxSignInsPerMinute; i++ {
+		a.allowSignIn(busy, now)
+	}
+	code = a.newCode(now, loginLinkTT, busy)
+	if _, ok, th := a.useCode(code, now); ok || !th {
+		t.Fatalf("link past the sign-in limit: ok %v throttled %v", ok, th)
+	}
+	if g, ok, th := a.useCode(code, now.Add(time.Minute)); !ok || th || g != busy {
+		t.Fatalf("link after the limit passed: %+v ok %v throttled %v", g, ok, th)
 	}
 }
 
@@ -214,12 +249,15 @@ func TestWebSignIn(t *testing.T) {
 	}
 
 	// Sign-in failures are throttled per client (one failure above, this
-	// makes ten), but a one-time link still works.
+	// makes ten), but the right token and a one-time link still work.
 	for i := 0; i < 9; i++ {
 		e.do(t, "POST", "/ui/login", `{"token":"wrong"}`, nil)
 	}
-	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
+	if r := e.do(t, "POST", "/ui/login", `{"token":"wrong"}`, nil); r.StatusCode != 429 {
 		t.Fatalf("throttle: %d", r.StatusCode)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 200 {
+		t.Fatalf("valid token sign-in while throttled: %d", r.StatusCode)
 	}
 	code = e.srv.web.newCode(time.Now(), time.Minute, grant{scope: scopeAdmin})
 	if r := e.do(t, "POST", "/ui/login", `{"code":"`+code+`"}`, nil); r.StatusCode != 200 {
@@ -405,12 +443,45 @@ func TestBearerThrottle(t *testing.T) {
 			t.Fatalf("bad bearer %d: %d", i, r.StatusCode)
 		}
 	}
-	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer " + e.token}); r.StatusCode != 429 {
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != 429 {
 		t.Fatalf("bearer guesses not throttled: %d", r.StatusCode)
 	}
 	// Sign-ins share the count.
-	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 429 {
+	if r := e.do(t, "POST", "/ui/login", `{"token":"nope"}`, nil); r.StatusCode != 429 {
 		t.Fatalf("sign-in after bearer guesses: %d", r.StatusCode)
+	}
+	// Someone else's bad tokens from the same address do not lock out a
+	// valid one.
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Authorization": "Bearer " + e.token}); r.StatusCode != 200 {
+		t.Fatalf("valid bearer from a throttled client: %d", r.StatusCode)
+	}
+	if r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil); r.StatusCode != 200 {
+		t.Fatalf("valid sign-in from a throttled client: %d", r.StatusCode)
+	}
+}
+
+func TestAdminCookieRotation(t *testing.T) {
+	e := newWebEnv(t)
+	r := e.do(t, "POST", "/ui/login", `{"token":"`+e.token+`"}`, nil)
+	ck := r.Cookies()[0]
+	cookie := map[string]string{"Cookie": ck.Name + "=" + ck.Value}
+	if r := e.do(t, "GET", "/v1/hosts", "", cookie); r.StatusCode != 200 {
+		t.Fatalf("admin cookie: %d", r.StatusCode)
+	}
+	// A restart with a new admin_token_hash, and the same ui.key.
+	cfg := e.srv.cfg
+	cfg.AdminTokenHash = pki.HashSecret(pki.RandomSecret(32))
+	s, err := NewServer(e.srv.dir, cfg, e.srv.store, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Shutdown)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/hosts", nil)
+	req.Header.Set("Cookie", cookie["Cookie"])
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Fatalf("admin cookie after the admin token was replaced: %d", rec.Code)
 	}
 }
 
@@ -437,7 +508,7 @@ func TestFailuresEvictOldest(t *testing.T) {
 	for i := 0; i < maxClients; i++ {
 		a.checkToken(fmt.Sprintf("11.%d.%d.0/24", i>>8, i&0xff), now.Add(time.Second), bad)
 	}
-	if _, th := a.checkToken("busy", now.Add(3*time.Second), func() bool { return true }); !th {
+	if _, th := a.checkToken("busy", now.Add(3*time.Second), bad); !th {
 		t.Fatal("a flood of new clients reset an active client's count")
 	}
 }
@@ -457,10 +528,24 @@ func TestHostCookieOverHTTPS(t *testing.T) {
 	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Cookie": ck.Name + "=" + ck.Value}); r.StatusCode != 200 {
 		t.Fatalf("API with the __Host- cookie: %d", r.StatusCode)
 	}
-	// A cookie under the old name still works until it expires.
-	old := e.srv.web.newCookie(time.Now(), grant{scope: scopeAdmin}, time.Time{})
-	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Cookie": cookieName + "=" + old}); r.StatusCode != 200 {
-		t.Fatalf("API with the old cookie name: %d", r.StatusCode)
+	// A swk_session cookie, which a sibling host could have planted, is
+	// refused over HTTPS (and still works over plain HTTP).
+	plain := e.srv.web.newCookie(time.Now(), grant{scope: scopeAdmin}, time.Time{})
+	planted := map[string]string{"Cookie": cookieName + "=" + plain, "X-Forwarded-Proto": "https"}
+	if r := e.do(t, "GET", "/v1/hosts", "", planted); r.StatusCode != 401 {
+		t.Fatalf("API over HTTPS with swk_session: %d", r.StatusCode)
+	}
+	if r := e.do(t, "GET", "/v1/hosts", "", map[string]string{"Cookie": cookieName + "=" + plain}); r.StatusCode != 200 {
+		t.Fatalf("API over plain HTTP with swk_session: %d", r.StatusCode)
+	}
+	// Signing out over HTTPS leaves a planted cookie alone (it was never
+	// the browser's session) and still clears it from the browser.
+	r = e.do(t, "POST", "/ui/logout", "", map[string]string{"Cookie": cookieName + "=" + plain, "X-Forwarded-Proto": "https", "X-Swk-CSRF": "1"})
+	if r.StatusCode != 200 {
+		t.Fatalf("logout: %d", r.StatusCode)
+	}
+	if _, ok := e.srv.web.validCookie(plain, time.Now()); !ok {
+		t.Fatal("signing out over HTTPS revoked a swk_session cookie")
 	}
 }
 

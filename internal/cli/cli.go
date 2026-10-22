@@ -57,7 +57,7 @@ var commands = map[string]command{
 func client(stderr io.Writer) (*apiclient.Client, bool) {
 	cfg, err := apiclient.LoadConfig(paths.CLIConfig())
 	if err != nil {
-		fmt.Fprintf(stderr, "swk: no CLI config (%v)\n  make one where the admin token is: swk token create <name> --scope operate --cli-config > %s\n", err, paths.CLIConfig())
+		fmt.Fprintf(stderr, "swk: no CLI config (%v)\n  make one where the admin token is: swk token create <name> --scope read --cli-config > %s\n  (operate only on your own devices where no agents run)\n", err, paths.CLIConfig())
 		return nil, false
 	}
 	c, err := apiclient.New(cfg)

@@ -37,8 +37,9 @@ import (
 const (
 	// Over HTTPS the cookie is __Host-swk_session: browsers then refuse it
 	// unless it is Secure, for Path=/ and set without a Domain, so another
-	// host or plain-HTTP page cannot plant or shadow it. Plain HTTP (and
-	// cookies from before the rename) use swk_session.
+	// host or plain-HTTP page cannot plant or shadow it. Plain HTTP uses
+	// swk_session, which HTTPS requests never accept: a sibling host could
+	// plant one to sign the browser in as someone else.
 	cookieName       = "swk_session"
 	secureCookieName = "__Host-swk_session"
 	cookieTTL        = 30 * 24 * time.Hour
@@ -55,7 +56,11 @@ const (
 type webAuth struct {
 	key        []byte
 	revokePath string
-	notice     string // what loading had to repair, for the log
+	// adminGen is signed into cookies the admin token signs in, and only
+	// cookies carrying the current one are accepted: replacing
+	// admin_token_hash signs those browsers out.
+	adminGen [8]byte
+	notice   string // what loading had to repair, for the log
 
 	saveMu   sync.Mutex // orders writes of revokePath, outside mu
 	mu       sync.Mutex
@@ -172,6 +177,13 @@ func (v *revocations) parse(b []byte) error {
 	return nil
 }
 
+// adminGeneration derives adminGen from the admin token's hash.
+func adminGeneration(adminTokenHash string) (g [8]byte) {
+	h := sha256.Sum256([]byte("swk admin cookie\x00" + adminTokenHash))
+	copy(g[:], h[:])
+	return g
+}
+
 func (a *webAuth) sign(payload []byte) []byte {
 	m := hmac.New(sha256.New, a.key)
 	m.Write(payload)
@@ -182,12 +194,15 @@ func (a *webAuth) sign(payload []byte) []byte {
 // id (16), then the grant: the scope (1 byte) and the id of the API token it
 // came from (empty for the admin token). Since sign-out cutoffs, the scope
 // byte carries cookieIssuedFlag and the 8 bytes after it hold when the
-// cookie was minted (Unix ns). Cookies from before scoped tokens stop after
-// the id; they were all minted with the admin token, so they stay admin.
+// cookie was minted (Unix ns). An admin cookie's scope byte also carries
+// cookieAdminGenFlag, and the next 8 bytes are adminGen. Cookies from before
+// scoped tokens stop after the id; they were all minted with the admin
+// token, so they are admin cookies without a generation, which are refused.
 const (
-	cookieIDEnd      = 8 + 16
-	legacyCookieLen  = cookieIDEnd
-	cookieIssuedFlag = 0x80
+	cookieIDEnd        = 8 + 16
+	legacyCookieLen    = cookieIDEnd
+	cookieIssuedFlag   = 0x80
+	cookieAdminGenFlag = 0x40
 )
 
 // newCookie mints a cookie for g, expiring after cookieTTL or at notAfter
@@ -197,11 +212,18 @@ func (a *webAuth) newCookie(now time.Time, g grant, notAfter time.Time) string {
 	if !notAfter.IsZero() && notAfter.Before(exp) {
 		exp = notAfter
 	}
-	payload := make([]byte, cookieIDEnd, cookieIDEnd+1+8+len(g.tokenID))
+	payload := make([]byte, cookieIDEnd, cookieIDEnd+1+8+8+len(g.tokenID))
 	binary.BigEndian.PutUint64(payload, uint64(exp.Unix()))
 	_, _ = rand.Read(payload[8:cookieIDEnd])
-	payload = append(payload, byte(g.scope)|cookieIssuedFlag)
+	flags := byte(cookieIssuedFlag)
+	if g.tokenID == "" {
+		flags |= cookieAdminGenFlag
+	}
+	payload = append(payload, byte(g.scope)|flags)
 	payload = binary.BigEndian.AppendUint64(payload, uint64(now.UnixNano()))
+	if g.tokenID == "" {
+		payload = append(payload, a.adminGen[:]...)
+	}
 	payload = append(payload, g.tokenID...)
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString(payload) + "." + enc.EncodeToString(a.sign(payload))
@@ -213,6 +235,7 @@ type cookie struct {
 	expires int64 // Unix s
 	issued  int64 // Unix ns
 	grant   grant
+	gen     *[8]byte // adminGen when minted, for admin cookies that carry it
 }
 
 // cred names the credential behind a grant, for sign-in limits and
@@ -252,7 +275,13 @@ func (a *webAuth) parseCookie(v string) (cookie, bool) {
 			}
 			c.issued, rest = int64(binary.BigEndian.Uint64(rest)), rest[8:]
 		}
-		c.grant = grant{scope: scope(b &^ cookieIssuedFlag), tokenID: string(rest)}
+		if b&cookieAdminGenFlag != 0 {
+			if len(rest) != 8 {
+				return cookie{}, false
+			}
+			c.gen, rest = (*[8]byte)(rest), nil
+		}
+		c.grant = grant{scope: scope(b &^ (cookieIssuedFlag | cookieAdminGenFlag)), tokenID: string(rest)}
 		if !c.grant.scope.valid() || (c.grant.tokenID != "" && !ulid.Valid(c.grant.tokenID)) {
 			return cookie{}, false
 		}
@@ -260,12 +289,16 @@ func (a *webAuth) parseCookie(v string) (cookie, bool) {
 	return c, true
 }
 
-// validCookie checks a cookie's signature, expiry and revocation, and
+// validCookie checks a cookie's signature, expiry and revocation, and for
+// an admin cookie that the admin token has not been replaced since, and
 // returns the grant signed into it. Whether its API token still exists is
 // the caller's check (Server.cookieGrant).
 func (a *webAuth) validCookie(v string, now time.Time) (grant, bool) {
 	c, ok := a.parseCookie(v)
 	if !ok || now.Unix() >= c.expires {
+		return grant{}, false
+	}
+	if c.grant.tokenID == "" && (c.gen == nil || *c.gen != a.adminGen) {
 		return grant{}, false
 	}
 	a.mu.Lock()
@@ -383,9 +416,13 @@ const maxSignInsPerMinute = 20
 // allowSignIn counts a sign-in with g and reports whether it is within
 // maxSignInsPerMinute.
 func (a *webAuth) allowSignIn(g grant, now time.Time) bool {
-	key := g.cred()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.allowSignInLocked(g, now)
+}
+
+func (a *webAuth) allowSignInLocked(g grant, now time.Time) bool {
+	key := g.cred()
 	recent := a.signins[key][:0]
 	for _, t := range a.signins[key] {
 		if now.Sub(t) < time.Minute {
@@ -400,23 +437,37 @@ func (a *webAuth) allowSignIn(g grant, now time.Time) bool {
 	return true
 }
 
-func (a *webAuth) useCode(code string, now time.Time) (grant, bool) {
+// useCode redeems a one-time login code, counting it as a sign-in with its
+// grant. A sign-in past maxSignInsPerMinute is refused as throttled and
+// leaves the code unused, so it can be tried again in a minute.
+func (a *webAuth) useCode(code string, now time.Time) (g grant, ok, throttled bool) {
 	h := pki.HashSecret(code)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	c, ok := a.codes[h]
-	delete(a.codes, h)
 	if !ok || !now.Before(c.expires) {
-		return grant{}, false
+		delete(a.codes, h)
+		return grant{}, false, false
 	}
-	return c.grant, true
+	if !a.allowSignInLocked(c.grant, now) {
+		return grant{}, false, true
+	}
+	delete(a.codes, h)
+	return c.grant, true, false
 }
 
 // checkToken compares a token (a sign-in or an API bearer token), limiting
-// each client to maxFailures failed attempts a minute. The check and the
-// count happen under one lock, so concurrent guesses cannot slip past the
-// limit.
+// each client to maxFailures failed attempts a minute. A valid token is
+// accepted even from a throttled client: a client key is shared by everyone
+// behind one NAT, IPv6 /64 or proxy, and throttling valid tokens would let
+// anyone there lock the rest out with ten bad ones. Only failures count, and
+// past the limit they are answered as throttled; guessing a token of 192
+// bits or more is hopeless at any rate, so the limit mostly keeps a
+// misconfigured client's retries quiet.
 func (a *webAuth) checkToken(client string, now time.Time, ok func() bool) (valid, throttled bool) {
+	if ok() {
+		return true, false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if _, known := a.failures[client]; !known && len(a.failures) >= maxClients {
@@ -431,10 +482,6 @@ func (a *webAuth) checkToken(client string, now time.Time, ok func() bool) (vali
 	if len(recent) >= maxFailures {
 		a.failures[client] = recent
 		return false, true
-	}
-	if ok() {
-		a.failures[client] = recent
-		return true, false
 	}
 	a.failures[client] = append(recent, now)
 	return false, false
@@ -505,10 +552,10 @@ func (s *Server) cookieGrant(r *http.Request) (grant, bool) {
 }
 
 // sessionCookie returns the request's valid session cookie, if any, and its
-// grant: __Host-swk_session, or the older swk_session.
+// grant.
 func (s *Server) sessionCookie(r *http.Request) (string, grant, bool) {
 	now := time.Now()
-	for _, name := range []string{secureCookieName, cookieName} {
+	for _, name := range acceptedCookieNames(r) {
 		c, err := r.Cookie(name)
 		if err != nil {
 			continue
@@ -518,6 +565,16 @@ func (s *Server) sessionCookie(r *http.Request) (string, grant, bool) {
 		}
 	}
 	return "", grant{}, false
+}
+
+// acceptedCookieNames are the session cookie names a request may be signed
+// in by: over HTTPS only __Host-swk_session, which no other host can set;
+// over plain HTTP either.
+func acceptedCookieNames(r *http.Request) []string {
+	if secureRequest(r) {
+		return []string{secureCookieName}
+	}
+	return []string{secureCookieName, cookieName}
 }
 
 // sessionCookieName is the cookie name for a response to r.
@@ -551,9 +608,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var g grant
 	switch {
 	case body.Code != "":
-		// One-time codes are 192-bit and single-use: no throttle, so a
-		// flood of bad tokens cannot block signing in with a link.
-		g, ok = s.web.useCode(body.Code, now)
+		// One-time codes are 192-bit and single-use: no per-client
+		// throttle, so a flood of bad tokens cannot block signing in with a
+		// link. useCode checks the per-credential sign-in limit before it
+		// uses the code up.
+		var throttled bool
+		g, ok, throttled = s.web.useCode(body.Code, now)
+		if throttled {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many sign-ins with this token; wait a minute (the link still works until it expires)"))
+			return
+		}
 		ok = ok && s.grantLive(g, now) // its token may have been revoked since
 	case body.Token != "":
 		var throttled bool
@@ -571,7 +635,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, errors.New("that token or link is not valid (links work once, for 15 minutes)"))
 		return
 	}
-	if !s.web.allowSignIn(g, now) {
+	if body.Code == "" && !s.web.allowSignIn(g, now) { // useCode counted a link's
 		writeErr(w, http.StatusTooManyRequests, errors.New("too many sign-ins with this token; wait a minute"))
 		return
 	}
@@ -598,7 +662,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var saveErr error
-	for _, name := range []string{secureCookieName, cookieName} {
+	for _, name := range acceptedCookieNames(r) {
 		c, err := r.Cookie(name)
 		if err != nil {
 			continue
