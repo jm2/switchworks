@@ -130,7 +130,14 @@ func TestPinnedEnrollmentTLS(t *testing.T) {
 		t.Fatalf("pinned dial: %v", err)
 	}
 	c.Close()
-	bad := PinnedTLS("00"+Fingerprint(ca.Cert)[2:], "coord.lan")
+	// Flip the first hex digit, so the pin always differs (a fixed "00"
+	// prefix matched the real fingerprint 1 time in 256).
+	fp := Fingerprint(ca.Cert)
+	first := "0"
+	if fp[0] == '0' {
+		first = "1"
+	}
+	bad := PinnedTLS(first+fp[1:], "coord.lan")
 	if c, err := tls.Dial("tcp", ln.Addr().String(), bad); err == nil {
 		c.Close()
 		t.Fatal("wrong fingerprint accepted")
