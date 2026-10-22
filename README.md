@@ -245,7 +245,7 @@ on each machine's `PATH`, for example `~/.local/bin/swk` on Linux and macOS or
 
 ### Prerequisites
 
-- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.2, if yours is older;
+- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.3, if yours is older;
   Fedora's `golang` package sets `GOTOOLCHAIN=local`, so build there with `GOTOOLCHAIN=auto make build`)
 - `make` (optional; the targets are short `go build` commands)
 

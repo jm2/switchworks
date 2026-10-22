@@ -1,7 +1,7 @@
 # Builds swk and swk-tray from the release source. Used by COPR (through
 # Packit, see .packit.yaml) and by the release workflow's .rpm job.
 #
-# go.mod asks for Go 1.27.2. When the builder's Go is older, the go command
+# go.mod asks for Go 1.27.3. When the builder's Go is older, the go command
 # downloads that toolchain from proxy.golang.org (checked against
 # sum.golang.org), so COPR builds need network access (enable_net).
 

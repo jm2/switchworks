@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Go 1.27.3** — Builds use Go 1.27.3, which fixes GO-2026-6809 in `crypto/x509`.
 - **Longer Codex deny list** — The permission-profile docs now list the other credential stores a
   sandboxed command can read (other agents' logins, package and cloud tokens, GnuPG, keyrings,
   browser profiles, Codex's own transcripts), note that Linux needs Codex 0.163, and explain why
