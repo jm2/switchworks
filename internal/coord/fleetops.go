@@ -139,7 +139,7 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 func infos(msgs []model.Message) []fleet.MessageInfo {
 	out := make([]fleet.MessageInfo, len(msgs))
 	for i, m := range msgs {
-		out[i] = fleet.MessageInfo{ID: m.ID, To: m.To, State: m.State, Mode: m.Mode, Error: m.Error, Target: m.ToPath}
+		out[i] = fleet.MessageInfo{ID: m.ID, To: m.To, State: m.State, Mode: m.Mode, Error: m.Error, Target: m.ToPath, DeliveredAt: m.DeliveredAt}
 	}
 	return out
 }

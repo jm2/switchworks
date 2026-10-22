@@ -642,6 +642,13 @@ func (s *Server) route(ev model.Event) {
 		var p model.MessageEvent
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			s.router.onDelivered(ev.SessionID, p.MessageID)
+			s.router.entered(ev.SessionID, p.MessageID, ev.TS)
+		}
+	case model.KindMessageSeen:
+		// The turn that carried it has completed.
+		var p model.MessageSeen
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.router.onSeen(ev.SessionID, p, ev.TS)
 		}
 	case model.KindSessionSettled:
 		var p model.Settled
@@ -655,6 +662,12 @@ func (s *Server) route(ev model.Event) {
 		var p model.MessageEvent
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			s.router.onFailed(ev.SessionID, p.MessageID, p.Error)
+		}
+	case model.KindMessageExpired:
+		// The node dropped a queued message past its expiry.
+		var p model.MessageEvent
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.router.onExpired(ev.SessionID, p.MessageID)
 		}
 	}
 }

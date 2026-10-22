@@ -161,6 +161,9 @@ type QueueEntry struct {
 	Owner    bool   `json:"owner,omitempty"`
 	Images   int    `json:"images,omitempty"`
 	Position int    `json:"position"`
+	// ExpiresAt is when the node drops it undelivered (nodes from 0.1.5,
+	// for messages that came with one).
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // SpawnCmd carries the coordinator's session record and the request.
@@ -201,12 +204,19 @@ type MessageCmd struct {
 	// Files carry text files' bytes (at most attach.MaxFileTotalBytes), to
 	// nodes with FeatureFiles only.
 	Files []model.Attachment `json:"files,omitempty"`
+	// ExpiresAt is the message's expiry (model.Message.ExpiresAt): a node
+	// from 0.1.5 drops it from the session's queue undelivered once past it
+	// (message.expired). Older nodes ignore it and keep it until delivered.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // DeliverResult is the data of a successful deliver (or promote) command.
 type DeliverResult struct {
 	Mode      string `json:"mode"`                // how it was delivered: queue, steer or interrupt
 	Duplicate bool   `json:"duplicate,omitempty"` // already seen; nothing done
+	// Expired: it expired while waiting to be steered in, and was dropped
+	// undelivered (message.expired).
+	Expired bool `json:"expired,omitempty"`
 }
 
 // Node -> coordinator requests, sent as TCmd with a NodeReq payload; the

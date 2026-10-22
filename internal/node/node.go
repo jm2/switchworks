@@ -113,7 +113,18 @@ type queuedMsg struct {
 	Attachments []model.Attachment `json:"attachments,omitempty"`
 	// Files were written to disk when the message was accepted (files.go).
 	Files []fileRef `json:"files,omitempty"`
+	// ExpiresAt, when set, is when the message expires: past it, it is
+	// dropped undelivered rather than starting or joining a turn.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
+
+// expired reports whether m has an expiry and it has passed.
+func (m queuedMsg) expired(now time.Time) bool {
+	return !m.ExpiresAt.IsZero() && now.After(m.ExpiresAt)
+}
+
+// errExpired is the answer to a steer whose message expired while it waited.
+var errExpired = errors.New("the message expired before it could be delivered")
 
 // seenCap bounds the per-session list of delivered message ids kept for
 // deduplication of coordinator redeliveries.
@@ -182,6 +193,50 @@ type session struct {
 	lastTurn   string
 	lastStatus string
 	lastText   string
+
+	// Receipts: the messages each turn carried (turnMsgs), the messages
+	// given to the harness as a new turn whose turn.started has not come
+	// yet (nextTurn), and each such turn's last agent message (turnReply).
+	// When the turn completes, each of its messages is reported seen.
+	turnMsgs  map[string][]string
+	nextTurn  []string
+	turnReply map[string]string
+}
+
+// carriedLocked records that turn carries the messages ids, for their
+// message.seen when it completes.
+func (s *session) carriedLocked(turn string, ids []string) {
+	if turn == "" || len(ids) == 0 {
+		return
+	}
+	if s.turnMsgs == nil {
+		s.turnMsgs = map[string][]string{}
+	}
+	s.turnMsgs[turn] = append(s.turnMsgs[turn], ids...)
+}
+
+// seenLocked reports the messages a completed turn carried as seen, with
+// the turn's last agent message. A turn that failed or was interrupted
+// may have ended before the model read them, so its messages stay
+// delivered.
+func (s *session) seenLocked(p model.TurnCompleted) {
+	ids, reply := s.turnMsgs[p.TurnID], s.turnReply[p.TurnID]
+	delete(s.turnMsgs, p.TurnID)
+	delete(s.turnReply, p.TurnID)
+	for t := range s.turnMsgs {
+		if t != s.activeTurn {
+			// A turn that ended without a turn.completed (as when the
+			// harness restarted): its messages are not known to be seen.
+			delete(s.turnMsgs, t)
+			delete(s.turnReply, t)
+		}
+	}
+	if p.Status != "completed" {
+		return
+	}
+	for _, id := range ids {
+		s.appendLocked(model.KindMessageSeen, model.MessageSeen{MessageID: id, TurnID: p.TurnID, ItemID: reply})
+	}
 }
 
 // Node is a running node.
@@ -410,6 +465,9 @@ func (s *session) sink(ev adapter.Event) {
 	case model.KindTurnStarted:
 		if p, ok := ev.Payload.(model.TurnStarted); ok {
 			s.activeTurn, s.busy = p.TurnID, true
+			// The turn the node's last delivery started.
+			s.carriedLocked(p.TurnID, s.nextTurn)
+			s.nextTurn = nil
 		}
 	case model.KindTurnCompleted:
 		if p, ok := ev.Payload.(model.TurnCompleted); ok {
@@ -417,11 +475,20 @@ func (s *session) sink(ev adapter.Event) {
 				s.activeTurn = ""
 			}
 			s.lastTurn, s.lastStatus = p.TurnID, p.Status
+			s.seenLocked(p)
 			idle = true // re-check delivery and settling now that the turn is done
 		}
 	case model.KindItemCompleted:
-		if p, ok := ev.Payload.(model.Item); ok && p.ItemType == "agentMessage" && p.Text != "" {
-			s.lastText = p.Text
+		if p, ok := ev.Payload.(model.Item); ok && p.ItemType == "agentMessage" {
+			if p.Text != "" {
+				s.lastText = p.Text
+			}
+			if _, carried := s.turnMsgs[p.TurnID]; carried && p.ItemID != "" {
+				if s.turnReply == nil {
+					s.turnReply = map[string]string{}
+				}
+				s.turnReply[p.TurnID] = p.ItemID
+			}
 		}
 	case model.KindSessionRegistered:
 		if p, ok := ev.Payload.(model.SessionRegistered); ok {
@@ -904,7 +971,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	}
 	s.mu.Unlock()
 	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		Attachments: model.MetaOnly(images)}
+		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt}
 	unseen := func() {
 		s.mu.Lock()
 		for i, id := range s.rec.Seen {
@@ -925,9 +992,15 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	if caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h))) {
 		err := n.steer(s, h, msg, images)
 		if err == nil {
-			_ = n.saveState()
-			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
+			_ = n.saveState() // flushSteers reported it delivered
 			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer}), nil
+		}
+		if errors.Is(err, errExpired) {
+			// Its id stays among the seen ones, so a redelivery does not
+			// bring it back.
+			_ = n.saveState()
+			s.emit(model.KindMessageExpired, model.MessageEvent{MessageID: msg.ID, From: msg.From, Error: err.Error()})
+			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer, Expired: true}), nil
 		}
 		if errors.Is(err, adapter.ErrNoImages) {
 			unseen()
@@ -1060,6 +1133,19 @@ func (n *Node) steer(s *session, h adapter.Handle, msg queuedMsg, images []model
 func (n *Node) flushSteers(s *session, h adapter.Handle) {
 	for {
 		s.mu.Lock()
+		// Messages that expired while they waited are dropped, never
+		// steered in.
+		now := time.Now()
+		var expired []*steerReq
+		live := s.steerBuf[:0:0]
+		for _, r := range s.steerBuf {
+			if r.msg.expired(now) {
+				expired = append(expired, r)
+			} else {
+				live = append(live, r)
+			}
+		}
+		s.steerBuf = live
 		msgs := make([]queuedMsg, len(s.steerBuf))
 		for i, r := range s.steerBuf {
 			msgs[i] = r.msg
@@ -1068,11 +1154,17 @@ func (n *Node) flushSteers(s *session, h adapter.Handle) {
 		if k == 0 {
 			s.steering = false
 			s.mu.Unlock()
+			for _, r := range expired {
+				r.done <- errExpired
+			}
 			return
 		}
 		batch := s.steerBuf[:k:k]
 		s.steerBuf = s.steerBuf[k:]
 		s.mu.Unlock()
+		for _, r := range expired {
+			r.done <- errExpired
+		}
 		var images []model.Attachment
 		for _, r := range batch {
 			images = append(images, r.images...)
@@ -1080,6 +1172,21 @@ func (n *Node) flushSteers(s *session, h adapter.Handle) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := h.Deliver(ctx, batchInput(msgs[:k], images), adapter.DeliverSteer)
 		cancel()
+		if err == nil {
+			// Reported here, with the turn they went into, before that
+			// turn's completion can be: message.seen never comes first.
+			s.mu.Lock()
+			s.flushDeltaLocked()
+			ids := make([]string, len(batch))
+			for i, r := range batch {
+				ids[i] = r.msg.ID
+				s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: r.msg.ID, From: r.msg.From, Text: r.msg.Text,
+					Mode: model.ModeSteer, Attachments: r.msg.Attachments})
+			}
+			s.carriedLocked(s.activeTurn, ids)
+			s.mu.Unlock()
+			n.wakeSender()
+		}
 		for _, r := range batch {
 			r.done <- err
 		}
@@ -1101,6 +1208,20 @@ func (n *Node) tryDeliver(s *session) {
 		if s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
 			s.mu.Unlock()
 			return
+		}
+		if expired := s.dropExpiredLocked(time.Now()); len(expired) > 0 {
+			// Dropped, never delivered: no turn starts for them. Look again,
+			// for the rest of the queue or to settle.
+			s.mu.Unlock()
+			n.wakeSender()
+			_ = n.saveState()
+			for _, m := range expired {
+				if len(m.Attachments) > 0 {
+					n.gcImages(s)
+					break
+				}
+			}
+			continue
 		}
 		if len(s.rec.Queue) == 0 {
 			// Idle with nothing left to do: report that the session settled.
@@ -1129,8 +1250,10 @@ func (n *Node) tryDeliver(s *session) {
 		// Record delivery before the turn's own events, so the log reads in
 		// order; a failure is recorded right after.
 		s.flushDeltaLocked()
+		s.nextTurn = nil
 		for _, m := range batch {
 			s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: m.ID, From: m.From, Mode: "queue", Attachments: m.Attachments})
+			s.nextTurn = append(s.nextTurn, m.ID) // for the turn this starts
 		}
 		id := s.rec.ID
 		s.mu.Unlock()
@@ -1153,6 +1276,9 @@ func (n *Node) tryDeliver(s *session) {
 
 		s.mu.Lock()
 		s.delivering, s.sending = false, nil
+		if err != nil {
+			s.nextTurn = nil // no turn started for them
+		}
 		if errors.Is(err, adapter.ErrBusy) {
 			// Not delivered after all: they stay at the head of the queue and
 			// are retried on the next idle status, at once if one came in
@@ -1252,6 +1378,27 @@ func batchInput(batch []queuedMsg, images []model.Attachment) adapter.Input {
 	return adapter.Input{Text: strings.Join(parts, "\n\n"), ClientMessageID: ordered[0].ID, Images: imgs}
 }
 
+// dropExpiredLocked takes the messages past their expiry out of the queue,
+// reporting each as expired (message.expired), and returns them.
+func (s *session) dropExpiredLocked(now time.Time) []queuedMsg {
+	var expired []queuedMsg
+	for _, m := range s.rec.Queue {
+		if m.expired(now) {
+			expired = append(expired, m)
+		}
+	}
+	if len(expired) == 0 {
+		return nil
+	}
+	s.rec.Queue = without(s.rec.Queue, expired)
+	s.flushDeltaLocked()
+	for _, m := range expired {
+		s.appendLocked(model.KindMessageExpired, model.MessageEvent{MessageID: m.ID, From: m.From, Error: "expired in the queue before it was delivered"})
+	}
+	s.reportQueueLocked()
+	return expired
+}
+
 // without returns q without the messages of batch.
 func without(q, batch []queuedMsg) []queuedMsg {
 	drop := map[string]bool{}
@@ -1308,7 +1455,7 @@ func (n *Node) queueList(s *session) json.RawMessage {
 	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
 	for i, m := range s.rec.Queue {
 		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
-			Images: len(m.Attachments), Position: i})
+			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt})
 	}
 	return model.Marshal(res)
 }
@@ -1362,6 +1509,9 @@ func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json
 	if err != nil {
 		return nil, err
 	}
+	// A person asked for it now, which outranks its expiry: it goes even
+	// if it would have expired before its turn came.
+	msg.ExpiresAt = time.Time{}
 	if c.Mode == model.ModeSteer && caps.Steer && s.turnRunning(h) {
 		images, err := n.loadImages(s.rec.ID, msg.Attachments)
 		if err == nil {
@@ -1372,8 +1522,8 @@ func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json
 			s.reportQueueLocked()
 			s.mu.Unlock()
 			_ = n.saveState()
+			// flushSteers reported it delivered.
 			s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: model.ModeSteer})
-			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
 			if len(msg.Attachments) > 0 {
 				n.gcImages(s)
 			}

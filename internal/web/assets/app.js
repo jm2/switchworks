@@ -39,6 +39,15 @@ function ago(ts) {
   return Math.floor(s / 86400) + 'd';
 }
 
+// clock shows a time as 14:02, with the day too when it is not today; ''
+// for none (Go's zero time).
+function clock(ts) {
+  if (!ts || ts.startsWith('0001')) return '';
+  const d = new Date(ts);
+  const t = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + t;
+}
+
 function human(n) {
   n = n || 0;
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -830,6 +839,11 @@ function sessionView(id, full) {
   let queueAsked = 0;
   const placeholder = h('p', {class: 'empty'});
   const items = new Map(); // item id -> {el, ...}
+  // Receipts under people's messages: "Delivered 14:02", then "Seen 14:05
+  // · reply" once the turn that carried them has finished.
+  const receipts = new Map(); // message id -> {list, el}
+  let unplaced = []; // people's messages delivered whose input has not shown yet
+  let turnInputs = []; // this turn's userMessage items: {wrap, text, receipt}
   let es = null;
   let lastSeq = 0;
   let follow = true;
@@ -926,6 +940,9 @@ function sessionView(id, full) {
         h('div', {class: 'bubble', text: m.text || 'A message'}),
         h('div', {class: 'queued-foot'},
           h('span', {text: m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
+          // The node drops it undelivered at expires_at (a node from
+          // 0.1.5); Send now still sends it.
+          clock(m.expires_at) ? h('span', {title: 'Not delivered after this; Send now still sends it', text: `expires ${clock(m.expires_at)}`}) : null,
           h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
           h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)})))),
       agents.length ? h('div', {class: 'queued-agents'}, icon('list'),
@@ -1034,6 +1051,53 @@ function sessionView(id, full) {
 
   function add(el) { log.append(el); return el; }
 
+  // ---- receipts ----
+
+  function receipt(list) {
+    const r = {list: list.slice(), el: h('div', {class: 'receipt'})};
+    for (const d of r.list) receipts.set(d.id, r);
+    drawReceipt(r);
+    return r;
+  }
+
+  // drawReceipt shows a receipt from the messages' records (kept current
+  // by the fleet stream), or the time of the delivery event for a message
+  // too old to be among them.
+  function drawReceipt(r) {
+    const ms = r.list.map((d) => S.messages.get(d.id)).filter(Boolean);
+    if (ms.some((m) => m.state === 'failed')) { fill(r.el); return; } // said in the transcript
+    const at = clock(ms.map((m) => m.delivered_at).find((t) => clock(t)) || r.list[0].ts);
+    const seen = ms.find((m) => clock(m.seen_at));
+    if (!seen) { fill(r.el, h('span', {text: `Delivered ${at}`})); return; }
+    fill(r.el, h('span', {title: `Delivered ${at}`, text: `Seen ${clock(seen.seen_at)}`}),
+      seen.seen_item ? [h('span', {text: '·'}),
+        h('button', {type: 'button', class: 'link', text: 'reply', title: 'Show the reply', onclick: () => showReply(seen.seen_item)})] : null);
+  }
+
+  // placeReceipt puts a person's delivered message's receipt under its
+  // input: a steer's input can show before the node reports it delivered,
+  // anything else's comes after.
+  function placeReceipt(p, ts) {
+    const d = {id: p.message_id, ts};
+    const u = p.text && turnInputs.find((x) => !x.receipt && x.text.includes(p.text));
+    if (u) {
+      u.receipt = receipt([d]);
+      u.wrap.append(u.receipt.el);
+      return;
+    }
+    unplaced.push(d);
+  }
+
+  function showReply(itemID) {
+    const it = items.get(itemID);
+    if (!it || !it.el.isConnected) { toast('The reply is not in this part of the transcript'); return; }
+    follow = false;
+    it.el.scrollIntoView({behavior: 'smooth', block: 'center'});
+    it.el.classList.remove('flash');
+    void it.el.offsetWidth; // restart the animation
+    it.el.classList.add('flash');
+  }
+
   function event(ev) {
     lastSeq = Math.max(lastSeq, ev.seq);
     const p = ev.payload || {};
@@ -1046,7 +1110,15 @@ function sessionView(id, full) {
           add(h('div', {class: 'sys' + (p.status === 'error' ? ' bad' : ''), text: (statusLabel[p.status] || p.status) + (p.detail ? ': ' + p.detail : '')}));
         }
         break;
+      case 'turn.started':
+        turnInputs = [];
+        break;
       case 'turn.completed': {
+        if (unplaced.length) {
+          // Delivered into this turn, but its input never showed.
+          add(h('div', {class: 'ev'}, receipt(unplaced).el));
+          unplaced = [];
+        }
         const secs = p.duration_ms ? ` in ${(p.duration_ms / 1000).toFixed(1)}s` : '';
         const what = {completed: 'Finished', interrupted: 'Interrupted', failed: 'Failed'}[p.status] || p.status;
         add(h('div', {class: 'sys turn' + (p.status === 'failed' ? ' bad' : ''), text: `${what}${secs}${p.error ? ': ' + p.error : ''}`}));
@@ -1072,6 +1144,9 @@ function sessionView(id, full) {
         break;
       case 'message.delivered':
         queueSoon(); // its queued bubble, if any, goes
+        // A spawn's first prompt (user:spawn) is no routed message: it has
+        // no record to follow.
+        if ((p.from || '').startsWith('user:') && p.from !== 'user:spawn') placeReceipt(p, ev.ts);
         // Images arrive with the message that starts (or steers) a turn;
         // the event carries their metadata, the bytes come from the store.
         if ((p.attachments || []).length) {
@@ -1084,6 +1159,10 @@ function sessionView(id, full) {
         break;
       case 'message.cancelled':
         add(h('div', {class: 'sys', text: `A queued message from ${p.from} was cancelled`}));
+        queueSoon();
+        break;
+      case 'message.expired':
+        add(h('div', {class: 'sys', text: `A queued message from ${p.from} expired before it was delivered`}));
         queueSoon();
         break;
       case 'message.queued':
@@ -1139,7 +1218,16 @@ function sessionView(id, full) {
         });
         const el = parts.length === 1 ? parts[0] : h('div', {class: 'batch'}, parts);
         items.set(p.item_id, {el});
-        add(h('div', {class: 'ev'}, el));
+        const wrap = add(h('div', {class: 'ev'}, el));
+        // People's messages the node reported delivered just before this
+        // input: theirs is this one.
+        let r = null;
+        if (unplaced.length) {
+          r = receipt(unplaced);
+          unplaced = [];
+          wrap.append(r.el);
+        }
+        turnInputs.push({wrap, text, receipt: r});
         break;
       }
       case 'agentMessage': {
@@ -1226,7 +1314,7 @@ function sessionView(id, full) {
     es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
-      'message.failed', 'message.promoted', 'message.cancelled', 'session.queue', 'usage', 'error', 'warning', 'session.settled',
+      'message.failed', 'message.promoted', 'message.cancelled', 'message.expired', 'session.queue', 'usage', 'error', 'warning', 'session.settled',
       'session.policy'];
     for (const k of kinds) {
       es.addEventListener(k, (e) => {
@@ -1251,6 +1339,8 @@ function sessionView(id, full) {
     update: (t, d) => {
       if (t === 'all' || t === 'tick' || (t === 'session' && d && (d.id === id || d.parent === id)) || t === 'host' || t === 'message') renderHead();
       if (t === 'message' && d && d.to_session === id && queuedBox.childElementCount) queueSoon(); // expired, failed or cancelled elsewhere
+      if (t === 'message' && d && receipts.has(d.id)) drawReceipt(receipts.get(d.id));
+      if (t === 'all') new Set(receipts.values()).forEach(drawReceipt);
       if (S.ready && !es) { connect(); queueSoon(); }
     },
     close: () => { if (es) es.close(); clearTimeout(queueTimer); window.removeEventListener('scroll', onScroll); },
@@ -1310,6 +1400,21 @@ function inboxView() {
   return {tab: 'inbox', render, update: (t) => { if (t === 'message' || t === 'all') render(); }};
 }
 
+// receiptTitle says when a message went into its target's input and when
+// the turn that carried it finished.
+function receiptTitle(m) {
+  const parts = [];
+  if (clock(m.delivered_at)) parts.push(`Delivered ${clock(m.delivered_at)}`);
+  if (clock(m.seen_at)) parts.push(`seen ${clock(m.seen_at)}`);
+  return parts.join(', ') || null;
+}
+
+// msgState is a message's state, with "queued" for one its session's node
+// accepted that has not gone into a turn yet.
+function msgState(m) {
+  return m.state === 'delivered' && m.to_session && !clock(m.delivered_at) ? 'queued' : m.state;
+}
+
 function messageItem(m) {
   const el = h('div', {class: 'item clip', onclick: () => el.classList.toggle('clip')},
     h('div', {class: 'head'},
@@ -1317,7 +1422,7 @@ function messageItem(m) {
       sessionLink(m.from, m.from_session), h('span', {class: 'faint', text: 'to'}),
       sessionLink(m.to_path || m.to, m.to_session),
       h('span', {class: 'grow'}),
-      h('span', {class: 'state ' + m.state, text: m.state + (m.inline ? ', inline' : '')}),
+      h('span', {class: 'state ' + msgState(m), title: receiptTitle(m), text: msgState(m) + (m.inline ? ', inline' : '')}),
       h('span', {class: 'faint', text: ago(m.created_at)})),
     h('div', {class: 'text', text: m.text}),
     thumbs(m.attachments),

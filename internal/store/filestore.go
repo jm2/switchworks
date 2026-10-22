@@ -532,7 +532,7 @@ func (s *FileStore) msgPath() string { return filepath.Join(s.dir, "messages.jso
 // ones, and asks that were delivered but never answered (a reply after
 // the retention would find nothing to answer, which is the same).
 func prunable(m *model.Message) bool {
-	return m.Terminal() || (m.Kind == model.MsgAsk && m.State == model.MsgDelivered)
+	return m.Terminal() || (m.Kind == model.MsgAsk && m.Accepted())
 }
 
 func (s *FileStore) openMessages() error {

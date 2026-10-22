@@ -157,8 +157,10 @@ It is there for an agent that wants to look back:
 - `all: true` lists recent messages to and from the session, newest
   first, seen or not, and does not move the cursor.
 - Each message is compact: `{id, kind, from, created_at, text, re}`
-  (`re` on replies; `to` on messages the session sent). `verbose: true`
-  returns full records instead.
+  (`re` on replies; on messages the session sent, `to`, `state`,
+  `delivered_at` and `seen_at`, so an agent checks a message's
+  [receipt](#receipts) with `all: true` instead of sending it again).
+  `verbose: true` returns full records instead.
 - Text is cut at 2,000 bytes, with a note such as `… [1000 more bytes
   cut]`.
 - With `ticket` it reports only on that ask (and lists no messages), so a
@@ -326,6 +328,16 @@ it runs this version.
 - A message to a host that is offline stays **pending** and is delivered
   when the host reconnects (the router retries every 2 s). It expires after
   its TTL (default 24 h), and the sender gets a `system` notice.
+- The TTL also covers the session's queue. The coordinator gives the node
+  each message's `expires_at`, and when the node builds a turn from the
+  queue, or steers in messages that waited for another steer, it drops any
+  past it: an expired message is never delivered and never starts a turn.
+  The node records `message.expired`, the message's state becomes
+  `expired`, and an agent that sent it gets the same `system` notice (an
+  expired ask fails, like a cancelled one). People's messages have the
+  same default TTL as agents'; `ttl_seconds` sets a shorter one. Send now
+  (promote) sends a message whatever its expiry. Nodes before 0.1.5
+  ignore `expires_at` and keep a queued message until it is delivered.
 - The node deduplicates by message id, so redelivery after a reconnect has
   no effect.
 - Delivery modes:
@@ -376,6 +388,51 @@ it runs this version.
   turn ends), the node tries again once the turn ends, or after 1, 5 and
   then every 30 s. Every 15 s it also looks for sessions that have been
   idle with queued messages for 30 s, logs a warning and tries again.
+
+### States
+
+| State | Meaning |
+| --- | --- |
+| `pending` | stored, waiting for the target's node (its host is offline, or a reply is held for a waiting `fleet_ask`) |
+| `delivered` | the target's node took it: into its input (`delivered_at` set), or into the session's queue (no `delivered_at` yet; the web UI says "queued"); a person's inbox |
+| `seen` | the turn that carried it has completed (`seen_at`, `seen_turn`, `seen_item`); see [Receipts](#receipts) |
+| `answered` | an ask that has been replied to (whether or not it was seen first) |
+| `expired` | not delivered within its TTL, at the coordinator or in the session's queue |
+| `failed` | could not be delivered, or an ask whose target stopped |
+| `cancelled` | taken out of the queue before delivery |
+
+`delivered` (for a message that is not an ask), `seen` (likewise),
+`answered`, `expired`, `failed` and `cancelled` are final. An ask moves on
+from `delivered` or `seen` to `answered`, or to `failed` if its target
+stops first.
+
+### Receipts
+
+A sender can tell whether a message arrived without asking the agent,
+which would cost a model call over its whole context:
+
+- **Delivered.** `delivered_at` is when the message went into the
+  target's input: at once for a steer (and `fleet_send`'s result then
+  carries it), and for one that waited in the queue when the node starts
+  the turn that carries it (`message.delivered`). An agent model sees it
+  on its next call.
+- **Seen.** When that turn (or the running turn it was steered into)
+  completes, the node records `message.seen` with the turn's id and the
+  item id of its last agent message, and the message becomes `seen`, with
+  `seen_at`, `seen_turn` and `seen_item`. A turn that fails or is
+  interrupted leaves its messages `delivered`. An ask that was answered
+  before its turn ended stays `answered`, with `seen_at` set.
+- `fleet_inbox` with `all: true` shows the state, `delivered_at` and
+  `seen_at` of the messages an agent sent, and `GET /v1/messages/{id}`
+  returns the whole record. The web UI shows a receipt under a person's
+  message in the transcript ("Delivered 14:02", then "Seen 14:05 ·
+  reply", which scrolls to the reply), and the state in the Inbox and
+  Traffic lists. Agents get no notice when their message is seen.
+
+`message.seen` comes from nodes from 0.1.5; with an older node messages
+stay `delivered`. An older coordinator ignores the event. With either, a
+queued message's `delivered_at` comes from `message.delivered`, which
+nodes have always recorded.
 
 ## Asks
 
@@ -549,13 +606,13 @@ swk usage                                        # tokens by host, model, day
 | --- | --- | --- |
 | POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks) |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
-| GET | `/v1/messages/{id}` | |
+| GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
-| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at}]}`; `position` counts those ahead |
+| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
