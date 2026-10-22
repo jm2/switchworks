@@ -74,6 +74,10 @@ or tailnet:
   non-image (or an image of a type other than PNG, JPEG, WebP and GIF) gets through; and the
   coordinator's attachment store and `GET /v1/attachments`. See
   [`docs/messaging.md`](docs/messaging.md#images).
+- Whether a session runs with a looser Codex sandbox, or an ACP agent in a mode with fewer
+  approvals, than its spawn asked for: the node refuses such a session rather than run it
+  (see [`docs/harnesses.md`](docs/harnesses.md#codex-on-windows) and the ACP approval policy
+  there).
 - Cross-site scripting or injection in the web UI, and terminal injection in CLI output.
 - Secrets on disk (permissions, and anything written to logs or event logs).
 - CI and release workflow permissions and their pinned actions.

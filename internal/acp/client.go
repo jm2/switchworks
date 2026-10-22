@@ -46,11 +46,16 @@ type Client struct {
 	conn *jsonrpc.Conn
 	h    Handler
 	Info InitializeResponse
+	// ready is closed once conn is set: the read loop starts inside
+	// NewConnWith, so an agent that writes at once would otherwise reach
+	// the handler before there is a conn to answer on.
+	ready chan struct{}
 }
 
 type connHandler struct{ c *Client }
 
 func (ch connHandler) HandleNotification(method string, params json.RawMessage) {
+	<-ch.c.ready
 	if method == MethodGooseSessionUpdate {
 		var n GooseSessionNotification
 		if gh, ok := ch.c.h.(GooseHandler); ok && json.Unmarshal(params, &n) == nil {
@@ -68,6 +73,7 @@ func (ch connHandler) HandleNotification(method string, params json.RawMessage) 
 }
 
 func (ch connHandler) HandleRequest(id json.RawMessage, method string, params json.RawMessage) {
+	<-ch.c.ready
 	if method == MethodRequestPermission && ch.c.h != nil {
 		var r RequestPermissionRequest
 		if err := json.Unmarshal(params, &r); err != nil {
@@ -95,8 +101,9 @@ func Start(ctx context.Context, opts Options, h Handler) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("start %s: %w", opts.Bin, err)
 	}
-	c := &Client{proc: p, h: h}
+	c := &Client{proc: p, h: h, ready: make(chan struct{})}
 	c.conn = jsonrpc.NewConnWith(p.Stdout, p.Stdin, connHandler{c}, opts.Tap, jsonrpc.Options{VersionField: true})
+	close(c.ready)
 
 	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()

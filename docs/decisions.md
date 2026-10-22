@@ -244,7 +244,9 @@ render the first three without changes; only `toolCall`, `reasoning` and
 **Codex's decision vocabulary for ACP approvals.** `allow_once` /
 `allow_always` / `reject_once` / `reject_always` map to `accept` /
 `acceptForSession` / `decline` / `declineAlways`, plus `cancel`. Unknown
-option kinds are offered under their raw option id.
+option kinds, and a second option of a kind, are offered as
+`option:<option id>`, so an agent cannot name an option `accept` or
+`cancel` and have it chosen in place of the one the name stands for.
 
 **Fleet tools are approved automatically for ACP agents too.** Goose in
 `approve` mode asks before every tool; waiting on a person for

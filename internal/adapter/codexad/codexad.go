@@ -52,7 +52,7 @@ type Adapter struct {
 	mu      sync.Mutex
 	client  *codex.Client
 	threads map[string]*handle
-	early   map[string][]note // notifications for threads not yet registered
+	early   map[string]*earlyNotes // notifications for threads not yet registered
 	closed  bool
 	restart sync.Mutex
 	started time.Time // when client started
@@ -72,12 +72,28 @@ type note struct {
 	params json.RawMessage
 }
 
+// earlyNotes are notifications for a thread with no handle yet, kept from
+// when the first arrived. Most are for a thread whose thread/start or
+// thread/resume response is still in flight; the rest, for threads no
+// handle will claim (one stopped while its notifications were on the way,
+// a start that failed), are dropped after earlyTTL or to make room.
+type earlyNotes struct {
+	since time.Time
+	notes []note
+}
+
+const (
+	earlyTTL     = time.Minute
+	earlyThreads = 64  // threads with notifications kept
+	earlyPerTh   = 128 // notifications kept per thread
+)
+
 // New returns an adapter; app-server starts on first use.
 func New(cfg Config) *Adapter {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	return &Adapter{cfg: cfg, threads: map[string]*handle{}, early: map[string][]note{}}
+	return &Adapter{cfg: cfg, threads: map[string]*handle{}, early: map[string]*earlyNotes{}}
 }
 
 func (a *Adapter) Name() string { return Harness }
@@ -269,14 +285,37 @@ func (a *Adapter) OnNotification(method string, params json.RawMessage) {
 	if h == nil {
 		// The thread/start response may still be in flight; keep a few
 		// notifications so they can be replayed once the handle exists.
-		if q := a.early[tid]; len(q) < 128 && len(a.early) < 64 {
-			a.early[tid] = append(q, note{method, params})
-		}
+		a.keepEarlyLocked(tid, note{method, params}, time.Now())
 		a.mu.Unlock()
 		return
 	}
 	a.mu.Unlock()
 	h.onNote(method, params)
+}
+
+// keepEarlyLocked buffers n for thread tid, first dropping what is older
+// than earlyTTL and, if every slot is still taken, the oldest thread's, so
+// threads no handle claims cannot fill the buffer for good.
+func (a *Adapter) keepEarlyLocked(tid string, n note, now time.Time) {
+	q := a.early[tid]
+	if q == nil {
+		var oldest string
+		for id, e := range a.early {
+			if now.Sub(e.since) > earlyTTL {
+				delete(a.early, id)
+			} else if oldest == "" || e.since.Before(a.early[oldest].since) {
+				oldest = id
+			}
+		}
+		if len(a.early) >= earlyThreads {
+			delete(a.early, oldest)
+		}
+		q = &earlyNotes{since: now}
+		a.early[tid] = q
+	}
+	if len(q.notes) < earlyPerTh {
+		q.notes = append(q.notes, n)
+	}
 }
 
 // OnServerRequest handles approvals and rejects everything else.
@@ -302,7 +341,10 @@ func (a *Adapter) register(h *handle) []note {
 	a.threads[h.threadID] = h
 	q := a.early[h.threadID]
 	delete(a.early, h.threadID)
-	return q
+	if q == nil {
+		return nil
+	}
+	return q.notes
 }
 
 func (a *Adapter) unregister(h *handle) {
@@ -338,6 +380,9 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 	}
 	h := newHandle(a, c, resp.Thread.ID, spec, sink)
 	if err := h.attached(c, resp, false); err != nil {
+		// Refused: leave the thread unwatched (its turns would run with
+		// the wrong sandbox, so none is started).
+		_ = c.ThreadUnsubscribe(ctx, resp.Thread.ID)
 		return nil, err
 	}
 	if spec.Name != "" {
@@ -390,7 +435,8 @@ type handle struct {
 	status     string
 	idleSince  time.Time // when status last became idle
 	activeTurn string
-	doneTurns  []string // recently completed turn ids (bounded)
+	turnSince  time.Time // when activeTurn was set
+	doneTurns  []string  // recently completed turn ids (bounded)
 	approvals  map[string]pendingApproval
 	model      string
 	provider   string
@@ -399,6 +445,9 @@ type handle struct {
 	// readOnly: the thread's effective sandbox, as app-server last
 	// reported it, is read-only (Caps.ReadOnly).
 	readOnly bool
+	// refused is why the last thread/resume was refused (see attached):
+	// no turn runs until a resume is accepted.
+	refused error
 
 	// commandItems are the commandExecution item ids of each running
 	// turn, so an interrupt can stop the commands that turn left running;
@@ -443,25 +492,58 @@ var sandboxTypes = map[string]string{
 	"danger-full-access": codex.SandboxDangerFullAccess,
 }
 
+// sandboxRank orders sandbox policy types from the strictest. Under
+// externalSandbox Codex leaves sandboxing to something outside it, so as
+// far as Switchworks can tell it is full access.
+var sandboxRank = map[string]int{
+	codex.SandboxReadOnly: 0, codex.SandboxWorkspaceWrite: 1,
+	codex.SandboxExternal: 2, codex.SandboxDangerFullAccess: 2,
+}
+
+// sandboxCheck is how the sandbox a thread runs with compares with the
+// one its session asked for.
+type sandboxCheck int
+
+const (
+	sandboxAsAsked  sandboxCheck = iota
+	sandboxStricter              // less than asked for: degraded, but safe
+	sandboxLooser                // more than asked for: refused
+	sandboxUnknown               // not reported, or of a type not known here
+)
+
 // effectiveSandbox reads the sandbox policy a thread/start or
-// thread/resume response reports, and says how it differs from the
-// requested mode ("" when it does not, or cannot be told). Under a
-// permission profile (profile) the reported policy is only a legacy view
-// of the profile, so only a read-only one is a mismatch.
-func effectiveSandbox(requested string, profile bool, reported json.RawMessage) (readOnly bool, mismatch string) {
+// thread/resume response reports and compares it with the requested mode,
+// with what differs in mismatch. Under a permission profile (profile) the
+// reported policy is only a legacy view of the profile, which reports a
+// profile its legacy types cannot express as externalSandbox, so that
+// counts as asked for there.
+func effectiveSandbox(requested string, profile bool, reported json.RawMessage) (readOnly bool, check sandboxCheck, mismatch string) {
+	want, known := sandboxTypes[requested]
 	var p codex.SandboxPolicy
 	if len(reported) == 0 || json.Unmarshal(reported, &p) != nil || p.Type == "" {
-		return requested == "read-only", ""
+		if !known || want == codex.SandboxDangerFullAccess {
+			return requested == "read-only", sandboxAsAsked, "" // nothing is looser than full access
+		}
+		return requested == "read-only", sandboxUnknown, "codex did not report the sandbox it runs this thread with"
 	}
 	readOnly = p.Type == codex.SandboxReadOnly
-	want, known := sandboxTypes[requested]
+	got, ok := sandboxRank[p.Type]
 	switch {
 	case !known || p.Type == want:
-		return readOnly, ""
-	case profile && !readOnly:
-		return readOnly, ""
+		return readOnly, sandboxAsAsked, ""
+	case profile && want == codex.SandboxWorkspaceWrite && p.Type == codex.SandboxExternal:
+		return readOnly, sandboxAsAsked, ""
+	case !ok:
+		if want == codex.SandboxDangerFullAccess {
+			return readOnly, sandboxAsAsked, ""
+		}
+		return readOnly, sandboxUnknown, fmt.Sprintf("codex runs this thread with sandbox %q, which Switchworks does not know", p.Type)
+	case got > sandboxRank[want]:
+		return readOnly, sandboxLooser, fmt.Sprintf("codex runs this thread with sandbox %s, looser than the %s it was started with", sandboxName(p.Type), requested)
+	case got < sandboxRank[want]:
+		return readOnly, sandboxStricter, fmt.Sprintf("codex runs this thread with sandbox %s, not the %s it was started with", sandboxName(p.Type), requested)
 	}
-	return readOnly, fmt.Sprintf("codex runs this thread with sandbox %s, not the %s it was started with", sandboxName(p.Type), requested)
+	return readOnly, sandboxAsAsked, ""
 }
 
 // sandboxName names a sandbox policy type the way sessions name modes.
@@ -480,22 +562,35 @@ func sandboxName(typ string) string {
 // attached finishes registration after thread/start or thread/resume. It
 // returns ErrClosed, registering nothing, when the session was stopped
 // meanwhile (app-server restarted under a session being stopped).
+//
+// It also refuses, registering nothing, a thread Codex runs with a looser
+// sandbox than asked for, and one whose sandbox it does not report (or
+// reports as a type not known here) when an agent spawned the session; a
+// person's session then only gets a warning.
 func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resumed bool) error {
+	// What the thread really runs with: Codex may not give it the sandbox
+	// asked for (on Windows, workspace-write without a Windows sandbox
+	// mode runs read-only), and says so only here.
+	_, perms := h.a.sandboxFor(h.spec.Sandbox)
+	ro, check, mismatch := effectiveSandbox(h.spec.Sandbox, perms != "", resp.Sandbox)
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
 		return adapter.ErrClosed
 	}
+	if check == sandboxLooser || check == sandboxUnknown && (h.spec.ByAgent || h.spec.CwdRoot != "") {
+		h.refused = fmt.Errorf("codex: refusing thread %s: %s", h.threadID, mismatch)
+		h.c = nil
+		h.mu.Unlock()
+		h.a.cfg.Logf("%v", h.refused)
+		return h.refused
+	}
+	h.refused = nil
 	h.c = c
 	h.model = resp.Model
 	h.provider = resp.ModelProvider
 	h.home = c.Info.CodexHome
 	h.activeTurn = ""
-	// What the thread really runs with: Codex may not give it the sandbox
-	// asked for (on Windows, workspace-write without a Windows sandbox
-	// mode runs read-only), and says so only here.
-	_, perms := h.a.sandboxFor(h.spec.Sandbox)
-	ro, mismatch := effectiveSandbox(h.spec.Sandbox, perms != "", resp.Sandbox)
 	h.readOnly = ro
 	h.mu.Unlock()
 	early := h.a.register(h)
@@ -515,8 +610,8 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	}
 	detail := ""
 	if mismatch != "" {
-		// Degraded, not failed: the session still runs, with less (or
-		// more) than it was given.
+		// Degraded, not failed: the session still runs, with less than it
+		// was given, or (a person's session) with a sandbox not known.
 		h.a.cfg.Logf("codex: thread %s: sandbox degraded: %s", h.threadID, mismatch)
 		h.emit(model.KindWarning, model.ErrorEvent{Message: "sandbox degraded: " + mismatch})
 		detail = "degraded: " + mismatch
@@ -608,6 +703,9 @@ func (h *handle) client() (*codex.Client, error) {
 		return nil, adapter.ErrClosed
 	}
 	if h.c == nil {
+		if h.refused != nil {
+			return nil, h.refused
+		}
 		return nil, errors.New("codex app-server is restarting")
 	}
 	return h.c, nil
@@ -677,7 +775,17 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 	case codex.NoteThreadStatusChanged:
 		var n codex.ThreadStatusChangedNotification
 		if json.Unmarshal(params, &n) == nil {
-			h.setStatus(mapThreadStatus(n.Status), "")
+			st := mapThreadStatus(n.Status)
+			if st == model.StatusIdle {
+				// An idle report after the turn started counts for
+				// dropStaleTurnLocked even when the status was idle already.
+				h.mu.Lock()
+				if h.activeTurn != "" && !h.idleSince.After(h.turnSince) {
+					h.idleSince = time.Now()
+				}
+				h.mu.Unlock()
+			}
+			h.setStatus(st, "")
 		}
 	case codex.NoteThreadClosed:
 		h.setStatus(model.StatusGone, "thread closed by codex")
@@ -686,6 +794,7 @@ func (h *handle) onNote(method string, params json.RawMessage) {
 		if json.Unmarshal(params, &n) == nil {
 			h.mu.Lock()
 			h.activeTurn = n.Turn.ID
+			h.turnSince = time.Now()
 			h.mu.Unlock()
 			h.emit(model.KindTurnStarted, model.TurnStarted{TurnID: n.Turn.ID})
 		}
@@ -960,6 +1069,7 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		h.mu.Lock()
 		if resp.Turn.Status == codex.TurnInProgress && h.activeTurn == "" && !containsStr(h.doneTurns, resp.Turn.ID) {
 			h.activeTurn = resp.Turn.ID
+			h.turnSince = time.Now()
 		}
 		h.mu.Unlock()
 		h.adoptFiles(resp.Turn.ID, paths, nil)
@@ -973,12 +1083,17 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 var staleTurnAfter = 10 * time.Second
 
 // dropStaleTurnLocked forgets the active turn when the thread has been idle
-// for a while: its turn/completed never came (a compaction or interrupted
-// turn, say). Holding on to it would refuse every new turn with ErrBusy,
-// stalling the session's queue for good. app-server reports the thread idle
-// just before turn/completed, so a fresh idle status is not enough.
+// for a while since the turn started: its turn/completed never came (a
+// compaction or interrupted turn, say). Holding on to it would refuse every
+// new turn with ErrBusy, stalling the session's queue for good. app-server
+// reports the thread idle just before turn/completed, so a fresh idle
+// status is not enough; and an idle status from before the turn started
+// (turn/started can be read before the thread's switch to active) says
+// nothing about the turn, which may well be running: forgetting it would
+// start a second turn beside it, which Interrupt and Stop then miss.
 func (h *handle) dropStaleTurnLocked() {
-	if h.activeTurn == "" || h.status != model.StatusIdle || time.Since(h.idleSince) < staleTurnAfter {
+	if h.activeTurn == "" || h.status != model.StatusIdle || !h.idleSince.After(h.turnSince) ||
+		time.Since(h.idleSince) < staleTurnAfter {
 		return
 	}
 	h.a.cfg.Logf("codex: thread %s has been idle for %s but turn %s never completed; forgetting it",

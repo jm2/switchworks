@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchworks/internal/adapter"
+	"github.com/jm2/switchworks/internal/codex"
 	"github.com/jm2/switchworks/internal/codex/codextest"
 	"github.com/jm2/switchworks/internal/model"
 )
@@ -553,29 +554,111 @@ func TestEffectiveSandbox(t *testing.T) {
 		}
 	}
 
-	// Under a permission profile only a read-only thread is a mismatch.
+	// Stricter than asked is degraded, looser refused, and a sandbox not
+	// reported unknown. Under a permission profile externalSandbox is the
+	// profile's legacy view, but full access is still looser.
 	for _, c := range []struct {
 		requested, reported string
 		profile, ro         bool
-		mismatch            bool
+		check               sandboxCheck
 	}{
-		{"workspace-write", "workspaceWrite", true, false, false},
-		{"workspace-write", "externalSandbox", true, false, false},
-		{"workspace-write", "readOnly", true, true, true},
-		{"workspace-write", "dangerFullAccess", false, false, true},
-		{"read-only", "workspaceWrite", false, false, true},
-		{"read-only", "", false, true, false},
-		{"", "readOnly", false, true, false},
+		{"workspace-write", "workspaceWrite", true, false, sandboxAsAsked},
+		{"workspace-write", "externalSandbox", true, false, sandboxAsAsked},
+		{"workspace-write", "readOnly", true, true, sandboxStricter},
+		{"workspace-write", "dangerFullAccess", true, false, sandboxLooser},
+		{"workspace-write", "dangerFullAccess", false, false, sandboxLooser},
+		{"workspace-write", "externalSandbox", false, false, sandboxLooser},
+		{"read-only", "workspaceWrite", false, false, sandboxLooser},
+		{"read-only", "externalSandbox", true, false, sandboxLooser},
+		{"danger-full-access", "workspaceWrite", false, false, sandboxStricter},
+		{"danger-full-access", "externalSandbox", false, false, sandboxAsAsked},
+		{"workspace-write", "newKind", false, false, sandboxUnknown},
+		{"danger-full-access", "newKind", false, false, sandboxAsAsked},
+		{"read-only", "", false, true, sandboxUnknown},
+		{"workspace-write", "", true, false, sandboxUnknown},
+		{"danger-full-access", "", false, false, sandboxAsAsked},
+		{"", "readOnly", false, true, sandboxAsAsked},
+		{"", "", false, false, sandboxAsAsked},
 	} {
 		raw := json.RawMessage(`{"type":"` + c.reported + `","networkAccess":false}`)
 		if c.reported == "" {
 			raw = nil
 		}
-		ro, mm := effectiveSandbox(c.requested, c.profile, raw)
-		if ro != c.ro || (mm != "") != c.mismatch {
-			t.Errorf("%+v: read_only %v, mismatch %q", c, ro, mm)
+		ro, check, mm := effectiveSandbox(c.requested, c.profile, raw)
+		if ro != c.ro || check != c.check || (mm != "") != (c.check != sandboxAsAsked) {
+			t.Errorf("%+v: read_only %v, check %d, mismatch %q", c, ro, check, mm)
 		}
 	}
+}
+
+// A thread Codex runs with a looser sandbox than asked for is refused, on
+// start and on resume, and takes no turns.
+func TestLooserSandboxRefused(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	ok := newFake(t, state)
+	h, err := ok.Start(ctx, adapter.StartSpec{Cwd: "/work", Sandbox: "workspace-write"}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := h.Ref()
+	ok.Close()
+
+	env := codextest.Env(state)
+	env[codextest.EnvSandbox] = "dangerFullAccess"
+	for _, perms := range []string{"", "swk"} {
+		a := newFakeWith(t, Config{Env: env, Permissions: perms})
+		if _, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work", Sandbox: "workspace-write"}, (&collector{}).sink); err == nil ||
+			!strings.Contains(err.Error(), "looser than the workspace-write") {
+			t.Fatalf("permissions %q: start with a looser sandbox: %v", perms, err)
+		}
+		if _, err := a.Resume(ctx, ref, adapter.StartSpec{Cwd: "/work", Sandbox: "workspace-write"}, (&collector{}).sink); err == nil {
+			t.Fatalf("permissions %q: resume with a looser sandbox succeeded", perms)
+		}
+		a.mu.Lock()
+		n := len(a.threads)
+		a.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("permissions %q: %d refused thread(s) registered", perms, n)
+		}
+	}
+	// What was asked for: full access is not looser than itself.
+	a := newFakeWith(t, Config{Env: env})
+	if _, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work", Sandbox: "danger-full-access"}, (&collector{}).sink); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A sandbox Codex does not report refuses an agent's session and warns a
+// person's; a resume refused after an app-server restart says why on the
+// next turn.
+func TestUnreportedSandbox(t *testing.T) {
+	ctx := context.Background()
+	a := newFake(t, t.TempDir())
+	c, err := a.getClient(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := func(id string) *codex.ThreadStartResponse {
+		return &codex.ThreadStartResponse{Thread: codex.Thread{ID: id}, Model: "m"}
+	}
+	agent := newHandle(a, c, "t-agent", adapter.StartSpec{Sandbox: "workspace-write", ByAgent: true}, (&collector{}).sink)
+	if err := agent.attached(c, resp("t-agent"), false); err == nil {
+		t.Fatal("an agent's session ran with a sandbox codex did not report")
+	}
+	if err := agent.Deliver(ctx, adapter.Input{Text: "x"}, adapter.DeliverQueue); err == nil ||
+		!strings.Contains(err.Error(), "did not report the sandbox") {
+		t.Fatalf("deliver to a refused thread: %v", err)
+	}
+	col := &collector{}
+	person := newHandle(a, c, "t-person", adapter.StartSpec{Sandbox: "workspace-write"}, col.sink)
+	if err := person.attached(c, resp("t-person"), false); err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "warning", func(e adapter.Event) bool {
+		p, ok := e.Payload.(model.ErrorEvent)
+		return e.Kind == model.KindWarning && ok && strings.Contains(p.Message, "did not report the sandbox")
+	})
 }
 
 // #39: a turn id the handle holds after the thread has long been idle (its
@@ -603,4 +686,61 @@ func TestStaleTurnDropped(t *testing.T) {
 		t.Fatalf("stale turn: %v", err)
 	}
 	col.waitFor(t, 0, "the new turn's reply", completedText("echo: late"))
+}
+
+// An idle status from before a turn started (turn/started read before the
+// thread's switch to active) does not make that turn stale, however old
+// the idle status is: dropping it would start a second turn beside it.
+func TestRunningTurnNotDropped(t *testing.T) {
+	a := newFake(t, t.TempDir())
+	ctx := context.Background()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work"}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "idle", status(model.StatusIdle))
+	hh := h.(*handle)
+	hh.mu.Lock()
+	hh.idleSince = time.Now().Add(-time.Hour)
+	hh.mu.Unlock()
+	tid := h.Ref().ID
+	hh.onNote(codex.NoteTurnStarted, json.RawMessage(`{"threadId":"`+tid+`","turn":{"id":"live","items":[],"status":"inProgress","error":null}}`))
+	defer func(d time.Duration) { staleTurnAfter = d }(staleTurnAfter)
+	staleTurnAfter = 0
+	if err := h.Deliver(ctx, adapter.Input{Text: "second"}, adapter.DeliverQueue); !errors.Is(err, adapter.ErrBusy) {
+		t.Fatalf("a running turn was dropped: want ErrBusy, got %v", err)
+	}
+	// Idle reported after the turn started: now it is stale.
+	time.Sleep(time.Millisecond)
+	hh.onNote(codex.NoteThreadStatusChanged, json.RawMessage(`{"threadId":"`+tid+`","status":{"type":"idle"}}`))
+	if err := h.Deliver(ctx, adapter.Input{Text: "after"}, adapter.DeliverQueue); err != nil {
+		t.Fatalf("stale turn: %v", err)
+	}
+	col.waitFor(t, 0, "the new turn's reply", completedText("echo: after"))
+}
+
+// Notifications for threads no handle claims do not fill the early buffer
+// for good: old ones expire, and the oldest makes room.
+func TestEarlyNotesEvicted(t *testing.T) {
+	a := New(Config{})
+	t0 := time.Now()
+	n := note{method: "thread/started"}
+	for i := 0; i < earlyThreads; i++ {
+		a.keepEarlyLocked(fmt.Sprint("orphan-", i), n, t0.Add(time.Duration(i)*time.Millisecond))
+	}
+	a.keepEarlyLocked("new", n, t0.Add(time.Second))
+	if len(a.early) != earlyThreads || a.early["new"] == nil || a.early["orphan-0"] != nil || a.early["orphan-1"] == nil {
+		t.Fatalf("full buffer: %d threads, new %v, oldest kept %v", len(a.early), a.early["new"] != nil, a.early["orphan-0"] != nil)
+	}
+	a.keepEarlyLocked("later", n, t0.Add(time.Second+earlyTTL+time.Millisecond))
+	if len(a.early) != 1 || a.early["later"] == nil {
+		t.Fatalf("expired notes kept: %d threads", len(a.early))
+	}
+	for i := 0; i < earlyPerTh+10; i++ {
+		a.keepEarlyLocked("later", n, t0.Add(2*time.Second+earlyTTL))
+	}
+	if got := len(a.early["later"].notes); got != earlyPerTh {
+		t.Fatalf("%d notes kept for one thread", got)
+	}
 }

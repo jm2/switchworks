@@ -69,11 +69,29 @@ type Tap func(dir string, line []byte)
 // ErrClosed is returned for calls on a closed connection.
 var ErrClosed = errors.New("jsonrpc: connection closed")
 
+// ErrWriteTimeout is why a connection closed whose peer stopped reading:
+// one message could not be written within the write timeout.
+var ErrWriteTimeout = errors.New("jsonrpc: write timed out (the peer stopped reading)")
+
+// DefaultWriteTimeout is how long one message may take to write before
+// the connection is closed, unless Options say otherwise.
+const DefaultWriteTimeout = 30 * time.Second
+
 // Conn is a JSON-RPC peer.
+//
+// One goroutine writes every outgoing message, in the order they were
+// sent, so no caller holds a lock while the peer is slow to read. A peer
+// that stops reading altogether closes the connection after the write
+// timeout (Done, Err gives ErrWriteTimeout), so whoever watches Done can
+// kill and restart it, instead of every caller hanging on the pipe.
 type Conn struct {
-	w   io.Writer
-	wmu sync.Mutex
-	tap Tap
+	w            io.Writer
+	tap          Tap
+	writeTimeout time.Duration
+
+	qmu   sync.Mutex
+	queue []outMsg
+	wake  chan struct{} // a message was queued
 
 	nextID  atomic.Int64
 	pmu     sync.Mutex
@@ -98,25 +116,35 @@ type Options struct {
 	// VersionField sends "jsonrpc":"2.0" on every message (strict JSON-RPC
 	// peers such as MCP clients require it).
 	VersionField bool
+	// WriteTimeout bounds the write of one message: past it the
+	// connection closes with ErrWriteTimeout. Zero means
+	// DefaultWriteTimeout, negative no limit.
+	WriteTimeout time.Duration
 }
 
 // NewConnWith is NewConn with options.
 func NewConnWith(r io.Reader, w io.Writer, h Handler, tap Tap, o Options) *Conn {
 	c := &Conn{
-		w:       w,
-		tap:     tap,
-		pending: make(map[int64]chan *Message),
-		handler: h,
-		done:    make(chan struct{}),
+		w:            w,
+		tap:          tap,
+		writeTimeout: o.WriteTimeout,
+		wake:         make(chan struct{}, 1),
+		pending:      make(map[int64]chan *Message),
+		handler:      h,
+		done:         make(chan struct{}),
+	}
+	if c.writeTimeout == 0 {
+		c.writeTimeout = DefaultWriteTimeout
 	}
 	if o.VersionField {
 		c.version = "2.0"
 	}
+	go c.writeLoop()
 	go c.readLoop(r)
 	return c
 }
 
-// Done is closed when the read side ends.
+// Done is closed when the read side ends, or a write fails or times out.
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
 // Err returns why the connection closed (io.EOF on a clean close).
@@ -163,6 +191,9 @@ func (c *Conn) readLoop(r io.Reader) {
 			c.dispatch(line)
 		}
 		if err != nil {
+			// Replies the handler queued before the end still go out (an
+			// MCP server exits once its input ends).
+			c.flush()
 			c.shutdown(err)
 			return
 		}
@@ -202,7 +233,103 @@ func (c *Conn) dispatch(line []byte) {
 	}
 }
 
-func (c *Conn) write(m Message) error {
+// outMsg is one queued message. sent, when set, receives the result of
+// writing it; a message with no bytes is a flush marker.
+type outMsg struct {
+	b    []byte
+	sent chan error
+	// ctx, set for a write that waits, drops the message if it ends
+	// before the write starts: its caller has given up and must not have
+	// the request run behind its back.
+	ctx context.Context
+}
+
+func (c *Conn) enqueue(m outMsg) {
+	c.qmu.Lock()
+	c.queue = append(c.queue, m)
+	c.qmu.Unlock()
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+// writeLoop writes queued messages in order. What was queued before the
+// read side ended is still written; a failed or timed-out write ends the
+// connection, since the stream may now hold half a message.
+func (c *Conn) writeLoop() {
+	for {
+		c.qmu.Lock()
+		for len(c.queue) == 0 {
+			c.qmu.Unlock()
+			select {
+			case <-c.wake:
+			case <-c.done:
+				return
+			}
+			c.qmu.Lock()
+		}
+		m := c.queue[0]
+		c.queue[0] = outMsg{}
+		c.queue = c.queue[1:]
+		c.qmu.Unlock()
+		if m.b == nil {
+			m.sent <- nil
+			continue
+		}
+		if m.ctx != nil && m.ctx.Err() != nil {
+			m.sent <- m.ctx.Err()
+			continue
+		}
+		err := c.writeOne(m.b)
+		if m.sent != nil {
+			m.sent <- err
+		}
+		if err != nil {
+			c.shutdown(fmt.Errorf("jsonrpc: write: %w", err))
+			return
+		}
+	}
+}
+
+func (c *Conn) writeOne(b []byte) error {
+	if c.tap != nil {
+		c.tap("out", b[:len(b)-1])
+	}
+	if c.writeTimeout > 0 {
+		// The write itself cannot be abandoned, but everyone waiting on
+		// the connection is released, and its owner kills the peer.
+		t := time.AfterFunc(c.writeTimeout, func() { c.shutdown(ErrWriteTimeout) })
+		defer t.Stop()
+	}
+	_, err := c.w.Write(b)
+	return err
+}
+
+// flush waits until everything queued so far is written, the connection
+// fails, or the write timeout passes.
+func (c *Conn) flush() {
+	m := outMsg{sent: make(chan error, 1)}
+	c.enqueue(m)
+	limit := c.writeTimeout
+	if limit <= 0 {
+		limit = 5 * time.Second
+	}
+	t := time.NewTimer(limit)
+	defer t.Stop()
+	select {
+	case <-m.sent:
+	case <-c.done:
+	case <-t.C:
+	}
+}
+
+// write queues m. With wait it returns once m is written, or ctx ends, or
+// the connection closes; without, at once. Replies and notifications do
+// not wait: the read loop sends replies itself, and must keep reading
+// while the peer is slow to read them, or the two can block each other on
+// full pipes. Order is kept either way.
+func (c *Conn) write(ctx context.Context, m Message, wait bool) error {
 	m.JSONRPC = c.version
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -213,14 +340,31 @@ func (c *Conn) write(m Message) error {
 		return ErrClosed
 	default:
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	if c.tap != nil {
-		c.tap("out", b)
+	om := outMsg{b: append(b, '\n')}
+	if wait {
+		om.sent, om.ctx = make(chan error, 1), ctx
 	}
-	b = append(b, '\n')
-	_, err = c.w.Write(b)
-	return err
+	c.enqueue(om)
+	if !wait {
+		return nil
+	}
+	select {
+	case err := <-om.sent:
+		return err
+	case <-ctx.Done():
+		// Still written later, in order; its answer is dropped.
+		return ctx.Err()
+	case <-c.done:
+		select {
+		case err := <-om.sent:
+			if err == nil {
+				return ErrClosed // written, but no answer can come
+			}
+			return err
+		default:
+			return ErrClosed
+		}
+	}
 }
 
 func marshalParams(params any) (json.RawMessage, error) {
@@ -239,7 +383,7 @@ func marshalParams(params any) (json.RawMessage, error) {
 // Call sends a request and waits for its response. If result is non-nil the
 // response's result is decoded into it.
 func (c *Conn) Call(ctx context.Context, method string, params any, result any) error {
-	p, err := c.Send(method, params)
+	p, err := c.send(ctx, method, params)
 	if err != nil {
 		return err
 	}
@@ -256,7 +400,12 @@ type Pending struct {
 
 // Send writes a request and returns without waiting for the response, so
 // a caller can order later messages (e.g. a cancel notification) after it.
+// It waits for the write, which the write timeout bounds.
 func (c *Conn) Send(method string, params any) (*Pending, error) {
+	return c.send(context.Background(), method, params)
+}
+
+func (c *Conn) send(ctx context.Context, method string, params any) (*Pending, error) {
 	p, err := marshalParams(params)
 	if err != nil {
 		return nil, fmt.Errorf("jsonrpc: marshal %s params: %w", method, err)
@@ -266,7 +415,7 @@ func (c *Conn) Send(method string, params any) (*Pending, error) {
 	c.pmu.Lock()
 	c.pending[id] = ch
 	c.pmu.Unlock()
-	if err := c.write(Message{ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: p}); err != nil {
+	if err := c.write(ctx, Message{ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: p}, true); err != nil {
 		c.pmu.Lock()
 		delete(c.pending, id)
 		c.pmu.Unlock()
@@ -320,7 +469,8 @@ func (c *Conn) CallRetry(ctx context.Context, method string, params any, result 
 	}
 }
 
-// Notify sends a notification. A nil params omits the field.
+// Notify queues a notification; it is written after everything sent
+// before it. A nil params omits the field.
 func (c *Conn) Notify(method string, params any) error {
 	m := Message{Method: method}
 	if params != nil {
@@ -330,21 +480,23 @@ func (c *Conn) Notify(method string, params any) error {
 		}
 		m.Params = b
 	}
-	return c.write(m)
+	return c.write(context.Background(), m, false)
 }
 
-// Reply answers a request received through Handler.HandleRequest.
+// Reply answers a request received through Handler.HandleRequest. Like
+// Notify it queues the answer and returns; a failed write ends the
+// connection.
 func (c *Conn) Reply(id json.RawMessage, result any) error {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
-	return c.write(Message{ID: id, Result: b})
+	return c.write(context.Background(), Message{ID: id, Result: b}, false)
 }
 
 // ReplyError answers a request with an error.
 func (c *Conn) ReplyError(id json.RawMessage, code int, message string) error {
-	return c.write(Message{ID: id, Error: &Error{Code: code, Message: message}})
+	return c.write(context.Background(), Message{ID: id, Error: &Error{Code: code, Message: message}}, false)
 }
 
 var errLineTooLong = errors.New("jsonrpc: line too long")

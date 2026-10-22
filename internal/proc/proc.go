@@ -50,6 +50,10 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 	if opts.Stderr != nil {
 		cmd.Stderr = opts.Stderr
 	}
+	// A descendant outside the process group can keep the stderr pipe
+	// open after the leader exits; Wait (and so Stop and Kill) must not
+	// wait for it forever.
+	cmd.WaitDelay = 5 * time.Second
 	setupCmd(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -78,11 +82,10 @@ func Start(name string, args []string, opts Options) (*Process, error) {
 		return nil, err
 	}
 	go func() {
-		p.waitErr = cmd.Wait()
 		// Whatever the leader started (shells, MCP servers) must not
 		// outlive it, however it exited: on stdin EOF, by a crash, or on
-		// its own.
-		p.plat.endTree(cmd)
+		// its own. wait ends it too.
+		p.waitErr = p.plat.wait(cmd)
 		// A descendant that left the process group may still hold the
 		// pipe's write end; give the reader a moment to drain what the
 		// process wrote, then end the read instead of waiting for it.

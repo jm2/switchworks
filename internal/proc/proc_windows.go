@@ -123,8 +123,9 @@ func (s *platformState) release() {
 	}
 }
 
-// endTree has nothing to do: release, right after it, closes the job.
-func (s *platformState) endTree(cmd *exec.Cmd) {}
+// wait reaps the leader; release, right after it, closes the job, which
+// ends what the leader left behind.
+func (s *platformState) wait(cmd *exec.Cmd) error { return cmd.Wait() }
 
 // terminate has no gentle equivalent for console-less children; stdin EOF
 // (sent by Stop) is the polite signal, so this goes straight to the job.

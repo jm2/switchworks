@@ -210,7 +210,15 @@ needs the elevated sandbox, so set `"windows": {"sandbox": "elevated"}`
 in `codex.config`, or `[windows] sandbox = "elevated"` in `config.toml`.
 
 After every thread start and resume, the node compares the sandbox the
-thread reports with the one the session asked for. When they differ, the
+thread reports with the one the session asked for. A thread that runs
+with a looser sandbox than asked for (`danger-full-access` or
+`externalSandbox` for a `workspace-write` session, say) is refused: the
+spawn or resume fails, and the node log names the thread. Under a
+permission profile, `externalSandbox` is how Codex reports a profile its
+older sandbox types cannot describe, so it is accepted there. When Codex
+reports no sandbox, or one the node does not know, a session an agent
+spawned is refused the same way, and a person's session gets a warning.
+When the thread runs with a stricter sandbox than asked for, the
 session gets a warning event and a status detail starting "degraded:",
 and the node log names the thread. The web UI shows both in the session
 log. `caps.read_only` in `fleet_list` and `fleet_status` follows the
@@ -525,7 +533,8 @@ How a session maps onto ACP:
 - **Process.** One agent process per session, started in the session's
   working directory. A crash affects only that session; the adapter starts
   a new process and reopens the session (`session/load`, else
-  `session/resume`), with backoff.
+  `session/resume`), with backoff. An agent that stops reading its input
+  for 30 seconds is handled the same way.
 - **Turns.** Each message is a `session/prompt`. Streamed agent text,
   thoughts, tool calls and plans become transcript items. Tool calls are
   shown the way Codex's are: shell commands as commands (with output and
@@ -542,7 +551,13 @@ How a session maps onto ACP:
   session mode: `never` → `auto`, `on-request` → `smart_approve`,
   `untrusted` → `approve` (goose's names; `bypassPermissions` and
   `default` are tried for other agents). Override with `"modes":
-  {"never": "...", ...}`. Sandbox settings do not apply to ACP agents.
+  {"never": "...", ...}`. When the agent offers session modes but none
+  fits a policy stricter than `never` (`on-request`, `untrusted`), or
+  setting it fails, the session is refused rather than left in the
+  agent's default mode, which may run tools without asking. An agent with
+  no session modes at all runs a person's session with its own
+  configuration and a warning, and refuses one an agent spawned. Sandbox
+  settings do not apply to ACP agents.
   goose's `smart_approve` asks about more than Codex's `on-request` does,
   reads such as `cat` included: expect several approvals per task. goose
   can also ask about two tool calls at once.

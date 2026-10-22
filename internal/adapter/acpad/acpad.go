@@ -371,12 +371,16 @@ func (h *handle) open(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// configure applies provider, model and approval mode. Failures are
-// warnings: the session still works with the agent's own defaults.
-// configure applies the spec to a new or reopened session. For a session
-// an agent spawned (it has a cwd root), failing to apply its approval
-// policy is an error: the child must not run with fewer approvals than its
-// parent asked for.
+// configure applies provider, model and approval mode to a new or reopened
+// session. Provider and model failures are warnings: the session still
+// works with the agent's own defaults. An approval policy stricter than
+// never must hold, since the agent's default mode may run tools without
+// asking: when it cannot be applied the session is refused. The one
+// exception is a person's spawn on an agent with no session modes at all,
+// where the agent's own configuration decides and the session gets a
+// warning; a session an agent spawned (it has a cwd root, or ByAgent) is
+// refused even then, as the child must not run with fewer approvals than
+// its parent asked for.
 func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSetup) error {
 	var modeErr error
 	warn := func(format string, args ...any) {
@@ -415,31 +419,37 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 	h.mu.Lock()
 	policy := h.spec.ApprovalPolicy // SetApprovalPolicy may change it
 	h.mu.Unlock()
-	strict := (h.spec.ByAgent || h.spec.CwdRoot != "") && policy != "" && policy != "never"
+	hasModes := s.Modes != nil && len(s.Modes.AvailableModes) > 0 || s.Option("mode") != nil
 	if mode := h.modeFor(s, policy); mode != "" {
 		if o := s.Option("mode"); o != nil {
 			if o.Current() != mode {
 				if opts, err := c.SetConfigOption(ctx, s.SessionID, "mode", mode); err != nil {
-					warn("could not set mode to %q: %v", mode, err)
-					modeErr = err
+					modeErr = fmt.Errorf("could not set mode to %q: %w", mode, err)
 				} else if len(opts) > 0 {
 					s.ConfigOptions = opts
 				}
 			}
 		} else if s.Modes != nil && s.Modes.CurrentModeID != mode {
 			if err := c.SetMode(ctx, s.SessionID, mode); err != nil {
-				warn("could not set mode %q: %v", mode, err)
-				modeErr = err
+				modeErr = fmt.Errorf("could not set mode %q: %w", mode, err)
 			}
 		}
 	} else if policy != "" {
-		if s.Modes != nil || s.Option("mode") != nil {
-			warn("no session mode matches approval policy %q; using the agent's default", policy)
-		}
 		modeErr = fmt.Errorf("no session mode matches approval policy %q", policy)
+		if !hasModes {
+			modeErr = fmt.Errorf("%s offers no session modes to apply approval policy %q with", h.a.cfg.Harness, policy)
+		}
 	}
-	if strict && modeErr != nil {
+	stricter := policy != "" && policy != "never"
+	switch {
+	case modeErr == nil:
+	case stricter && (h.spec.ByAgent || h.spec.CwdRoot != ""):
 		return fmt.Errorf("%s: cannot apply approval policy %q to a session spawned by an agent: %w", h.a.cfg.Harness, policy, modeErr)
+	case stricter && hasModes:
+		return fmt.Errorf("%s: cannot apply approval policy %q (map it to one of the agent's modes with \"modes\" in node.json): %w",
+			h.a.cfg.Harness, policy, modeErr)
+	case stricter || hasModes:
+		warn("%v; using the agent's default", modeErr)
 	}
 	if o := s.Option("model"); o != nil {
 		h.modelName = o.Current()
@@ -963,24 +973,19 @@ func (h *handle) OnPermission(id json.RawMessage, req acp.RequestPermissionReque
 		}
 	}
 	aid := ulid.New()
-	p := &pendingPerm{rpcID: append(json.RawMessage(nil), id...), turnID: turnID, byDecided: map[string]string{}}
-	var decisions []string
-	for _, o := range req.Options {
-		d := decisionForKind[o.Kind]
-		if d == "" || p.byDecided[d] != "" {
-			d = o.OptionID // unknown kind or duplicate: offer the raw option
-		}
-		p.byDecided[d] = o.OptionID
-		decisions = append(decisions, d)
-	}
-	decisions = append(decisions, DecisionCancel)
+	decisions, byDecided := decisionsFor(req.Options)
+	p := &pendingPerm{rpcID: append(json.RawMessage(nil), id...), turnID: turnID, byDecided: byDecided}
 	ar := model.ApprovalRequested{ApprovalID: aid, TurnID: turnID, ItemID: ts.itemID, Decisions: decisions, Cwd: h.spec.Cwd}
 	switch cl.itemType {
 	case "commandExecution":
 		ar.Kind, ar.Command = "command", cl.command
 	case "fileChange":
 		ar.Kind, ar.Command = "file_change", ts.title
-		ar.Reason = strings.Join(cl.paths, ", ")
+		quoted := make([]string, len(cl.paths))
+		for i, p := range cl.paths {
+			quoted[i] = printable(p) // the model picks paths; keep them on one line
+		}
+		ar.Reason = strings.Join(quoted, ", ")
 	default:
 		ar.Kind, ar.Command = "tool", ts.title
 	}
@@ -1003,6 +1008,30 @@ func (h *handle) OnPermission(id json.RawMessage, req acp.RequestPermissionReque
 	if waiting {
 		h.emit(model.KindSessionStatus, model.SessionStatus{Status: model.StatusWaitingApproval})
 	}
+}
+
+// decisionsFor names the decisions a permission request offers, with the
+// option each selects, then cancel. An option of an unknown kind, or a
+// second one of a kind, is offered as "option:<its id>", so no option id
+// can pose as accept, decline or cancel, nor two options share a name.
+func decisionsFor(options []acp.PermissionOption) ([]string, map[string]string) {
+	byDecided := map[string]string{}
+	var decisions []string
+	for _, o := range options {
+		d := decisionForKind[o.Kind]
+		if _, taken := byDecided[d]; d == "" || taken {
+			d = "option:" + printable(o.OptionID)
+			for n := 2; ; n++ {
+				if _, taken := byDecided[d]; !taken {
+					break
+				}
+				d = fmt.Sprintf("option:%s#%d", printable(o.OptionID), n)
+			}
+		}
+		byDecided[d] = o.OptionID
+		decisions = append(decisions, d)
+	}
+	return append(decisions, DecisionCancel), byDecided
 }
 
 // Resolve answers a pending permission request.

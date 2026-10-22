@@ -84,15 +84,23 @@ Observed with Codex 0.160.0 on Linux; the raw traffic is in
   client must not treat the response's `inProgress` turn as active without
   checking.
 - Every notification carries a top-level `emittedAtMs`.
+- One app-server serves every session on the node, so one that stops
+  reading its stdin would hang them all. Switchworks writes to it from a
+  single queue, and a message it cannot write within 30 seconds closes the
+  connection: the node then kills app-server and restarts it as after a
+  crash. ACP agents get the same.
 - `thread/queue/*` methods exist (a server-side message queue); Switchworks
   keeps its own queue on the node.
 - **The sandbox a thread gets can differ from the one asked for.** The
   `thread/start` and `thread/resume` responses carry `sandbox`, the
   effective legacy `SandboxPolicy` (`type`: `readOnly`, `workspaceWrite`,
   `dangerFullAccess`, `externalSandbox`). Switchworks compares it with the
-  requested mode, reports a mismatch as a degraded session, and sets
-  `caps.read_only` from it. Under a permission profile it is only a legacy
-  view of the profile, so only `readOnly` counts as a mismatch there.
+  requested mode: a stricter one is reported as a degraded session, a
+  looser one (`externalSandbox` counts as full access) refuses the thread,
+  and so does a missing or unknown one for a session an agent spawned (a
+  person's only gets a warning). It sets `caps.read_only` from it. Under a
+  permission profile it is only a legacy view of the profile, so
+  `externalSandbox` is accepted there; `dangerFullAccess` is still refused.
 - **Codex 0.163 on Windows** runs a `workspace-write` thread read-only when
   `config.toml` sets no `[windows] sandbox` mode, without an error; under
   approval `never` every command is then rejected ("blocked by policy").

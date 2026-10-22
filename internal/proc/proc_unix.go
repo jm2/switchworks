@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -19,7 +20,15 @@ import (
 // gets to exit after SIGTERM before it is killed.
 const treeGrace = 2 * time.Second
 
-type platformState struct{}
+// platformState knows whether the leader may have been reaped. The group
+// id is the leader's pid, which is free for reuse once the leader is
+// reaped and the group has emptied, so Stop and Kill signal the group
+// only before then: afterwards they could reach an unrelated process
+// group that took the id.
+type platformState struct {
+	mu     sync.Mutex
+	reaped bool
+}
 
 func setupCmd(cmd *exec.Cmd) {
 	// Own process group, so signals reach the whole tree and a terminal
@@ -30,16 +39,34 @@ func setupCmd(cmd *exec.Cmd) {
 func (s *platformState) attach(cmd *exec.Cmd) error { return nil }
 func (s *platformState) release()                   {}
 
+// wait waits for the leader, ends what it left in its group, and reaps it.
+// Where the exit can be seen without reaping (Linux), the group is ended
+// first, while the unreaped leader keeps its id from being reused, and
+// group signals stop before the reap. Elsewhere the group is ended after
+// the reap, which relies on its remaining members keeping the id taken.
+func (s *platformState) wait(cmd *exec.Cmd) error {
+	if waitExited(cmd.Process.Pid) {
+		s.endTree(cmd)
+		s.mu.Lock()
+		s.reaped = true
+		s.mu.Unlock()
+		return cmd.Wait()
+	}
+	err := cmd.Wait()
+	s.mu.Lock()
+	s.reaped = true
+	s.mu.Unlock()
+	s.endTree(cmd)
+	return err
+}
+
 // endTree ends the rest of the process group once the leader has exited:
 // SIGTERM, then SIGKILL after treeGrace if anything is still there. The
-// group id stays taken while any member is alive, so the signals cannot
-// reach an unrelated group.
+// group id stays taken while the leader is unreaped or any member is
+// alive, so the signals cannot reach an unrelated group.
 func (s *platformState) endTree(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
 	pgid := -cmd.Process.Pid
-	if syscall.Kill(pgid, syscall.SIGTERM) == syscall.ESRCH {
+	if !groupAlive(cmd.Process.Pid) || syscall.Kill(pgid, syscall.SIGTERM) == syscall.ESRCH {
 		return
 	}
 	for deadline := time.Now().Add(treeGrace); time.Now().Before(deadline); {
@@ -51,23 +78,34 @@ func (s *platformState) endTree(cmd *exec.Cmd) {
 	_ = syscall.Kill(pgid, syscall.SIGKILL)
 }
 
-func (s *platformState) terminate(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-}
-
-func (s *platformState) kill(cmd *exec.Cmd) error {
+// signalGroup signals the leader's process group unless the leader may
+// have been reaped and wait (endTree) has the group in hand.
+func (s *platformState) signalGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// ErrProcessDone: reaped, though wait has not marked it yet. On Linux
+	// wait has ended the group by then. Elsewhere it ends the group only
+	// after cmd.Wait, which also waits for every member still holding the
+	// output pipes, so the group is signalled while it has members (they
+	// keep the id taken); skipping it would leave Kill waiting forever.
+	if s.reaped || cmd.Process.Signal(syscall.Signal(0)) == os.ErrProcessDone {
+		if runtime.GOOS == "linux" || !groupAlive(cmd.Process.Pid) {
+			return nil
+		}
+	}
+	err := syscall.Kill(-cmd.Process.Pid, sig)
 	if err == syscall.ESRCH {
 		return nil
 	}
 	return err
 }
+
+func (s *platformState) terminate(cmd *exec.Cmd) { _ = s.signalGroup(cmd, syscall.SIGTERM) }
+
+func (s *platformState) kill(cmd *exec.Cmd) error { return s.signalGroup(cmd, syscall.SIGKILL) }
 
 // groupAlive reports whether process group pgid still has a member that is
 // not a zombie. kill(-pgid, 0) also counts zombies waiting to be reaped,

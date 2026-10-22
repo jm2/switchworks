@@ -4,6 +4,7 @@ package acpad
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -11,8 +12,13 @@ import (
 // edit's old and new text. ACP reports edits as whole old/new texts; this
 // turns them into the same form Codex's turn diffs use. Very large files
 // fall back to a whole-file replacement.
+//
+// The model picks the path, so one with a newline or another unprintable
+// character is quoted, as git does, rather than written raw, where it
+// could add lines of its own to the diff's header.
 func unifiedDiff(path string, oldText *string, newText string) string {
-	from := "a/" + strings.TrimPrefix(path, "/")
+	rel := strings.TrimPrefix(path, "/")
+	from, to := printable("a/"+rel), printable("b/"+rel)
 	var a []string
 	if oldText == nil {
 		from = "/dev/null"
@@ -22,7 +28,7 @@ func unifiedDiff(path string, oldText *string, newText string) string {
 	b := splitLines(newText)
 	ops := diffLines(a, b)
 	var out strings.Builder
-	fmt.Fprintf(&out, "--- %s\n+++ b/%s\n", from, strings.TrimPrefix(path, "/"))
+	fmt.Fprintf(&out, "--- %s\n+++ %s\n", from, to)
 	const ctx = 3
 	i := 0
 	for i < len(ops) {
@@ -72,6 +78,16 @@ func unifiedDiff(path string, oldText *string, newText string) string {
 		i = end
 	}
 	return out.String()
+}
+
+// printable returns s as it is when every character in it prints, and
+// quoted, with escapes, when not: newlines, other control characters and
+// invisible formatting such as bidirectional overrides.
+func printable(s string) string {
+	if strings.ContainsFunc(s, func(r rune) bool { return !strconv.IsPrint(r) }) {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 func hunkRange(start, n int) string {
