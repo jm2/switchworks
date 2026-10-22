@@ -329,8 +329,23 @@ func (s *server) handle(line []byte) {
 		if r, ok := SeeImages(text, images); ok {
 			text += r
 		}
+		// Checked again and sent under the lock, so a steer is either
+		// refused or taken up by the turn (see takeSteer).
+		s.mu.Lock()
+		ok := s.turns[tid] == t
+		if ok {
+			select {
+			case t.stop <- "steer:" + text:
+			default:
+				ok = false
+			}
+		}
+		s.mu.Unlock()
+		if !ok {
+			s.fail(m.ID, -32600, "no matching active turn")
+			return
+		}
 		s.reply(m.ID, map[string]any{"turnId": t.id})
-		t.stop <- "steer:" + text
 	case "turn/interrupt":
 		tid := str("threadId")
 		s.mu.Lock()
@@ -380,10 +395,28 @@ func (s *server) agentMessage(t *turn, itemID, text string, deltas bool) {
 		"completedAtMs": time.Now().UnixMilli()}))
 }
 
+// takeSteer returns input sent to the turn since it started, or, if there
+// is none, ends the turn for steers: they are refused from then on.
+func (s *server) takeSteer(t *turn) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case msg := <-t.stop:
+		return msg
+	default:
+		if s.turns[t.thread] == t {
+			delete(s.turns, t.thread)
+		}
+		return ""
+	}
+}
+
 func (s *server) runTurn(t *turn, text string) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.turns, t.thread)
+		if s.turns[t.thread] == t {
+			delete(s.turns, t.thread)
+		}
 		s.mu.Unlock()
 	}()
 	s.note("thread/status/changed", map[string]any{"threadId": t.thread, "status": map[string]any{"type": "active", "activeFlags": []any{}}})
@@ -438,7 +471,7 @@ func (s *server) runTurn(t *turn, text string) {
 		case <-time.After(30 * time.Second):
 		}
 	default:
-		if r, ok := s.scriptedTools(t, text); ok {
+		if r, ok := s.scriptedTools(t, text, 1); ok {
 			reply = r
 		}
 	}
@@ -447,6 +480,24 @@ func (s *server) runTurn(t *turn, text string) {
 	}
 	if reply != "" {
 		s.agentMessage(t, t.id+"-msg", reply, true)
+	}
+	// Input steered in while the turn worked: Codex takes it up before
+	// it ends the turn, so it is not lost.
+	for k := 2; status == "completed"; k++ {
+		msg := s.takeSteer(t)
+		if msg == "" {
+			break
+		}
+		if msg == "interrupted" {
+			status = "interrupted"
+			break
+		}
+		text := strings.TrimPrefix(msg, "steer:")
+		r, ok := s.scriptedTools(t, text, k)
+		if !ok {
+			r = "steered: " + text
+		}
+		s.agentMessage(t, fmt.Sprintf("%s-msg%d", t.id, k), r, true)
 	}
 	if status == "completed" {
 		s.note("turn/diff/updated", map[string]any{"threadId": t.thread, "turnId": t.id, "diff": "--- a/x\n+++ b/x\n"})
