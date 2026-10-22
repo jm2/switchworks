@@ -564,6 +564,11 @@ const agentImageBytesPerMinute = 20 << 20
 // agentFileBytesPerMinute does the same for files.
 const agentFileBytesPerMinute = 8 << 20
 
+// personFileBytesPerMinute bounds the files sent with one person's
+// credential (the admin token, an owner or operate token), which fill
+// receiving nodes' disks as much as an agent's do.
+const personFileBytesPerMinute = 8 << 20
+
 // allowN takes n tokens from key's bucket, which refills to perMinute a
 // minute.
 func (r *router) allowN(key string, perMinute int, n float64) bool {
@@ -708,6 +713,16 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		}
 		if n := attach.TotalBytes(files); n > 0 && !r.allowN("file|"+from.sess.ID, agentFileBytesPerMinute, float64(n)) {
 			return nil, fmt.Errorf("%w: agents may send at most %d MiB of files a minute", ErrRateLimit, agentFileBytesPerMinute>>20)
+		}
+	} else if n := attach.TotalBytes(files); n > 0 {
+		// People's files, by credential: the names they send as are free
+		// to invent.
+		key := from.via
+		if key == "" {
+			key = from.addr()
+		}
+		if !r.allowN("file|via:"+key, personFileBytesPerMinute, float64(n)) {
+			return nil, fmt.Errorf("%w: each credential may send at most %d MiB of files a minute", ErrRateLimit, personFileBytesPerMinute>>20)
 		}
 	}
 	if len(images) > 0 {

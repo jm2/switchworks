@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -286,4 +287,104 @@ func normalizeKey(k string) string {
 		parts[i] = strings.Trim(strings.TrimSpace(p), `"'`)
 	}
 	return strings.Join(parts, ".")
+}
+
+// ProfileDenyPaths returns the paths the permission profiles of a
+// config.toml deny reads of: each key whose value is "deny" in a
+// [permissions.<name>.filesystem] table, written as filesystem."<path>"
+// in [permissions.<name>], or in full at the top level. Every profile
+// counts, not only the one in use. Paths are as written ("~/.ssh");
+// special roots (":workspace_roots") and their tables are skipped. It
+// reads the plain forms the docs show, not inline tables or multi-line
+// strings, and returns nothing but those keys (config.toml holds provider
+// keys).
+func ProfileDenyPaths(toml []byte) []string {
+	var out []string
+	var table []string
+	for _, line := range strings.Split(string(toml), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if line[0] == '[' {
+			keys, rest, ok := splitKey(strings.TrimPrefix(line[1:], "["))
+			table = nil
+			if ok && strings.HasPrefix(strings.TrimSpace(rest), "]") {
+				table = keys
+			}
+			continue
+		}
+		keys, rest, ok := splitKey(line)
+		if !ok {
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		v := strings.TrimSpace(rest[1:])
+		if i := strings.IndexByte(v, '#'); i >= 0 {
+			v = strings.TrimSpace(v[:i])
+		}
+		if v != `"deny"` && v != `'deny'` {
+			continue
+		}
+		full := append(append([]string{}, table...), keys...)
+		if len(full) == 4 && full[0] == "permissions" && full[2] == "filesystem" && !strings.HasPrefix(full[3], ":") {
+			out = append(out, full[3])
+		}
+	}
+	return out
+}
+
+// splitKey reads a dotted TOML key from the start of s (bare, "basic" and
+// 'literal' parts) and returns its parts and the rest of s.
+func splitKey(s string) ([]string, string, bool) {
+	var parts []string
+	for {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
+			return nil, "", false
+		}
+		var part string
+		switch s[0] {
+		case '"':
+			end := 1
+			for end < len(s) && s[end] != '"' {
+				if s[end] == '\\' {
+					end++
+				}
+				end++
+			}
+			if end >= len(s) {
+				return nil, "", false
+			}
+			u, err := strconv.Unquote(s[:end+1])
+			if err != nil {
+				return nil, "", false
+			}
+			part, s = u, s[end+1:]
+		case '\'':
+			end := strings.IndexByte(s[1:], '\'')
+			if end < 0 {
+				return nil, "", false
+			}
+			part, s = s[1:end+1], s[end+2:]
+		default:
+			end := 0
+			for end < len(s) && bareKeyChar(rune(s[end])) {
+				end++
+			}
+			if end == 0 {
+				return nil, "", false
+			}
+			part, s = s[:end], s[end:]
+		}
+		parts = append(parts, part)
+		t := strings.TrimLeft(s, " \t")
+		if !strings.HasPrefix(t, ".") {
+			return parts, s, true
+		}
+		s = t[1:]
+	}
 }

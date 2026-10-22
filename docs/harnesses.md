@@ -301,6 +301,13 @@ read your profile's `AppData\Local`; this has not been tried, so set
 `files_dir` in `node.json` to a folder they can read if a sandboxed
 agent there cannot open its files.
 
+The fleet tools read the files agents attach as you, outside the
+sandbox, so the node also refuses attachments from every path a profile
+in `config.toml` denies (in the `"<path>" = "deny"` form above), besides
+its own list of credential locations and `attach_deny` in `node.json`
+([messaging.md](messaging.md#images)). It does not read inline tables,
+so keep the filesystem table in the form shown.
+
 Then name the profile in `node.json`:
 
 ```json

@@ -142,7 +142,7 @@ A message with files names the receiving node's copy of each
 
 ```
 [switchworks msg=01M42… from=winbox/port kind=notify]
-(1 file attached: /home/dev/.cache/switchworks/files/01M3Z…/01M42…/0001-fix-parser.patch (text/x-patch, 12 KiB).)
+(1 file attached: /home/dev/.cache/switchworks/files/01M3Z…/01M42…-7NLPG…/0001-fix-parser.patch (text/x-patch, 12 KiB).)
 please git am this and push
 ```
 
@@ -217,8 +217,8 @@ paths on the sender's host, relative to the session's working directory
 or absolute. `swk mcp` runs as your user, outside any sandbox the agent
 has, so if it read whatever path an agent named, a sandboxed agent could
 send itself (or another agent) files it cannot read: the node's key,
-other sessions' tokens, `cli.json`. So the sender's node reads the file
-itself, and only:
+other sessions' tokens, `cli.json`, `~/.ssh`, a Codex login. So the
+sender's node reads the file itself, and only:
 
 - inside the session's working directory, as the node recorded it at
   spawn (not anything the agent can change); a session confined to a
@@ -228,14 +228,46 @@ itself, and only:
   the one before it, and checks that each is the directory it looked at,
   so a component swapped for a symlink mid-read is refused;
 - a regular file: not a symlink (even to a file inside), device, pipe or
-  directory, and with no other hard links (on Unix), since another name
-  for it could be anywhere;
+  directory, and with no other hard links (on Windows the count comes
+  from the opened file), since another name for it could be anywhere;
 - never under Switchworks's own directories (the node's directory, the
   config directory with `cli.json`), even when the working directory
-  contains them (a session working in your home directory); directories
-  are compared by identity, so another spelling of the name (case on
-  macOS) does not get past it;
+  contains them (a session working in your home directory);
+- never under a place that holds credentials, wherever the working
+  directory is: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
+  `~/.config/gcloud`, `~/.kube`, `~/.docker`, `~/.netrc`,
+  `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`,
+  the GitHub CLI's config, the keyring, `~/.password-store`, agents'
+  logins (`~/.codex` or `CODEX_HOME`, `~/.claude`, `~/.claude.json`,
+  `~/.gemini`, `~/.antigravity`, goose's and opencode's), browser and
+  mail profiles, and their macOS (`~/Library/Keychains`, `~/Library/Cookies`,
+  ...) and Windows (`AppData\Roaming\Microsoft\Credentials`, ...)
+  counterparts (the full list is `credentialPaths` in
+  `internal/attach/deny.go`); nor under the directory of received files
+  ([Files](#files)), so an agent cannot forward another session's; nor
+  under any path a permission profile in Codex's `config.toml` denies
+  (`"<path>" = "deny"` in a `[permissions.<name>.filesystem]` table, any
+  profile, read for every request; inline tables are not read, so write
+  the profile as the [harnesses.md](harnesses.md#codex-network-without-exposing-credentials)
+  example does); nor under `attach_deny` in `node.json` (a list of
+  absolute or `~/` paths);
+- not named like a credential, anywhere: `.env` and `.env.*` (but not
+  `.env.example`), `*.env`, `.envrc`, private SSH keys (`id_rsa`,
+  `id_ed25519`, ... but not `.pub`), `auth.json`, `credentials`, and
+  `.ssh`, `.aws`, `.netrc`, `.npmrc` and the like found inside a project
+  (`SecretName` in `internal/attach/within.go`);
+- when the working directory is your home directory or above it, not a
+  dot-file or inside a dot-directory at all, since most tools keep their
+  logins there. `attach_allow` in `node.json` lists files or directories
+  exempt from this rule and the one before (never from a deny);
 - an allowed image type by its bytes, within the size limits.
+
+Directories and files are compared with the denied ones by identity as
+well as by name, so another spelling of the name (case on macOS and
+Windows, a symlinked parent) does not get past it. These rules stand in
+for a sandbox's deny list because the node reads outside the sandbox; a
+credential stored somewhere else under the working directory can still
+be attached, so deny it with `attach_deny` (and in your Codex profile).
 
 Agents cannot pass image data directly: `swk mcp` and the node's local API
 refuse an `attachments` argument (in any letter case). Paths never reach
@@ -292,8 +324,11 @@ together: as base64 that is at most about 16.1 MiB, still well under the
 images: the sender's node reads them with the same checks (inside the
 session's recorded working directory, opened one component at a time
 with no symlink or junction on the way, a regular file without other
-hard links on Unix, never under Switchworks's own directories; see
-[Images](#images)). `swk mcp` and the node's local API refuse a
+hard links, never under Switchworks's own directories, a credential
+location, the received files or `attach_deny`, not a `.env` or key
+file, and no dot-files when working in your home directory; see
+[Images](#images)). UTF-8 text is all a key or token file needs to be,
+so these rules are what keeps one from leaving. `swk mcp` and the node's local API refuse a
 `file_attachments` argument from an agent (in any letter case), and paths
 never reach the coordinator. Files go to agent sessions only: a send to
 `user:<name>` with files is refused, since the inbox shows none.
@@ -302,13 +337,15 @@ never reach the coordinator. Files go to agent sessions only: a send to
 (name, type, size, SHA-256) in the message record (`files`), the bytes in
 its attachment store under their digest, with the same retention, limits
 and eviction (images and files share the store). One agent may send at
-most 8 MiB of files a minute, besides its 20 MiB of images.
+most 8 MiB of files a minute, besides its 20 MiB of images, and so may
+each person's credential (the admin token, each owner or operate token),
+whatever names it sends as.
 
 **On the receiving node.** When the node accepts the message it writes
-each file to `<files dir>/<session>/<message>/<name>` (folders 0700,
-files 0600; the name is the sender's, cut to its base name, made safe,
-made unique within the message and kept clear of names Windows reserves),
-and the message's header names the paths. `<files dir>` is
+each file to `<files dir>/<session>/<message>-<random>/<name>` (folders
+0700, files 0600; the name is the sender's, cut to its base name, made
+safe, made unique within the message and kept clear of names Windows
+reserves), and the message's header names the paths. `<files dir>` is
 `files_dir` in `node.json`, by default `switchworks/files` in the user
 cache directory: `~/.cache/switchworks/files` on Linux,
 `~/Library/Caches/switchworks/files` on macOS,
@@ -329,6 +366,24 @@ deliver it without them).
 A message's folder is removed 7 days after the message left the node's
 queue (an hourly sweep keeps it while it waits there). Events
 (`message.queued`, `message.delivered`) carry no file contents.
+
+**Quota.** The node keeps at most `files_quota_mib` (default 1024 MiB)
+of received files, all sessions together. A message whose files would
+pass it is refused by the node and fails, with an error saying so, rather
+than being delivered without them; files fit again as the sweep removes
+old folders. `-1` turns the quota off.
+
+**Who can read them.** Every session on a host runs as the same user, so
+any agent that can run commands can list and read every other session's
+received files, in this directory or wherever `files_dir` puts it; file
+modes cannot separate one user's sessions (and making the session folders
+0711 would only open them to other users). The random part of a
+message's folder name keeps a path from being guessed from a message id
+by a tool that reads named paths without listing directories, and agents
+can never attach files from this directory, so one cannot forward
+another's; neither is a boundary between sessions. Treat a received file
+as readable by every agent on the receiving host, and do not send
+secrets as files.
 
 An older coordinator refuses a message with files ("unknown field"), so
 update the coordinator first, then the nodes: each node offers files once
@@ -642,10 +697,18 @@ node and its agents as a separate user. In particular:
   the rest of the fleet.
 - If a workstation may be compromised, `swk hosts rm` it.
 
-The fleet tools themselves do not widen what an agent can read: the files
-an agent attaches as images are confined to its working directory and
-never come from Switchworks's own directories ([Images](#images)), and
-the same goes for the files it attaches ([Files](#files)). Images an
+The fleet tools read the files an agent attaches (`images`, `files`) as
+your user, outside the agent's sandbox, so they can reach files the
+sandbox denies. The node narrows that: attachments are confined to the
+session's working directory and never come from Switchworks's own
+directories, the usual credential locations, the paths your Codex
+permission profiles deny, `attach_deny`, `.env` and key files, or (in a
+session working in your home directory) any dot-file
+([Images](#images), [Files](#files)). That is a deny list, not a
+sandbox: a secret kept elsewhere under the working directory can still
+be sent, so give agents working directories without secrets, add other
+secret paths to `attach_deny`, and do not run sessions in your home
+directory when you can avoid it. Images an
 agent receives are model input like any message text, and a crafted
 image can carry instructions the same way text can. A received file is
 as untrusted as the message that brought it: a patch can change anything

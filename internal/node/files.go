@@ -3,6 +3,7 @@
 package node
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -18,10 +19,20 @@ import (
 // Files received with messages (patches, logs):
 //
 //   - When the node accepts a message it writes each file to
-//     <files dir>/<session>/<message>/<name> (directories 0700, files
-//     0600; the name is the sender's, made safe by attach.DiskNames), and
-//     the message names their absolute paths, so the agent reads them
-//     with its own tools and nobody copies them by hand.
+//     <files dir>/<session>/<message>-<random>/<name> (directories 0700,
+//     files 0600; the name is the sender's, made safe by
+//     attach.DiskNames), and the message names their absolute paths, so
+//     the agent reads them with its own tools and nobody copies them by
+//     hand.
+//   - Every session runs as the same user, so any session that can run
+//     commands can list and read every other session's files: modes
+//     cannot separate them, and 0711 parents would only open the tree to
+//     other users. The random part only keeps a path from being derived
+//     from a message id, by a tool that reads named paths but does not
+//     list directories. Agents can never attach files from here
+//     (attachPolicy), so one cannot forward another's.
+//   - All of it together is capped at filesQuota: a message whose files
+//     would pass it is refused, and its delivery fails.
 //   - <files dir> is <user cache dir>/switchworks/files: ~/.cache on
 //     Linux, ~/Library/Caches on macOS, %LocalAppData% on Windows, or
 //     files_dir in node.json. Not the node's directory: a Codex permission
@@ -37,6 +48,10 @@ import (
 const (
 	filesKeep  = 7 * 24 * time.Hour
 	filesSweep = time.Hour
+	// defaultFilesQuotaMiB caps the received files kept, all sessions
+	// together, unless files_quota_mib says otherwise. One agent may send
+	// 8 MiB a minute, about 11 GiB a day, and files stay filesKeep.
+	defaultFilesQuotaMiB = 1024
 )
 
 // fileRef is a received file as written for the session.
@@ -77,8 +92,36 @@ func safeID(id string) bool {
 	return true
 }
 
+// filesQuota is the most bytes of received files the node keeps, or 0 for
+// no limit.
+func (n *Node) filesQuota() int64 {
+	switch q := n.cfg.FilesQuotaMiB; {
+	case q < 0:
+		return 0
+	case q == 0:
+		return defaultFilesQuotaMiB << 20
+	default:
+		return q << 20
+	}
+}
+
+// filesUsage is the bytes of the regular files under root.
+func filesUsage(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if fi, err := d.Info(); err == nil {
+				total += fi.Size()
+			}
+		}
+		return nil
+	})
+	return total
+}
+
 // writeFiles writes a message's files (normalized, with data) to a fresh
-// folder of their own and returns where they are.
+// folder of their own and returns where they are. The folder's name is
+// the message id and a random part, so it cannot be guessed from the id.
 func (n *Node) writeFiles(sessionID, msgID string, files []model.Attachment) ([]fileRef, error) {
 	root := n.filesRoot()
 	switch {
@@ -87,6 +130,8 @@ func (n *Node) writeFiles(sessionID, msgID string, files []model.Attachment) ([]
 	case !safeID(sessionID) || !safeID(msgID):
 		return nil, errors.New("invalid session or message id")
 	}
+	n.filesMu.Lock()
+	defer n.filesMu.Unlock()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
@@ -97,11 +142,25 @@ func (n *Node) writeFiles(sessionID, msgID string, files []model.Attachment) ([]
 		return nil, err
 	}
 	defer r.Close()
-	rel := filepath.Join(sessionID, msgID)
-	// A folder left by an attempt that did not get the message queued.
-	if err := r.RemoveAll(rel); err != nil {
-		return nil, err
+	// Folders left by attempts that did not get the message queued.
+	if d, err := r.Open(sessionID); err == nil {
+		names, _ := d.Readdirnames(-1)
+		d.Close()
+		for _, name := range names {
+			if name == msgID || strings.HasPrefix(name, msgID+"-") {
+				if err := r.RemoveAll(filepath.Join(sessionID, name)); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
+	if q := n.filesQuota(); q > 0 {
+		if used, add := filesUsage(root), int64(attach.TotalBytes(files)); used+add > q {
+			return nil, fmt.Errorf("received files on this host already take %s of their %s (files_quota_mib in its node.json); "+
+				"this message's %s of files does not fit until older ones are removed", attach.HumanSize(used), attach.HumanSize(q), attach.HumanSize(add))
+		}
+	}
+	rel := filepath.Join(sessionID, msgID+"-"+rand.Text())
 	if err := r.MkdirAll(rel, 0o700); err != nil {
 		return nil, err
 	}
@@ -172,8 +231,8 @@ func (n *Node) pruneFiles(now time.Time) {
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
 		for _, q := range s.rec.Queue {
-			if len(q.Files) > 0 {
-				queued[filepath.Join(s.rec.ID, q.ID)] = true
+			for _, f := range q.Files {
+				queued[filepath.Dir(f.Path)] = true
 			}
 		}
 		s.mu.Unlock()
@@ -194,9 +253,8 @@ func (n *Node) pruneFiles(now time.Time) {
 			if !md.IsDir() || !safeID(md.Name()) {
 				continue
 			}
-			rel := filepath.Join(sd.Name(), md.Name())
-			p := filepath.Join(root, rel)
-			if queued[rel] {
+			p := filepath.Join(root, sd.Name(), md.Name())
+			if queued[p] {
 				_ = os.Chtimes(p, now, now)
 				continue
 			}

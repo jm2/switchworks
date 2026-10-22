@@ -99,7 +99,12 @@ func TestFleetFiles(t *testing.T) {
 		f.SHA256 != attach.SHA256(patch) || f.Data != nil {
 		t.Fatalf("stored file %+v", f)
 	}
-	path := filepath.Join(dirB, "received-files", linux.ID, m.ID, "0001-parser.patch")
+	// The message's folder has a random part after its id.
+	found, _ := filepath.Glob(filepath.Join(dirB, "received-files", linux.ID, m.ID+"-*", "0001-parser.patch"))
+	if len(found) != 1 {
+		t.Fatalf("received files: %q", found)
+	}
+	path := found[0]
 	j := wr.waitFor(t, "receiver saw the path", 0, agentSaidAll("from=devbox/win",
 		fmt.Sprintf("(1 file attached: %s (text/x-patch, %s).)", path, attach.HumanSize(int64(len(patch)))), "please git am this"))
 	wr.waitFor(t, "receiver turn done", j, turnEnded("completed"))

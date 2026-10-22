@@ -69,6 +69,72 @@ func TestResolveFiles(t *testing.T) {
 	}
 }
 
+// An agent working in the home directory cannot attach credentials, the
+// paths Codex's permission profiles deny, attach_deny, nor received
+// files; attach_allow lifts the dot-file rule.
+func TestAttachPolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", "")
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(home, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".codex/config.toml", "model = \"x\"\n[permissions.swk.filesystem]\n\"~/secrets\" = \"deny\"\n\"~/work/vault/k.txt\" = \"deny\"\n")
+	for _, f := range []string{"secrets/a.txt", "work/vault/k.txt", "work/private/p.txt", "work/ok.txt", ".ssh/id_ed25519",
+		".aws/credentials", ".bashrc", ".profile", "recv/s1/m1-X/fix.patch"} {
+		write(f, "text\n")
+	}
+	n := &Node{dir: filepath.Join(home, "swk-node"), cfg: Config{FilesDir: filepath.Join(home, "recv"),
+		AttachDeny: []string{"~/work/private"}, AttachAllow: []string{"~/.bashrc"}}}
+	s := &session{n: n, rec: record{ID: "s1", Spec: adapter.StartSpec{Cwd: home}}}
+	send := func(name string) error {
+		b, _ := json.Marshal(map[string]any{"to": "b", "text": "x", "files": []string{name}})
+		_, err := n.resolveImages(s, b, filesArg)
+		return err
+	}
+	for name, want := range map[string]string{
+		"secrets/a.txt":            "holds credentials",
+		"work/vault/k.txt":         "holds credentials",
+		"work/private/p.txt":       "attach_deny",
+		".ssh/id_ed25519":          "holds credentials",
+		".aws/credentials":         "holds credentials",
+		".codex/config.toml":       "holds credentials",
+		"recv/s1/m1-X/fix.patch":   "holds credentials",
+		".profile":                 "dot-file",
+		"~/.ssh/id_ed25519":        "no such file", // never expanded: a name under the cwd
+		"work/../.aws/credentials": "holds credentials",
+	} {
+		if err := send(name); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", name, err, want)
+		}
+	}
+	for _, name := range []string{"work/ok.txt", ".bashrc"} {
+		if err := send(name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Images take the same path.
+	if _, err := n.resolveImages(s, []byte(`{"images":[".ssh/id_ed25519"]}`)); err == nil || !strings.Contains(err.Error(), "holds credentials") {
+		t.Errorf("image from ~/.ssh: %v", err)
+	}
+	for _, bad := range []Config{{AttachDeny: []string{"work"}}, {AttachAllow: []string{"./x"}}} {
+		if checkAttachPaths(bad) == nil {
+			t.Errorf("%+v accepted", bad)
+		}
+	}
+	if err := checkAttachPaths(Config{AttachDeny: []string{"~/x", home}, AttachAllow: []string{"~"}}); err != nil {
+		t.Error(err)
+	}
+}
+
 // The receiving node writes a message's files to a folder of their own,
 // names them in the header, and removes the folder a while after delivery.
 func TestReceivedFiles(t *testing.T) {
@@ -83,7 +149,12 @@ func TestReceivedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "s1", "m1")
+	// A folder of the message's own, named with a random part.
+	dir := filepath.Dir(refs[0].Path)
+	if filepath.Dir(dir) != filepath.Join(root, "s1") || !strings.HasPrefix(filepath.Base(dir), "m1-") || len(filepath.Base(dir)) < 3+26 ||
+		!safeID(filepath.Base(dir)) {
+		t.Fatalf("folder %s", dir)
+	}
 	for i, want := range []string{"fix.patch", "fix-2.patch", "_CON"} {
 		if refs[i].Path != filepath.Join(dir, want) {
 			t.Fatalf("file %d at %s", i, refs[i].Path)
@@ -93,12 +164,14 @@ func TestReceivedFiles(t *testing.T) {
 		}
 	}
 	// Written again (a redelivery that was never queued): a fresh folder.
-	if _, err := n.writeFiles("s1", "m1", files[:1]); err != nil {
+	again, err := n.writeFiles("s1", "m1", files[:1])
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "_CON")); err == nil {
+	if _, err := os.Stat(dir); err == nil || filepath.Dir(again[0].Path) == dir {
 		t.Fatal("old folder kept")
 	}
+	dir = filepath.Dir(again[0].Path)
 	for _, bad := range [][2]string{{"../s", "m"}, {"s1", "m/../.."}, {"", "m"}, {"s1", ".."}} {
 		if _, err := n.writeFiles(bad[0], bad[1], files[:1]); err == nil {
 			t.Errorf("ids %q accepted", bad)
@@ -117,15 +190,18 @@ func TestReceivedFiles(t *testing.T) {
 
 	// The sweep: a queued message's folder is kept (and refreshed), a
 	// delivered one goes filesKeep after it was last refreshed.
-	if _, err := n.writeFiles("s1", "m2", files[:1]); err != nil {
+	m2, err := n.writeFiles("s1", "m2", files[:1])
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.writeFiles("s2", "m3", files[:1]); err != nil {
+	m3, err := n.writeFiles("s2", "m3", files[:1])
+	if err != nil {
 		t.Fatal(err)
 	}
-	n.sessions["s1"] = &session{n: n, rec: record{ID: "s1", Queue: []queuedMsg{{ID: "m2", Files: refs[:1]}}}}
+	m2Dir := filepath.Dir(m2[0].Path)
+	n.sessions["s1"] = &session{n: n, rec: record{ID: "s1", Queue: []queuedMsg{{ID: "m2", Files: m2}}}}
 	old := time.Now().Add(-filesKeep - time.Hour)
-	for _, p := range []string{dir, filepath.Join(root, "s1", "m2"), filepath.Join(root, "s2", "m3")} {
+	for _, p := range []string{dir, m2Dir, filepath.Dir(m3[0].Path)} {
 		if err := os.Chtimes(p, old, old); err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +211,7 @@ func TestReceivedFiles(t *testing.T) {
 	if _, err := os.Stat(dir); err == nil {
 		t.Fatal("delivered message's files kept")
 	}
-	if fi, err := os.Stat(filepath.Join(root, "s1", "m2")); err != nil || time.Since(fi.ModTime()) > time.Minute {
+	if fi, err := os.Stat(m2Dir); err != nil || time.Since(fi.ModTime()) > time.Minute {
 		t.Fatalf("queued message's files: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "s2")); err == nil {
@@ -143,6 +219,48 @@ func TestReceivedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "s1", "stray.txt")); err != nil {
 		t.Fatal("stray file removed")
+	}
+}
+
+// Received files are capped all sessions together: a message whose files
+// would pass files_quota_mib is refused, and fits again once older ones
+// are swept.
+func TestReceivedFilesQuota(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "files")
+	n := &Node{dir: t.TempDir(), cfg: Config{FilesDir: root, FilesQuotaMiB: 1}, sessions: map[string]*session{}}
+	big, err := attach.NormalizeFiles([]model.Attachment{{Name: "a.log", Data: bytes.Repeat([]byte("x"), 600<<10)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := n.writeFiles("s1", "m1", big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = n.writeFiles("s2", "m2", big)
+	if err == nil || !strings.Contains(err.Error(), "files_quota_mib") {
+		t.Fatalf("over the quota: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "s2")); err == nil {
+		t.Fatal("refused files written")
+	}
+	// A redelivery of the same message replaces its own folder, so it is
+	// not counted against itself.
+	if first, err = n.writeFiles("s1", "m1", big); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	old := time.Now().Add(-filesKeep - time.Hour)
+	_ = os.Chtimes(filepath.Dir(first[0].Path), old, old)
+	n.pruneFiles(time.Now())
+	if _, err := n.writeFiles("s2", "m2", big); err != nil {
+		t.Fatalf("after the sweep: %v", err)
+	}
+	// -1 turns the cap off.
+	n.cfg.FilesQuotaMiB = -1
+	if _, err := n.writeFiles("s3", "m3", big); err != nil {
+		t.Fatalf("no quota: %v", err)
+	}
+	if (&Node{}).filesQuota() != defaultFilesQuotaMiB<<20 {
+		t.Fatal("default quota")
 	}
 }
 

@@ -69,11 +69,15 @@ or tailnet:
   wrong session, or after it was cancelled, expired or its session stopped.
 - The node's local API used by `swk mcp`, and files the node writes into workspaces (agy's
   `.agents/mcp_config.json`, `.git/info/exclude`) or agy's settings (the fleet tools' allow rule).
-- Image attachments: whether an agent can make its node read a file outside its working
-  directory, or under Switchworks's own directories, through the fleet tools' `images`; whether a
-  non-image (or an image of a type other than PNG, JPEG, WebP and GIF) gets through; and the
-  coordinator's attachment store and `GET /v1/attachments`. See
-  [`docs/messaging.md`](docs/messaging.md#images).
+- Image and file attachments: whether an agent can make its node read a file outside its
+  working directory, under Switchworks's own directories, or in a location the node denies
+  (credential stores, paths a Codex permission profile or `attach_deny` denies, received files,
+  dot-files when working in the home directory) through the fleet tools' `images` or `files`;
+  whether a non-image (or an image of a type other than PNG, JPEG, WebP and GIF) or a non-text
+  file gets through; whether received files can pass the node's quota; and the coordinator's
+  attachment store and `GET /v1/attachments`. See [`docs/messaging.md`](docs/messaging.md#images).
+  Secrets stored under a working directory in places the deny rules do not name, and one session
+  reading another's received files on the same host (all run as one user), are known limits.
 - Whether a session runs with a looser Codex sandbox, or an ACP agent in a mode with fewer
   approvals, than its spawn asked for: the node refuses such a session rather than run it
   (see [`docs/harnesses.md`](docs/harnesses.md#codex-on-windows) and the ACP approval policy

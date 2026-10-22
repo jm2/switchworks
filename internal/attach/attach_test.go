@@ -155,7 +155,7 @@ func TestReadWithin(t *testing.T) {
 
 	ok := func(name string) {
 		t.Helper()
-		a, err := ReadWithin(cwd, name, []string{nodeDir})
+		a, err := ReadWithin(cwd, name, Policy{Own: []string{nodeDir}})
 		if err != nil {
 			t.Fatalf("ReadWithin(%q): %v", name, err)
 		}
@@ -165,7 +165,7 @@ func TestReadWithin(t *testing.T) {
 	}
 	refused := func(name, why string) {
 		t.Helper()
-		a, err := ReadWithin(cwd, name, []string{nodeDir})
+		a, err := ReadWithin(cwd, name, Policy{Own: []string{nodeDir}})
 		if err == nil {
 			t.Fatalf("ReadWithin(%q) accepted (%d bytes)", name, len(a.Data))
 		}
@@ -227,10 +227,10 @@ func TestReadWithin(t *testing.T) {
 	if err := os.Symlink(cwd, linkCwd); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadWithin(linkCwd, filepath.Join(cwd, "shots", "a.png"), nil); err != nil {
+	if _, err := ReadWithin(linkCwd, filepath.Join(cwd, "shots", "a.png"), Policy{}); err != nil {
 		t.Fatalf("real path under a symlinked cwd: %v", err)
 	}
-	if _, err := ReadWithin(linkCwd, "shots/a.png", nil); err != nil {
+	if _, err := ReadWithin(linkCwd, "shots/a.png", Policy{}); err != nil {
 		t.Fatalf("relative path under a symlinked cwd: %v", err)
 	}
 	// A FIFO is not a regular file (and is never opened).
