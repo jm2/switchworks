@@ -134,11 +134,40 @@ type InboxArgs struct {
 	Ticket      string `json:"ticket,omitempty"` // an ask id to check (and optionally wait on)
 	WaitSeconds int    `json:"wait_seconds,omitempty"`
 	Limit       int    `json:"limit,omitempty"`
+	// All lists recent messages to and from the session, read or not,
+	// instead of only the unread ones.
+	All bool `json:"all,omitempty"`
+	// Verbose returns full message records instead of InboxMessage.
+	Verbose bool `json:"verbose,omitempty"`
 }
 
+// Inbox limits.
+const (
+	DefaultInboxLimit = 20
+	MaxInboxLimit     = 200
+	// InboxTextBytes is the most of a message's text the inbox shows; the
+	// whole text arrived as a turn.
+	InboxTextBytes = 2000
+)
+
 type InboxResult struct {
-	Ticket   *AskResult      `json:"ticket,omitempty"`
-	Messages []model.Message `json:"messages"`
+	Ticket *AskResult `json:"ticket,omitempty"`
+	// Messages are []InboxMessage, or []model.Message with Verbose. With
+	// Ticket it is empty: checking an ask reads no messages.
+	Messages any `json:"messages"`
+	// More counts the unread messages left for the next call.
+	More int `json:"more,omitempty"`
+}
+
+// InboxMessage is the compact form of a message in fleet_inbox.
+type InboxMessage struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	From      string    `json:"from"`
+	To        string    `json:"to,omitempty"` // only on messages the session sent
+	CreatedAt time.Time `json:"created_at"`
+	Text      string    `json:"text"`
+	Re        string    `json:"re,omitempty"` // the ask a reply answers
 }
 
 type SpawnArgs struct {

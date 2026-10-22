@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/fleet"
@@ -1108,26 +1109,97 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 			}
 		}
 		res.Ticket = t
+		// Checking an ask reads nothing else: swk mcp polls a ticket while
+		// fleet_ask waits, and would mark messages read unseen.
+		res.Messages = []fleet.InboxMessage{}
+		return res, nil
 	}
 	limit := args.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 20
+	if limit <= 0 || limit > fleet.MaxInboxLimit {
+		limit = fleet.DefaultInboxLimit
 	}
-	filter := store.MessageFilter{Session: from.sessionID(), Limit: limit}
-	if from.sess == nil {
-		filter = store.MessageFilter{ToUser: true, Limit: limit}
+	var msgs []model.Message
+	switch {
+	case from.sess == nil:
+		msgs = r.s.store.Messages(store.MessageFilter{ToUser: true, Limit: limit})
+	case args.All:
+		msgs = r.s.store.Messages(store.MessageFilter{Session: from.sess.ID, Limit: limit})
+	default:
+		msgs, res.More = r.unread(from.sess.ID, limit)
 	}
-	msgs := r.s.store.Messages(filter)
 	for i := range msgs {
-		if len(msgs[i].Text) > 2000 {
-			msgs[i].Text = msgs[i].Text[:2000] + "…"
+		msgs[i].Text = clipInbox(msgs[i].Text)
+	}
+	if args.Verbose {
+		if msgs == nil {
+			msgs = []model.Message{}
+		}
+		res.Messages = msgs
+		return res, nil
+	}
+	out := make([]fleet.InboxMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo}
+		if from.sess != nil && m.FromSession == from.sess.ID {
+			out[i].To = m.To
 		}
 	}
-	res.Messages = msgs
-	if res.Messages == nil {
-		res.Messages = []model.Message{}
-	}
+	res.Messages = out
 	return res, nil
+}
+
+// unread returns the oldest limit messages to a session after its inbox
+// cursor, oldest first, with how many more there are, and moves the cursor
+// past those it returns. Messages still pending (in flight, or a reply held
+// for its asker) and replies handed straight to a waiting fleet_ask are not
+// unread: the session sees them otherwise.
+func (r *router) unread(sessionID string, limit int) ([]model.Message, int) {
+	sess, ok := r.s.store.Session(sessionID)
+	if !ok {
+		return nil, 0
+	}
+	var out []model.Message
+	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sessionID}) {
+		if m.ID <= sess.InboxRead {
+			break // newest first
+		}
+		if m.ToSession != sessionID || m.State == model.MsgPending || m.Inline {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	more := 0
+	if len(out) > limit {
+		more = len(out) - limit
+		out = out[:limit]
+	}
+	if len(out) > 0 {
+		r.markRead(sessionID, out[len(out)-1].ID)
+	}
+	return out, more
+}
+
+// markRead moves a session's inbox cursor forward to id.
+func (r *router) markRead(sessionID, id string) {
+	_, _ = r.s.store.UpdateSession(sessionID, func(s *model.Session) {
+		if id > s.InboxRead {
+			s.InboxRead = id
+		}
+	})
+}
+
+// clipInbox cuts a message's text for fleet_inbox, saying how much it left
+// out.
+func clipInbox(text string) string {
+	if len(text) <= fleet.InboxTextBytes {
+		return text
+	}
+	cut := fleet.InboxTextBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… [%d more bytes cut]", text[:cut], len(text)-cut)
 }
 
 // onDelivered records the hops of the message that started a session's
@@ -1144,6 +1216,8 @@ func (r *router) onDelivered(sessionID, messageID string) {
 	r.mu.Lock()
 	r.inbound[sessionID] = trigger{hops: m.Hops, msg: m.ID}
 	r.mu.Unlock()
+	// The session has seen it: fleet_inbox need not list it as unread.
+	r.markRead(sessionID, m.ID)
 }
 
 // onSettled sends a completion notice to a spawned session's parent.

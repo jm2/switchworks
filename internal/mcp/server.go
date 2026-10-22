@@ -157,12 +157,17 @@ var Tools = []Tool{
 			"message_id": str("The id of the ask you are answering."),
 			"text":       str("Your answer."),
 		}, "message_id", "text")},
-	{Name: "fleet_inbox", Title: "Recent messages", Annotations: map[string]bool{"readOnlyHint": true},
-		Description: "Show recent messages sent to or from this session. With ticket (an ask id returned by fleet_ask), report whether that ask has been answered, waiting up to wait_seconds for it.",
+	{Name: "fleet_inbox", Title: "Unread messages",
+		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re}, text cut at 2,000 bytes. " +
+			"You rarely need this: every message already arrives as a turn of its own, and those count as seen. Do not poll it. " +
+			"all: true shows recent messages to and from this session, seen or not; verbose: true gives full records. " +
+			"With ticket (an ask id returned by fleet_ask), report only whether that ask has been answered, waiting up to wait_seconds for it.",
 		InputSchema: obj(map[string]any{
 			"ticket":       str("An ask id to check."),
 			"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 1800, "description": "With ticket: how long to wait for the answer."},
 			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "How many messages (default 20)."},
+			"all":          map[string]any{"type": "boolean", "description": "Recent messages to and from this session, seen or not, newest first."},
+			"verbose":      map[string]any{"type": "boolean", "description": "Full message records (addresses, state, hops, times)."},
 		})},
 	{Name: "fleet_spawn", Title: "Start a new agent session",
 		Description: "Start a new agent session on a host to work on a task in parallel. It runs on its own; when it has finished all its work you receive a completion message containing its last reply. You can message it, check it with fleet_status, or stop it with fleet_stop. It runs with your approval policy and sandbox; by default it must be on your host, use your harness, and work inside your working directory.",
@@ -184,7 +189,7 @@ var Tools = []Tool{
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
 }
 
-const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id.`
+const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox.`
 
 // Server serves MCP on one connection.
 type Server struct {

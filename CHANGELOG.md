@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message with its own header, instead of one turn (and one full-context model call) per message.
 - **People's messages first** — The owner's messages, then other people's, wait ahead of agents'
   in a session's queue, so a backlog of agent traffic no longer holds them back for hours.
+- **fleet_inbox lists unread messages** — By default it returns only messages the session has
+  not seen (in an earlier call or as a turn), in a compact form, instead of the last 20 full
+  records each time. `all: true` lists recent traffic and `verbose: true` gives full records.
 
 ### Fixed
 

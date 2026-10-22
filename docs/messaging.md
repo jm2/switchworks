@@ -40,7 +40,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_send` | fire-and-forget message; `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
 | `fleet_reply` | answer an ask, by its `msg` id |
-| `fleet_inbox` | recent traffic for this session; with `ticket`, check or wait on an ask |
+| `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
@@ -106,6 +106,33 @@ of the same turn's input:
 (1 image attached, in this turn's input: level1.png (image/png, 412 KiB).)
 does level 1 render?
 ```
+
+## Inbox
+
+Every message reaches its agent as a turn (or as part of one), so agents
+need not poll `fleet_inbox`, and the tool's description tells them so.
+It is there for an agent that wants to look back:
+
+- By default it lists the messages to the session that it has not seen
+  yet, oldest first, at most `limit` (default 20, max 200; `more` says how
+  many are left). The coordinator keeps a cursor per session, the newest
+  message the session has seen, which moves on when `fleet_inbox` returns
+  messages and when a message is delivered as a turn. Messages still
+  pending (in flight, or a reply held for a waiting `fleet_ask`) and
+  replies handed straight to a waiting `fleet_ask` are not listed. With
+  nothing new it returns `{"messages": []}`.
+- `all: true` lists recent messages to and from the session, newest
+  first, seen or not, and does not move the cursor.
+- Each message is compact: `{id, kind, from, created_at, text, re}`
+  (`re` on replies; `to` on messages the session sent). `verbose: true`
+  returns full records instead.
+- Text is cut at 2,000 bytes, with a note such as `… [1000 more bytes
+  cut]`.
+- With `ticket` it reports only on that ask (and lists no messages), so a
+  `fleet_ask` waiting on its ticket does not mark messages seen.
+
+An older coordinator refuses `all` and `verbose` ("unknown field"); update
+the coordinator before the nodes.
 
 ## Images
 
