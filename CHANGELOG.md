@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Codex config overrides** — `codex.config` in `node.json` is a map of Codex config overrides
   the node passes as `-c key=value` ahead of `app-server`, values written in TOML and nested
   objects as dotted keys, e.g. `{"model_auto_compact_token_limit": 128000}`.
+- **Lean Codex sessions** — Opt-in `"codex": {"lean": true}` turns off Codex's apps (the GitHub
+  connector among them), browser, computer use, image generation, plugins and web search, and
+  compacts at 128K: a fresh thread's first call drops from 47.5K to 12.8K input tokens.
 
 ### Changed
 

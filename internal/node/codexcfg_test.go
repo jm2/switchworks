@@ -40,6 +40,41 @@ func TestCodexConfig(t *testing.T) {
 	}
 }
 
+func TestCodexLean(t *testing.T) {
+	// Off by default.
+	if over, _ := codexConfig(nodeConfig(t, `{"codex": {"config": {"x": 1}}}`)); len(over) != 1 {
+		t.Fatalf("lean defaults without lean: %v", over)
+	}
+	over, err := codexConfig(nodeConfig(t, `{"codex": {"lean": true}}`))
+	if err != nil || !reflect.DeepEqual(over, leanCodexConfig) {
+		t.Fatalf("lean: %v %v", over, err)
+	}
+	// What the user sets wins: in codex.config, a table holding a key, or
+	// a -c in args.
+	over, err = codexConfig(nodeConfig(t, `{"codex": {"lean": true,
+		"args": ["-c", "web_search=\"live\"", "app-server"],
+		"config": {"features": {"apps": true}, "model_auto_compact_token_limit": 200000, "tool_output_token_limit": {"x": 1}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"features.apps": "true", "model_auto_compact_token_limit": "200000",
+		"features.plugins": "false", "tool_output_token_limit.x": "1"} {
+		if over[k] != want {
+			t.Errorf("%s = %q, want %q", k, over[k], want)
+		}
+	}
+	for _, k := range []string{"web_search", "tool_output_token_limit"} {
+		if _, ok := over[k]; ok {
+			t.Errorf("lean overrode %s, which the user set", k)
+		}
+	}
+	for k := range leanCodexConfig {
+		if strings.Contains(k, "reasoning") {
+			t.Errorf("lean sets %s", k)
+		}
+	}
+}
+
 func TestCodexConfigRefuses(t *testing.T) {
 	for js, want := range map[string]string{
 		// antec, 2026-10-21: args with only overrides dropped app-server.

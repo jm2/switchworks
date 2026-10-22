@@ -115,6 +115,7 @@ The `codex` object in `node.json` configures how the node runs
 | `home` | `CODEX_HOME` for app-server (default: Codex's own, `~/.codex`). |
 | `args` | Codex's **whole** argument list, subcommand included. Default `["app-server"]`. |
 | `config` | Config overrides, passed as `-c key=value` ahead of `args`. |
+| `lean` | `true` adds the [lean defaults](#codex-lean-sessions) to `config`. Default `false`. |
 | `permissions` | A permission profile for `workspace-write` sessions ([below](#codex-network-without-exposing-credentials)). |
 
 `args` replaces the argument list rather than adding to it, so it must
@@ -149,6 +150,47 @@ When app-server fails to start, the node log has the end of what it
 wrote to stderr, which usually says why (an unknown argument, a
 `config.toml` error). The full output is in `logs/harness.log` in the
 node directory.
+
+### Codex: lean sessions
+
+A managed Codex session pays for every tool Codex offers on every model
+call. On 2026-10-21, the first call of a fresh thread sent 47.5K input
+tokens with Codex's defaults, and 12.8K with apps (the ChatGPT GitHub
+connector, about 30 tools), the browser, computer use, image generation,
+plugins and web search turned off: about 35K tokens less on each of
+thousands of calls a day. For a model Codex doesn't know, such as
+`deepseek-flash`, Codex uses fallback metadata, a 258,400-token window
+that compacts at about 245K, so average calls carried 140K to 170K
+tokens.
+
+`"codex": {"lean": true}` is recommended for managed sessions. It adds
+these overrides:
+
+```json
+{
+  "features": {
+    "apps": false, "browser_use": false, "browser_use_external": false,
+    "computer_use": false, "image_generation": false, "plugins": false,
+    "in_app_browser": false
+  },
+  "web_search": "disabled",
+  "tool_output_token_limit": 1500,
+  "model_auto_compact_token_limit": 128000
+}
+```
+
+Turning apps off also matters for security. The GitHub connector lets
+an agent act on GitHub as the owner, around any agent-specific token you
+give it.
+
+Each override is added only where `codex.config`, or a `-c` in
+`codex.args`, doesn't set the same key. To keep web search, for example,
+set `"web_search": "live"` in `codex.config`. The overrides take
+precedence over `config.toml`, so set a key in `codex.config` to keep the
+`config.toml` value. `lean` never sets the reasoning effort. For a model
+Codex doesn't know, also set its real window in `codex.config`
+(`"model_context_window": 128000`, say), since Codex can't compact
+correctly without it.
 
 ## Codex: network without exposing credentials
 

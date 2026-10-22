@@ -57,6 +57,9 @@ type Config struct {
 		// Config holds Codex config overrides, passed as -c key=value
 		// ahead of Args: values in TOML, nested objects as dotted keys.
 		Config map[string]json.RawMessage `json:"config,omitempty"`
+		// Lean adds leanCodexConfig (a smaller tool set and an earlier
+		// compaction) to Config, for the keys Config and Args leave unset.
+		Lean bool `json:"lean,omitempty"`
 		// Permissions names a permission profile in codex's config.toml
 		// for workspace-write sessions, e.g. one that turns the network on
 		// but denies reads of credentials. Without it they get codex's
