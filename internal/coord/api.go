@@ -28,7 +28,11 @@ import (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"name": version.Name, "version": version.Version})
+		h := map[string]any{"name": version.Name, "version": version.Version}
+		if s.diskLow.Load() {
+			h["storage_low"] = true
+		}
+		writeJSON(w, 200, h)
 	})
 	mux.HandleFunc("POST /v1/enroll", bodyDeadline(s.handleEnroll))
 

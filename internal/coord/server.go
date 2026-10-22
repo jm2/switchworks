@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jm2/switchworks/internal/fleet"
@@ -62,6 +63,8 @@ type Server struct {
 	// pendingLogs: event logs of deleted sessions not yet removed, as
 	// last reported (pruneSessions, on the router's goroutine).
 	pendingLogs int
+	// diskLow: the data volume is nearly full (watchDisk).
+	diskLow atomic.Bool
 
 	nodeLn net.Listener
 	wg     sync.WaitGroup

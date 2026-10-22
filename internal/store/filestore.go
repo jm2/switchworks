@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,10 @@ import (
 //
 // Event files are opened when first used, at most maxOpenLogs at a time
 // (least recently used first out); a closed one keeps only its last seq.
+//
+// An event file that grows past the log cap (SetEventLogCap) is compacted
+// on append: its oldest events are dropped, keeping about half the cap,
+// behind a warning event that says so (see compactLocked).
 type FileStore struct {
 	dir string
 
@@ -51,6 +56,7 @@ type FileStore struct {
 	retired     map[string]time.Time // tombstones, by session id
 	dirty       bool
 	gen         uint64 // snapshot generation, under mu
+	logCap      int64  // bytes per event file (0: no cap)
 
 	// saveMu orders snapshot writes: one taken later (a higher gen) is
 	// never overwritten by an earlier one still being written.
@@ -104,6 +110,9 @@ const maxEventsRead = 16 << 20
 // maxOpenLogs bounds the event files held open at once.
 const maxOpenLogs = 64
 
+// DefaultEventLogCap is the default size cap of one session's event file.
+const DefaultEventLogCap = 256 << 20
+
 // Finished messages (and asks delivered but never answered) older than
 // this are dropped.
 const messageRetention = 14 * 24 * time.Hour
@@ -127,6 +136,10 @@ type eventLog struct {
 	lastSeq int64 // known while closed too
 	pins    int   // users outside the store lock (or mid-append): not evicted
 	used    uint64
+	// usage is the seq of the last usage event (0: none), while open: a
+	// compaction keeps it, the baseline the coordinator counts the next
+	// one's growth from after a restart.
+	usage int64
 }
 
 func (l *eventLog) last() int64 { return l.lastSeq }
@@ -137,7 +150,7 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		return nil, err
 	}
 	s := &FileStore{
-		dir: dir, hosts: map[string]model.Host{}, sessions: map[string]*model.Session{},
+		dir: dir, logCap: DefaultEventLogCap, hosts: map[string]model.Host{}, sessions: map[string]*model.Session{},
 		tokens: map[string]tokenRec{}, apiToks: map[string]APIToken{}, logs: map[string]*eventLog{}, daily: map[string]int64{},
 		deletedLogs: map[string]bool{}, retired: map[string]time.Time{},
 		msgs: map[string]*model.Message{},
@@ -196,6 +209,11 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		return nil, err
 	}
 	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl.tmp") {
+			// A compaction cut short by a crash; the log itself is whole.
+			_ = os.Remove(filepath.Join(dir, "events", e.Name()))
+			continue
+		}
 		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
 			continue
 		}
@@ -303,18 +321,22 @@ func (s *FileStore) openLocked(l *eventLog) error {
 		return index[len(index)-1].seq
 	}
 	br := bufio.NewReaderSize(f, 1<<20)
-	var off int64
+	var off, usage int64
 	bad := 0
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			var ev struct {
-				Seq int64 `json:"seq"`
+				Seq  int64  `json:"seq"`
+				Kind string `json:"kind"`
 			}
 			if json.Unmarshal(line, &ev) != nil {
 				bad++
 			} else if ev.Seq > last() {
 				index = append(index, idx{ev.Seq, off})
+				if ev.Kind == model.KindUsage {
+					usage = ev.Seq
+				}
 			}
 			off += int64(len(line))
 		}
@@ -334,7 +356,7 @@ func (s *FileStore) openLocked(l *eventLog) error {
 		f.Close()
 		return err
 	}
-	l.f, l.index, l.size, l.lastSeq = f, index, off, last()
+	l.f, l.index, l.size, l.lastSeq, l.usage = f, index, off, last(), usage
 	s.openLogs++
 	for s.openLogs > maxOpenLogs {
 		var lru *eventLog
@@ -1057,15 +1079,15 @@ func (s *FileStore) logFor(id string) (*eventLog, error) {
 
 // logMark is a log's state before an append.
 type logMark struct {
-	size, last int64
-	n          int
+	size, last, usage int64
+	n                 int
 }
 
 // rewindLocked cuts l back to mark m: a failed write may have left part of
 // a line, and the next one would be glued onto it. If the file cannot be
 // cut, it is closed, and opening it again cuts off the torn line.
 func (s *FileStore) rewindLocked(l *eventLog, m logMark) {
-	l.lastSeq = m.last
+	l.lastSeq, l.usage = m.last, m.usage
 	if l.f == nil {
 		return
 	}
@@ -1107,7 +1129,7 @@ func (s *FileStore) AppendEvents(evs []model.Event) ([]model.Event, error) {
 		}
 		b = append(b, '\n')
 		if _, ok := marks[l]; !ok {
-			marks[l] = logMark{size: l.size, last: l.last(), n: len(l.index)}
+			marks[l] = logMark{size: l.size, last: l.last(), usage: l.usage, n: len(l.index)}
 			l.pins++ // not closed before it is synced
 		}
 		if _, err = writeFile(l.f, b); err != nil {
@@ -1119,6 +1141,9 @@ func (s *FileStore) AppendEvents(evs []model.Event) ([]model.Event, error) {
 		l.index = append(l.index, idx{ev.Seq, l.size})
 		l.size += int64(len(b))
 		l.lastSeq = ev.Seq
+		if ev.Kind == model.KindUsage {
+			l.usage = ev.Seq
+		}
 		stored = append(stored, ev)
 	}
 	// What was written before a failure is kept, once it is durable: the
@@ -1131,6 +1156,15 @@ func (s *FileStore) AppendEvents(evs []model.Event) ([]model.Event, error) {
 			s.rewindLocked(l, m)
 			if err == nil {
 				err = serr
+			}
+		}
+	}
+	for l := range marks {
+		if s.logCap > 0 && l.f != nil && l.size > s.logCap && l.pins == 1 {
+			// Only this append holds it: no reader has offsets into the
+			// file being replaced.
+			if cerr := s.compactLocked(l); cerr != nil {
+				logf("store: compact events of %s: %v", l.id, cerr)
 			}
 		}
 	}
@@ -1147,6 +1181,146 @@ func (s *FileStore) AppendEvents(evs []model.Event) ([]model.Event, error) {
 		}
 	}
 	return kept, err
+}
+
+// SetEventLogCap sets the size in bytes past which a session's event file
+// is compacted (0 or less: never). It applies from the next append.
+func (s *FileStore) SetEventLogCap(n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logCap = max(n, 0)
+}
+
+// TruncatedEvent is the payload of the warning event that takes the place
+// of the events a compaction dropped. Its seq is the last dropped one's:
+// a reader from before it learns what is missing, one past it misses
+// nothing.
+type TruncatedEvent struct {
+	Message string `json:"message"`
+	// Through is the last seq dropped; every earlier one is gone too.
+	Through int64 `json:"truncated_through"`
+}
+
+// TruncatedSource is the source of a compaction's warning event.
+const TruncatedSource = "coordinator"
+
+// compactLocked rewrites l without its oldest events, keeping the newest
+// half of the cap (but never an event the session has not projected yet,
+// which replayProjections would need after a crash, and always the last
+// event). A warning event, with the seq of the last dropped one, comes
+// first. Seqs are kept, so acks, LastSeq and readers paging with `after`
+// go on as before. The new file replaces the old one atomically. l must be
+// open and held by no reader (the caller's own pin aside).
+func (s *FileStore) compactLocked(l *eventLog) error {
+	keep := s.logCap / 2
+	k := sort.Search(len(l.index), func(i int) bool { return l.size-l.index[i].off <= keep })
+	if sess := s.sessions[l.id]; sess != nil {
+		k = min(k, sort.Search(len(l.index), func(i int) bool { return l.index[i].seq > sess.ProjectedSeq }))
+	}
+	k = min(k, len(l.index)-1)
+	// The last usage event is kept, ahead of the warning, when it would be
+	// dropped: it needs a seq of its own, so not the warning's.
+	u := -1
+	if l.usage > 0 {
+		if j := sort.Search(len(l.index), func(i int) bool { return l.index[i].seq >= l.usage }); j < k && l.index[j].seq == l.usage {
+			if j == k-1 {
+				k--
+			}
+			if j < k-1 {
+				u = j
+			}
+		}
+	}
+	// Not worth a rewrite (each reads and writes up to half the cap) for
+	// less than a quarter of it; the next append looks again.
+	if k <= 0 || l.index[k].off < s.logCap/4 {
+		return nil
+	}
+	through, from := l.index[k-1].seq, l.index[k].off
+	payload, err := json.Marshal(TruncatedEvent{
+		Message: fmt.Sprintf("earlier history was dropped: events up to %d were past this session's %d MiB event log cap (event_log_max_mb)", through, s.logCap>>20),
+		Through: through,
+	})
+	if err != nil {
+		return err
+	}
+	marker, err := json.Marshal(model.Event{ID: ulid.New(), SessionID: l.id, Seq: through, TS: time.Now().UTC(),
+		Kind: model.KindWarning, Source: TruncatedSource, Payload: payload})
+	if err != nil {
+		return err
+	}
+	marker = append(marker, '\n')
+	var usage []byte
+	if u >= 0 {
+		usage = make([]byte, l.index[u+1].off-l.index[u].off)
+		if _, err := l.f.ReadAt(usage, l.index[u].off); err != nil {
+			return err
+		}
+		if bytes.IndexByte(usage, '\n') != len(usage)-1 {
+			usage = nil // damaged lines between: leave it
+		}
+	}
+	tmp := l.path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = writeFile(f, usage); err == nil {
+		_, err = writeFile(f, marker)
+	}
+	if err == nil {
+		_, err = io.Copy(f, io.NewSectionReader(l.f, from, l.size-from))
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Windows cannot rename over an open file: close it first, and open
+	// whichever file is there after.
+	_ = l.f.Close()
+	l.f = nil
+	renamed := os.Rename(tmp, l.path)
+	if renamed != nil {
+		_ = os.Remove(tmp)
+	} else {
+		_ = syncDir(filepath.Dir(l.path))
+	}
+	nf, err := os.OpenFile(l.path, os.O_RDWR, 0o600)
+	if err == nil {
+		_, err = nf.Seek(0, io.SeekEnd)
+		if err != nil {
+			nf.Close()
+		}
+	}
+	if err != nil {
+		// Indexed again when next used.
+		l.index = nil
+		s.openLogs--
+		return err
+	}
+	l.f = nf
+	if renamed != nil {
+		return renamed // the old file, as it was
+	}
+	head := int64(len(usage) + len(marker))
+	shift := from - head
+	index := make([]idx, 0, len(l.index)-k+2)
+	if usage != nil {
+		index = append(index, idx{l.usage, 0})
+	}
+	index = append(index, idx{through, int64(len(usage))})
+	for _, x := range l.index[k:] {
+		index = append(index, idx{x.seq, x.off - shift})
+	}
+	l.index, l.size = index, l.size-shift
+	logf("store: events of %s: dropped those up to seq %d, past the %d MiB cap", l.id, through, s.logCap>>20)
+	return nil
 }
 
 func (s *FileStore) Events(sessionID string, after int64, limit int) ([]model.Event, error) {

@@ -51,7 +51,7 @@ by the tools you already use, under your own sign-ins.
 | Tray icon (Linux, Windows) and menu-bar app (macOS) | 🚧 Status, web UI, start/stop/restart, logs; little real use yet |
 | Push notifications | 🚧 Not yet; the tab title and inbox count show what needs you |
 | Coordinator as a system service under its own account | ✅ Linux; 🚧 Windows; ❌ macOS |
-| Session retention: ended sessions deleted after 90 days by default (`session_retention_days`), `swk rm` | ✅ Running sessions keep their whole log |
+| Session retention: ended sessions deleted after 90 days by default (`session_retention_days`), `swk rm` | ✅ Each session's event log is capped (256 MiB by default, `event_log_max_mb`): past it, the oldest events go |
 | Observing sessions started outside Switchworks | 🚧 Future release |
 
 ---
@@ -552,6 +552,13 @@ Stopped sessions, and sessions whose host no longer has them, are deleted with t
 negative number keeps them forever), or remove one sooner with `swk rm`. Sessions that are still
 running, in error on their node, or that a running session was spawned below, are kept however
 old. A removed session stays removed: if its node still reports it, it is not taken back.
+
+Each session's event log is capped at 256 MiB (`event_log_max_mb` in `coordinator.json`; a
+negative number for no cap). Past it, the oldest events are dropped, keeping about half the
+cap, and a warning at the start of the history says which. The coordinator also checks the
+free space on its data volume every five minutes and logs a warning (and adds
+`"storage_low": true` to `/v1/health`) when it is low: under 5% of the volume, at least 1 GiB
+and at most 10 GiB.
 
 Agents get fleet tools (`fleet_list`, `fleet_ask`, `fleet_send`,
 `fleet_spawn`, ...), so a prompt like "ask buildbox/helper whether the ARM
