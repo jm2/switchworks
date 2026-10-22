@@ -117,6 +117,7 @@ func (s sender) sessionID() string {
 type target struct {
 	sess *model.Session
 	user string
+	addr string // the address it was named by
 }
 
 // trigger is what started a session's current work.
@@ -539,7 +540,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if kind == model.MsgAsk && args.Broadcast {
 		return nil, errors.New("an ask goes to exactly one recipient")
 	}
-	targets, err := r.resolve(from, args.To, args.Broadcast)
+	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
 	}
@@ -633,7 +634,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	var out []model.Message
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
-			To: args.To, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
+			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
@@ -666,6 +667,98 @@ func (r *router) steerMode(from sender, sess model.Session, mode string) string 
 		return model.ModeQueue
 	}
 	return mode
+}
+
+// resolveTo resolves a send's recipients: To, or each address in ToList.
+// A session (or person) named by two addresses gets one message.
+func (r *router) resolveTo(from sender, args fleet.SendArgs) ([]target, error) {
+	var out []target
+	seen := map[string]bool{}
+	for _, to := range args.Recipients() {
+		ts, err := r.resolve(from, to, args.Broadcast)
+		if err != nil {
+			if len(args.ToList) > 0 {
+				return nil, fmt.Errorf("%s: %w", to, err)
+			}
+			return nil, err
+		}
+		for _, t := range ts {
+			key := t.user
+			if t.sess != nil {
+				key = t.sess.ID
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			t.addr = to
+			out = append(out, t)
+		}
+	}
+	if from.sess != nil && len(args.ToList) > 0 && len(out) > r.guards.MaxBroadcast {
+		return nil, fmt.Errorf("these %d addresses reach %d recipients; agents may send to at most %d at once", len(args.ToList), len(out), r.guards.MaxBroadcast)
+	}
+	return out, nil
+}
+
+// sendEach is send for a request whose "to" may list several addresses.
+// An address that cannot take the message (unknown, the sender itself, a
+// harness that takes no images) is refused on its own and the rest still
+// go, as one group; the result lists each. Limits that count the whole
+// send (rate limits, max_broadcast, hops) still refuse all of it.
+func (r *router) sendEach(ctx context.Context, from sender, kind string, args fleet.SendArgs) (fleet.SendResult, error) {
+	var refused []fleet.MessageInfo
+	if len(args.ToList) > 0 {
+		var ok []string
+		var why []string
+		for _, to := range args.ToList {
+			if err := r.precheck(from, kind, args, to); err != nil {
+				refused = append(refused, fleet.MessageInfo{To: to, State: fleet.Refused, Error: err.Error()})
+				why = append(why, to+": "+err.Error())
+				continue
+			}
+			ok = append(ok, to)
+		}
+		switch len(ok) {
+		case 0:
+			return fleet.SendResult{}, fmt.Errorf("no recipient can take it (%s)", strings.Join(why, "; "))
+		case 1:
+			args.To, args.ToList = ok[0], nil
+		default:
+			args.To, args.ToList = "", ok
+		}
+	}
+	msgs, err := r.send(ctx, from, kind, args)
+	if err != nil {
+		return fleet.SendResult{}, err
+	}
+	res := fleet.SendResult{Messages: append(infos(msgs), refused...)}
+	if len(msgs) > 0 {
+		res.Group = msgs[0].Group
+	}
+	return res, nil
+}
+
+// precheck reports why one address of a send to several cannot take it.
+func (r *router) precheck(from sender, kind string, args fleet.SendArgs, to string) error {
+	ts, err := r.resolve(from, to, args.Broadcast || kind == model.MsgBroadcast)
+	if err != nil {
+		return err
+	}
+	for _, t := range ts {
+		if t.sess == nil {
+			continue
+		}
+		if t.sess.ID == from.sessionID() {
+			return errors.New("a session cannot message itself")
+		}
+		if len(args.Attachments) > 0 {
+			if err := r.s.imagesRefusal(t.sess.Host, t.sess.Harness, t.sess); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // errRejected marks errors the node itself returned (the command reached

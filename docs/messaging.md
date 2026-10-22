@@ -37,7 +37,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message; `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)) |
+| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
@@ -55,6 +55,27 @@ The model sees the tools in the `mcp__swk` namespace.
   first, then by path).
 - `user:<name>`: a person. They read it in the web UI's Inbox or with `swk inbox`, and answer asks
   there or with `swk reply`.
+
+### Several recipients
+
+`fleet_send`'s `to` (and `to` in `POST /v1/messages`, and repeated `--to`
+in `swk msg`) can be a list of up to 64 addresses of any of these forms,
+so an agent tells four peers the same thing in one tool call rather than
+four. Each recipient gets its own message record and delivery state; the
+records share a `group` id (as a broadcast's do), and a session named by
+two addresses gets one message. The result lists each recipient's message
+id and state, or `state: "refused"` with the reason for an address that
+cannot take it (unknown, the sender itself, a harness that takes no
+images): the others still go. If none can, the call fails and names each.
+
+Limits count every recipient: `max_broadcast` caps the sessions one
+agent's send reaches, and each recipient takes its own token from the
+`send_per_minute` and `out_per_minute` buckets. A limit refuses the whole
+send, as does steering or interrupting a session the agent did not spawn.
+An ask still goes to exactly one recipient.
+
+An older coordinator refuses a list ("cannot unmarshal array"); a send to
+one address reads the same to it.
 
 ## What the receiving agent sees
 
@@ -323,7 +344,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
 | `allow_steer_any` | false | let agents interrupt sessions they did not spawn, and steer ones that do not accept steering (any agent may steer the rest: steering only adds input to a turn) |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
-| `max_broadcast` | 8 | recipients of one broadcast from an agent |
+| `max_broadcast` | 8 | recipients of one broadcast, or one send to several addresses, from an agent |
 | `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose), or a read-only one spawn agy |
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
@@ -428,6 +449,7 @@ image can carry instructions the same way text can.
 ```sh
 swk msg buildbox/helper "the build is green"         # by address
 swk msg --broadcast @role=reviewer "please look at PR 42"
+swk msg --to devbox/a --to buildbox/b "rebased on main"   # several recipients
 swk msg --image shot.png --image diff.png reviewer "these two frames"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
@@ -440,7 +462,7 @@ swk usage                                        # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments}` |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments}`; `to` may be a list (not for asks) |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |

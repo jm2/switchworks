@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dimmed "Queued, N ahead" bubble with Send now and Cancel; agents' queued messages show as one
   row with Clear. `GET /v1/sessions/{id}/queue`, `POST /v1/messages/{id}/promote` and
   `POST /v1/messages/{id}/cancel` (the sender or an owner) do the same through the API.
+- **Messages to several recipients** — `fleet_send`'s `to` (and the API's, and `swk msg --to`
+  repeated) takes a list of addresses: one message per recipient, sharing a group id, and a
+  result that lists each one's id or why it could not go. Limits count every recipient.
 
 ### Changed
 

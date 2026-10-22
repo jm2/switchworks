@@ -6,6 +6,10 @@
 package fleet
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jm2/switchworks/internal/model"
@@ -54,12 +58,18 @@ type HostInfo struct {
 	Harnesses []string `json:"harnesses"`
 }
 
+// MaxRecipients bounds the addresses of one send.
+const MaxRecipients = 64
+
 type SendArgs struct {
-	To         string `json:"to"`
-	Text       string `json:"text"`
-	Mode       string `json:"mode,omitempty"` // auto (default) | queue | steer | interrupt
-	Broadcast  bool   `json:"broadcast,omitempty"`
-	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+	// To is the recipient's address. In JSON, "to" may also be a list of
+	// addresses, which fills ToList instead (a list of one fills To).
+	To         string   `json:"to"`
+	ToList     []string `json:"-"`
+	Text       string   `json:"text"`
+	Mode       string   `json:"mode,omitempty"` // auto (default) | queue | steer | interrupt
+	Broadcast  bool     `json:"broadcast,omitempty"`
+	TTLSeconds int      `json:"ttl_seconds,omitempty"`
 	// Images are image files on the sender's host, as an agent names them
 	// in a fleet tool. The sender's node reads them (under the session's
 	// working directory only) and replaces them with Attachments; they
@@ -69,9 +79,84 @@ type SendArgs struct {
 	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
-// MessageInfo summarizes a routed message.
+// sendArgsJSON is SendArgs without its methods, for them to use.
+type sendArgsJSON SendArgs
+
+// UnmarshalJSON takes "to" as one address or a list of them. Unknown
+// fields are refused, as the coordinator refuses them for every operation.
+func (a *SendArgs) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		sendArgsJSON
+		To json.RawMessage `json:"to"`
+	}
+	if err := StrictUnmarshal(b, &aux); err != nil {
+		return err
+	}
+	*a = SendArgs(aux.sendArgsJSON)
+	var err error
+	a.To, a.ToList, err = DecodeTo(aux.To)
+	return err
+}
+
+// MarshalJSON writes "to" as a string unless ToList is set, so a send to
+// one address reads the same to an older coordinator.
+func (a SendArgs) MarshalJSON() ([]byte, error) {
+	aux := struct {
+		sendArgsJSON
+		To any `json:"to"`
+	}{sendArgsJSON(a), a.To}
+	if len(a.ToList) > 0 {
+		aux.To = a.ToList
+	}
+	return json.Marshal(aux)
+}
+
+// DecodeTo reads a "to" value: one address, or a list of addresses. A list
+// of one comes back as one address; a longer list as many.
+func DecodeTo(raw json.RawMessage) (one string, many []string, err error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil, nil
+	}
+	if raw[0] != '[' {
+		if err := json.Unmarshal(raw, &one); err != nil {
+			return "", nil, errors.New(`"to" must be an address or a list of addresses`)
+		}
+		return one, nil, nil
+	}
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return "", nil, errors.New(`"to" must be an address or a list of addresses`)
+	}
+	switch {
+	case len(many) == 0:
+		return "", nil, errors.New(`"to" is an empty list`)
+	case len(many) == 1:
+		return many[0], nil, nil
+	case len(many) > MaxRecipients:
+		return "", nil, fmt.Errorf(`"to" lists %d addresses; at most %d`, len(many), MaxRecipients)
+	}
+	return "", many, nil
+}
+
+// StrictUnmarshal decodes b into v, refusing unknown fields.
+func StrictUnmarshal(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// Recipients lists a send's addresses: ToList, or To alone.
+func (a SendArgs) Recipients() []string {
+	if len(a.ToList) > 0 {
+		return a.ToList
+	}
+	return []string{a.To}
+}
+
+// MessageInfo summarizes a routed message, or a recipient it could not go
+// to (State Refused, no ID).
 type MessageInfo struct {
-	ID     string `json:"id"`
+	ID     string `json:"id,omitempty"`
 	To     string `json:"to"`
 	State  string `json:"state"`
 	Mode   string `json:"mode,omitempty"`
@@ -79,8 +164,14 @@ type MessageInfo struct {
 	Target string `json:"target,omitempty"` // resolved session path or user
 }
 
+// Refused is the State of a recipient a send to several could not reach:
+// no message was stored for it.
+const Refused = "refused"
+
 type SendResult struct {
 	Messages []MessageInfo `json:"messages"`
+	// Group is shared by the messages of a send to several recipients.
+	Group string `json:"group,omitempty"`
 }
 
 type AskArgs struct {

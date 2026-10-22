@@ -260,15 +260,48 @@ func (c *Client) Attachment(ctx context.Context, sha256 string) (model.Attachmen
 // PostMessage is the body of POST /v1/messages: a message from a person
 // to any address.
 type PostMessage struct {
-	From        string `json:"from,omitempty"` // "user:<name>" (default user:cli)
-	To          string `json:"to"`
-	Kind        string `json:"kind,omitempty"` // notify (default) | ask | broadcast
-	Text        string `json:"text"`
-	Mode        string `json:"mode,omitempty"`
-	TTLSeconds  int    `json:"ttl_seconds,omitempty"`
-	WaitSeconds *int   `json:"wait_seconds,omitempty"` // ask only
+	From string `json:"from,omitempty"` // "user:<name>" (default user:cli)
+	// To is the address. In JSON "to" may also be a list of addresses
+	// (notify and broadcast only), which fills ToList instead.
+	To          string   `json:"to"`
+	ToList      []string `json:"-"`
+	Kind        string   `json:"kind,omitempty"` // notify (default) | ask | broadcast
+	Text        string   `json:"text"`
+	Mode        string   `json:"mode,omitempty"`
+	TTLSeconds  int      `json:"ttl_seconds,omitempty"`
+	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+}
+
+type postMessageJSON PostMessage
+
+// UnmarshalJSON takes "to" as one address or a list (fleet.DecodeTo),
+// refusing unknown fields.
+func (m *PostMessage) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		postMessageJSON
+		To json.RawMessage `json:"to"`
+	}
+	if err := fleet.StrictUnmarshal(b, &aux); err != nil {
+		return err
+	}
+	*m = PostMessage(aux.postMessageJSON)
+	var err error
+	m.To, m.ToList, err = fleet.DecodeTo(aux.To)
+	return err
+}
+
+// MarshalJSON writes "to" as a string unless ToList is set.
+func (m PostMessage) MarshalJSON() ([]byte, error) {
+	aux := struct {
+		postMessageJSON
+		To any `json:"to"`
+	}{postMessageJSON(m), m.To}
+	if len(m.ToList) > 0 {
+		aux.To = m.ToList
+	}
+	return json.Marshal(aux)
 }
 
 // PostMessage sends a notify or broadcast; the result is a fleet.SendResult.

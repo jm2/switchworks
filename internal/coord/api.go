@@ -441,14 +441,18 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		if body.Mode == "" {
 			body.Mode = model.ModeAuto
 		}
-		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode,
+		res, err := s.router.sendEach(r.Context(), from, kind, fleet.SendArgs{To: body.To, ToList: body.ToList, Text: body.Text, Mode: body.Mode,
 			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments})
 		if err != nil {
 			writeErr(w, routeStatus(err), err)
 			return
 		}
-		writeJSON(w, 202, fleet.SendResult{Messages: infos(msgs)})
+		writeJSON(w, 202, res)
 	case model.MsgAsk:
+		if len(body.ToList) > 0 {
+			writeErr(w, 400, errors.New("an ask goes to exactly one recipient"))
+			return
+		}
 		wait := 0
 		if body.WaitSeconds != nil {
 			wait = *body.WaitSeconds
