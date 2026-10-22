@@ -36,7 +36,7 @@ func (a *queueAdapter) Close() error { return nil }
 
 // queueHandle records what it is given. busy is how many deliveries to
 // refuse with ErrBusy (while still reporting idle), status what it reports,
-// and steer whether it can steer.
+// steer whether it can steer and images whether it takes images.
 type queueHandle struct {
 	sink adapter.Sink
 
@@ -44,8 +44,12 @@ type queueHandle struct {
 	status string
 	busy   int
 	steer  bool
-	gate   chan struct{} // when set, Deliver waits on it
-	got    []delivery
+	images bool
+	gate   chan struct{} // when set, Deliver waits on it (or its context)
+	// hook, when set, runs before each delivery is recorded; an error it
+	// returns is Deliver's.
+	hook func(in adapter.Input, mode adapter.DeliveryMode) error
+	got  []delivery
 }
 
 type delivery struct {
@@ -57,19 +61,28 @@ func (h *queueHandle) Ref() model.NativeRef { return model.NativeRef{Harness: "f
 func (h *queueHandle) Caps() model.Caps {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return model.Caps{Message: true, Steer: h.steer, Interrupt: true}
+	return model.Caps{Message: true, Steer: h.steer, Interrupt: true, Images: h.images}
 }
 func (h *queueHandle) Status() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.status
 }
-func (h *queueHandle) Deliver(_ context.Context, in adapter.Input, mode adapter.DeliveryMode) error {
+func (h *queueHandle) Deliver(ctx context.Context, in adapter.Input, mode adapter.DeliveryMode) error {
 	h.mu.Lock()
-	gate := h.gate
+	gate, hook := h.gate, h.hook
 	h.mu.Unlock()
 	if gate != nil {
-		<-gate
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if hook != nil {
+		if err := hook(in, mode); err != nil {
+			return err
+		}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -197,6 +210,10 @@ func TestQueueBusyWhileIdleRetries(t *testing.T) {
 	eventually(t, "the message delivered after ErrBusy", func() bool { return len(h.deliveries()) == 1 && s.queueLen() == 0 })
 	if got := statuses(); got != before {
 		t.Fatalf("%d new status events; the retry must not need one", got-before)
+	}
+	// Reported delivered once, when it went in, not for the busy attempt.
+	if d := s.events(model.KindMessageDelivered); len(d) != 1 {
+		t.Fatalf("delivered events %v", d)
 	}
 }
 

@@ -59,7 +59,12 @@ or tailnet:
   session.
 - Message provenance: whether a message can reach an agent without a header (as the owner's)
   other than from the admin token, an owner token or a browser one of those signed in, or carry
-  a credential (`via=`) other than the one it was sent with.
+  a credential (`via=`) other than the one it was sent with, or a line the receiving agent
+  could take for Switchworks's own header (lookalike characters included) without the
+  `(quoted) ` mark.
+- Message delivery on a node: whether agents can fill a session's queue (or a node's queued
+  images) so the owner's messages are refused, or make a node deliver a message twice, to the
+  wrong session, or after it was cancelled, expired or its session stopped.
 - The node's local API used by `swk mcp`, and files the node writes into workspaces (agy's
   `.agents/mcp_config.json`, `.git/info/exclude`).
 - Image attachments: whether an agent can make its node read a file outside its working
