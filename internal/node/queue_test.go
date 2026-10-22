@@ -134,6 +134,10 @@ func queueNode(t *testing.T, h *queueHandle) (*Node, *session) {
 			}
 			s.mu.Unlock()
 		}
+		// A delivery goroutine may still be saving state; take the lock
+		// for good so later saves wait here instead of writing into the
+		// temp dir while it is removed.
+		n.stateMu.Lock()
 	})
 	id := ulid.New()
 	if _, err := n.spawn(context.Background(), &wire.SpawnCmd{Session: model.Session{ID: id, Path: "devbox/a"},
