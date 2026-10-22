@@ -137,7 +137,13 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	hosts := fs.String("host", "", "comma-separated names/IPs for the server certificate; the first is what nodes and the CLI dial (e.g. coord.lan,10.0.0.5,coord.tailnet.ts.net)")
 	apiPort := fs.Int("api-port", 7480, "HTTPS API port")
 	nodePort := fs.Int("node-port", 7481, "node stream port")
-	noUserCLI := fs.Bool("no-user-cli", false, "do not install the admin cli.json for this user (use this when agents run on this machine)")
+	// The admin cli.json goes to this account's own CLI config only when
+	// asked, or for an account that runs no agents: the system
+	// coordinator's (`swk --system`) and the container's (SWK_USER_CLI=1 in
+	// its image). Anywhere else agents may run as this user and read it.
+	userCLIDefault := os.Getenv("SWK_SYSTEM") == "1" || os.Getenv("SWK_USER_CLI") == "1"
+	wantUserCLI := fs.Bool("user-cli", userCLIDefault, "also install the admin cli.json as this user's CLI config (only where no agents run as this user)")
+	noUserCLI := fs.Bool("no-user-cli", false, "do not install the admin cli.json for this user (overrides --user-cli; not installing is the default)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -153,7 +159,7 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	}
 	userCLI := paths.CLIConfig()
 	copied := false
-	if _, err := os.Stat(userCLI); !*noUserCLI && os.IsNotExist(err) {
+	if _, err := os.Stat(userCLI); *wantUserCLI && !*noUserCLI && os.IsNotExist(err) {
 		if b, err := os.ReadFile(filepath.Join(*dir, "cli.json")); err == nil {
 			if paths.WriteFile(userCLI, b, 0o600) == nil {
 				copied = true
@@ -179,15 +185,20 @@ func mainInit(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprint(stdout, `
 The admin token controls the whole fleet. Keep a copy somewhere safe (a
 password manager) and never put it on a machine where agents run: they can
-read any file you can. For the CLI on those machines, make a scoped token:
-  swk token create <machine> --scope operate --cli-config > cli.json
-and install that file as ~/.config/swk/cli.json there (or --scope read).
+read any file you can. For the CLI on those machines, make a read token:
+  swk token create <machine> --scope read --cli-config > cli.json
+and install that file as ~/.config/swk/cli.json there. An operate token
+would let agents there approve their own prompts and spawn sessions with
+any options: keep operate (and --owner) tokens for your own devices that
+run no agents.
 `)
 	fmt.Fprintf(stdout, `If agents will run on this machine too, they can read %s
 (its CA key and admin cli.json) unless the coordinator runs as another user.
 `, *dir)
 	if copied {
-		fmt.Fprintf(stdout, "In that case, also replace %s with a scoped cli.json\n(or use --no-user-cli).\n", userCLI)
+		fmt.Fprintf(stdout, "In that case, also replace %s with a read token's cli.json.\n", userCLI)
+	} else {
+		fmt.Fprintf(stdout, "For the CLI here, save a read token's cli.json as %s\n(or run init with --user-cli where no agents run as you).\n", userCLI)
 	}
 	return 0
 }
@@ -200,11 +211,12 @@ you on this machine cannot read them. Next:
 
   sudo swk service start --system coordinator
 
-For the CLI as yourself on this machine, a token that cannot manage tokens
-or hosts:
+For the CLI as yourself on this machine, a token that can only look: agents
+running as you can read it, and with an operate token they could approve
+their own prompts and spawn sessions with any options.
 
   mkdir -p ~/.config/swk
-  (umask 077; sudo swk --system token create "$USER" --scope operate --cli-config > ~/.config/swk/cli.json)
+  (umask 077; sudo swk --system token create "$USER" --scope read --cli-config > ~/.config/swk/cli.json)
 
 To run a node here too, as you:
 
@@ -217,7 +229,8 @@ The admin token (` + "`sudo swk --system coordinator cli-config`" + ` prints its
 controls the whole fleet: keep a copy in a password manager.
 
 On Windows, run these from an elevated prompt without sudo, and save the
-operate token's cli.json as %AppData%\swk\cli.json from a normal one.
+read token's cli.json as %AppData%\swk\cli.json from a normal one. Use
+operate (or --owner) tokens only on your own devices that run no agents.
 `
 
 // colonHex formats a hex fingerprint the way certificate viewers show it.

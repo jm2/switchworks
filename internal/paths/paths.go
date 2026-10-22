@@ -45,7 +45,9 @@ func CLIConfig() string {
 // WriteFile replaces path with data, readable only as mode allows: it
 // writes a new file and renames it into place, so an existing file's looser
 // permissions, or a symlink at path, are never reused. Parent directories
-// are created 0700.
+// are created 0700. The file and then its directory are synced, so once it
+// returns the new contents survive a power loss (a sign-out, say, cannot
+// come undone).
 func WriteFile(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -72,5 +74,22 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// syncDir makes a rename in dir durable. Windows cannot sync a directory
+// (and does not need to).
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

@@ -285,8 +285,11 @@ swk coordinator init --host coord.lan,10.0.0.5
 `--host` lists the names and addresses the server certificate covers. The
 first one is what nodes and the CLI will dial. Add a Tailscale name too if
 you use one. `init` creates a private CA, the server certificate and an
-admin token, and installs a CLI config with that token for your user on
-this machine (`--no-user-cli` skips that, for a machine where agents run).
+admin token, written into a CLI config in the coordinator's directory
+(`swk coordinator cli-config` prints it). It installs that config for your
+user on this machine only with `--user-cli`: use that only where no
+agents run as you, since they could read it. Where agents do run, give the
+CLI a `read` token instead ([step 3](#3-the-cli-on-other-machines)).
 
 The admin token controls the whole fleet. Keep a copy somewhere safe, such
 as a password manager, and keep it off every machine where agents run (see
@@ -333,11 +336,13 @@ swk service start --system coordinator
 
 `swk --system <command>` runs a coordinator or CLI command as the coordinator's account, with
 its files and its admin `cli.json`: `sudo swk --system coordinator enroll-token devbox`, `sudo swk
---system token ls`, and so on. For the CLI as yourself, give your own account a scoped token:
+--system token ls`, and so on. For the CLI as yourself, give your own account a `read` token
+(agents running as you can read it; see [step 3](#3-the-cli-on-other-machines) before giving
+it more):
 
 ```bash
 mkdir -p ~/.config/swk
-(umask 077; sudo swk --system token create "$USER" --scope operate --cli-config > ~/.config/swk/cli.json)
+(umask 077; sudo swk --system token create "$USER" --scope read --cli-config > ~/.config/swk/cli.json)
 ```
 
 On Windows, make the token from the elevated prompt and save it where your own (non-elevated)
@@ -345,7 +350,7 @@ On Windows, make the token from the elevated prompt and save it where your own (
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:APPDATA\swk" | Out-Null
-$cfg = swk --system token create $env:USERNAME --scope operate --cli-config | Out-String
+$cfg = swk --system token create $env:USERNAME --scope read --cli-config | Out-String
 [IO.File]::WriteAllText("$env:APPDATA\swk\cli.json", $cfg)  # UTF-8 without a BOM
 ```
 
@@ -407,8 +412,9 @@ Or run it in a terminal instead:
 swk node run
 ```
 
-`swk hosts` on the coordinator should now show the machine as online,
-with the harnesses it found.
+`swk hosts` should now show the machine as online, with the harnesses it
+found (on the coordinator, `SWK_CLI_CONFIG=~/.config/swk/coordinator/cli.json
+swk hosts` uses the admin token for one command).
 
 `swk node enroll` checks the coordinator's CA against the fingerprint in
 the token, so a mismatch fails there. To compare by hand, hash the
@@ -436,10 +442,11 @@ certificate itself rather than its PEM file: `openssl x509 -in ca.crt
 The CLI works anywhere that can reach port 7480. Each machine gets its own
 named API token with only the access it needs. On a machine that has the
 admin token (the coordinator, or wherever you keep it), make a complete
-`cli.json` for another one:
+`cli.json` for another one (`read` for a workstation where agents run;
+see below):
 
 ```bash
-swk token create devbox --scope operate --cli-config > devbox-cli.json
+swk token create devbox --scope read --cli-config > devbox-cli.json
 # copy it to devbox as ~/.config/swk/cli.json (chmod 600)
 ```
 

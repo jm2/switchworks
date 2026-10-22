@@ -153,12 +153,18 @@ signs in again, and nothing signed out comes back.
   `Secure` and named `__Host-swk_session`, which browsers only accept from
   a secure page, for `Path=/` and with no `Domain`, so no other host or
   plain-HTTP page can set or shadow it. Over plain HTTP it is
-  `swk_session`; a `swk_session` cookie from before the rename keeps
-  working over HTTPS until it expires or signs out. It is HMAC-signed with
+  `swk_session`. HTTPS requests never accept `swk_session`: another host
+  under the same domain could set one and sign your browser in as a
+  credential of its choosing. (So a `swk_session` cookie from before the
+  rename no longer works over HTTPS: sign in again.) It is HMAC-signed with
   `ui.key` (0600), so no server-side session table is needed. The signed
   payload holds its expiry, a random id (for sign-out), when it was
   minted, its scope and the id of the API token behind it; each request
   checks that token still exists, so revoking the token ends the cookie.
+  A cookie the admin token signed in holds a value derived from
+  `admin_token_hash` instead, and stops working once that changes, so
+  replacing the admin token signs those browsers out. (Admin cookies from
+  before this check carry no such value and are refused: sign in again.)
   Open streams check again every 15 seconds, and at once after a sign-out
   or revocation.
 - A cookie-authenticated request that changes anything must also send
@@ -181,14 +187,18 @@ signs in again, and nothing signed out comes back.
 - Failed token attempts are limited to 10 a minute per client (an IPv4
   address or IPv6 /64): sign-ins with a token and API requests with a bad
   `Authorization: Bearer` token share the count of failures in the last
-  minute. While that count is at the limit, every sign-in and bearer
-  request from that client is refused with 429, a valid token included
-  (otherwise a right guess would still get through); it is allowed again
-  once its oldest counted failure is a minute old, and new failures can
-  reach the limit again. Under a flood of clients the
-  coordinator forgets the ones quiet longest first, never everyone at once.
-  One-time links are not limited (they cannot be guessed), so a flood of
-  bad tokens cannot keep you from signing in with a link.
+  minute. While that count is at the limit, every bad token from that
+  client is refused with 429 instead of 401, until its oldest counted
+  failure is a minute old. A valid token is always accepted: one client
+  key covers everyone behind a NAT, an IPv6 /64 or a proxy that does not
+  set `X-Forwarded-For`, and anyone there could otherwise lock the rest
+  out with ten bad tokens. Tokens are 192 bits or more, so the limit is
+  not what stops guessing. Under a flood of clients the coordinator
+  forgets the ones quiet longest first, never everyone at once. One-time
+  links are not limited per client (they cannot be guessed), so a flood of
+  bad tokens cannot keep you from signing in with a link. A link refused
+  by its token's limit of 20 sign-ins a minute stays unused, and works
+  once the minute has passed.
 - Sign-in and sign-out also require `X-Swk-CSRF: 1`. Over HTTPS the server
   sends `Strict-Transport-Security`; browsers ignore it until they trust
   the fleet CA, so it cannot lock anyone out.

@@ -38,7 +38,9 @@ or tailnet:
   and send messages, which reach other agents with a header naming the token rather than as
   the owner's.
 - The coordinator's directory (CA key, `coordinator.json`, the admin `cli.json`) is readable
-  by anything running as its user. Do not run agents as that user on the coordinator's
+  by anything running as its user. `swk coordinator init` copies the admin `cli.json` to that
+  user's own CLI config only with `--user-cli` (or for the system service's account and the
+  container image, which run no agents). Do not run agents as that user on the coordinator's
   machine. A rootless container under the same user is not a boundary (`podman unshare` and
   `podman exec` reach its volume); a separate account is, and on Linux and Windows `swk
   service install --system coordinator` sets one up. Anyone with root or administrator rights

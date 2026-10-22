@@ -30,8 +30,11 @@ COPY --chmod=0755 dist/swk-linux-${TARGETARCH} /usr/bin/swk
 
 # Everything lives in /data: the CA and its key, coordinator.json, the
 # admin cli.json, the store. Keep it on a named volume and back it up.
+# SWK_USER_CLI=1: no agents run in here, so `coordinator init` installs
+# the admin cli.json for the container's own CLI (`podman exec ... swk`).
 ENV SWK_HOME=/data \
     HOME=/data \
+    SWK_USER_CLI=1 \
     SWK_DIAL=127.0.0.1:7480
 VOLUME ["/data"]
 EXPOSE 7480/tcp 7481/tcp

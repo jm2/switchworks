@@ -126,6 +126,7 @@ func NewServer(dir string, cfg Config, st store.Store, logf func(string, ...any)
 	if s.web, err = loadWebAuth(dir); err != nil {
 		return nil, fmt.Errorf("web sign-in key: %w", err)
 	}
+	s.web.adminGen = adminGeneration(cfg.AdminTokenHash)
 	if s.web.notice != "" {
 		s.logf("WARNING: %s", s.web.notice)
 	}
