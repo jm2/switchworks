@@ -206,6 +206,9 @@ func TestSweepKicksStalledQueue(t *testing.T) {
 	stallAfter = 0
 	h := &queueHandle{status: model.StatusIdle}
 	n, s := queueNode(t, h)
+	// spawn starts a delivery attempt of its own; let it find the queue
+	// empty first, or it delivers the message below before any sweep.
+	time.Sleep(100 * time.Millisecond)
 	// A queue left behind with nothing to trigger it (as after a stall).
 	s.mu.Lock()
 	s.rec.Queue = append(s.rec.Queue, queuedMsg{ID: ulid.New(), From: "devbox/b", Text: "stuck"})
