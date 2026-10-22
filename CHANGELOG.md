@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sandboxed command can read (other agents' logins, package and cloud tokens, GnuPG, keyrings,
   browser profiles, Codex's own transcripts), note that Linux needs Codex 0.163, and explain why
   Windows nodes stay without sandbox network for now.
+- **Other ways out of the Codex sandbox** — New docs: deny `/run/user/<uid>`, `/tmp/.X11-unix`,
+  `/run/dbus` and `/run/libvirt` on Linux (through the session bus, `systemd-run --user` ran
+  commands outside the sandbox), and turn connector apps off. Also covers what execpolicy allow
+  rules expose, agents' own git tokens, Windows' default sandbox reading your secrets, and running
+  GPU work safely.
 
 ## [0.1.4] — 2026-10-19
 
