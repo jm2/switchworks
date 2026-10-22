@@ -42,7 +42,11 @@ system; the choice is kept per browser.
   (steers it into the running turn, or interrupts a session that cannot
   take one mid-turn) and **Cancel**, and when it expires undelivered
   ("expires 14:30", from a node that enforces it); it becomes the usual
-  message when its turn starts. Messages queued by agents show as one row, "N queued from
+  message when its turn starts. Under a message from you (or another
+  person) a receipt says when it went into the session's input,
+  "Delivered 14:02", and once the turn that carried it has finished,
+  "Seen 14:05 · reply": **reply** scrolls to that turn's last agent
+  message. Messages queued by agents show as one row, "N queued from
   agents", with **Clear** (an owner's browser only). Next to that menu,
   **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
@@ -55,7 +59,9 @@ system; the choice is kept per browser.
   prompt the same way.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
   reply box each, and other messages addressed to people.
-- **Traffic**: every routed message, filterable, with its delivery state.
+- **Traffic**: every routed message, filterable, with its delivery state
+  (queued, delivered, seen, answered, expired...; hover it for the
+  delivered and seen times). The Inbox's earlier messages show it too.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.
 - **New session**: every spawn option.

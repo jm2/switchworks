@@ -248,6 +248,12 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 }
 .routed { border-left: 2px solid var(--line); padding: 2px 0 2px 14px; }
 .batch { display: flex; flex-direction: column; gap: 12px; }
+/* delivery receipts under people's messages */
+.receipt { display: flex; justify-content: flex-end; align-items: center; gap: 4px; color: var(--faint); font-size: 12px; margin-top: 4px; }
+.receipt:empty { display: none; }
+.receipt button.link { padding: 0 2px; font-size: 12px; text-decoration: underline; }
+.flash { animation: flash 1.6s ease-out; border-radius: 8px; }
+@keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
 /* queued messages, below the transcript */
 .queued-box:empty { display: none; }
 .queued-box { display: flex; flex-direction: column; gap: 12px; margin: 14px 0; }
@@ -374,7 +380,7 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 .state { font-size: 12px; }
 .state.pending { color: var(--warn); }
 .state.failed { color: var(--bad); }
-.state.delivered, .state.answered { color: var(--ok); }
+.state.delivered, .state.seen, .state.answered { color: var(--ok); }
 .reply-box { margin-top: 10px; }
 .reply-box textarea { min-height: 64px; }
 .reply-box .row { margin-top: 8px; }
@@ -436,4 +442,5 @@ body.login { display: grid; place-items: center; min-height: 100vh; padding: 16p
 }
 @media (prefers-reduced-motion: reduce) {
   .side { transition: none; }
+  .flash { animation: none; }
 }

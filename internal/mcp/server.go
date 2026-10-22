@@ -139,7 +139,8 @@ var Tools = []Tool{
 	{Name: "fleet_send", Title: "Send a message",
 		Description: "Send a message to another agent session (or a person) without waiting for an answer. " + addressHelp +
 			` mode: "auto" (default: added to the target's running turn if it has one, at its next tool call; otherwise it starts a turn), "queue" (waits for the target's turn to end, then starts the next one together with any other waiting messages), "steer" (like auto; reaches a target that has opted out of auto only if you spawned it), "interrupt" (cancels the target's running turn and delivers now; only for sessions you spawned). Set broadcast to send to every session matching an @selector.` +
-			` To tell several sessions the same thing, pass a list of addresses in one call rather than calling once per recipient: each gets its own message, and the result lists each one's id or why it could not go.`,
+			` To tell several sessions the same thing, pass a list of addresses in one call rather than calling once per recipient: each gets its own message, and the result lists each one's id or why it could not go.` +
+			` The result has delivered_at if it went straight into the target's running turn; fleet_inbox(all: true) shows later whether it was delivered and seen, so there is no need to resend.`,
 		InputSchema: obj(map[string]any{
 			"to": map[string]any{"description": "Recipient address, or a list of up to 64 addresses.", "anyOf": []any{
 				map[string]any{"type": "string"},
@@ -170,7 +171,7 @@ var Tools = []Tool{
 	{Name: "fleet_inbox", Title: "Unread messages",
 		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re}, text cut at 2,000 bytes. " +
 			"You rarely need this: every message already arrives as a turn of its own, and those count as seen. Do not poll it. " +
-			"all: true shows recent messages to and from this session, seen or not; verbose: true gives full records. " +
+			"all: true shows recent messages to and from this session, seen or not, with the state, delivered_at and seen_at of those you sent; verbose: true gives full records. " +
 			"With ticket (an ask id returned by fleet_ask), report only whether that ask has been answered, waiting up to wait_seconds for it.",
 		InputSchema: obj(map[string]any{
 			"ticket":       str("An ask id to check."),

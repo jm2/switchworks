@@ -166,6 +166,9 @@ type MessageInfo struct {
 	Mode   string `json:"mode,omitempty"`
 	Error  string `json:"error,omitempty"`
 	Target string `json:"target,omitempty"` // resolved session path or user
+	// DeliveredAt is set when it went into the target's input at once (a
+	// steer, or a person's inbox); a queued message has none yet.
+	DeliveredAt time.Time `json:"delivered_at,omitzero"`
 }
 
 // Refused is the State of a recipient a send to several could not reach:
@@ -266,6 +269,12 @@ type InboxMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 	Text      string    `json:"text"`
 	Re        string    `json:"re,omitempty"` // the ask a reply answers
+	// On messages the session sent: their state (delivered, seen,
+	// answered...), when they went into the target's input, and when the
+	// turn that carried them finished.
+	State       string    `json:"state,omitempty"`
+	DeliveredAt time.Time `json:"delivered_at,omitzero"`
+	SeenAt      time.Time `json:"seen_at,omitzero"`
 }
 
 type SpawnArgs struct {

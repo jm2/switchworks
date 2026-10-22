@@ -912,12 +912,79 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 		return out
 	}
 	out, _ := r.settle(m.ID, func(cur *model.Message) {
-		cur.State, cur.DeliveredAt = model.MsgDelivered, time.Now().UTC()
+		cur.State = model.MsgDelivered
+		if !cur.SeenAt.IsZero() {
+			cur.State = model.MsgSeen // its turn finished before this answer was read
+		}
+		switch dr.Mode {
+		case model.ModeQueue, model.ModeInterrupt:
+			// It waits in the session's queue: delivered_at comes with the
+			// node's message.delivered, when its turn starts (entered).
+		default:
+			if cur.DeliveredAt.IsZero() {
+				cur.DeliveredAt = time.Now().UTC()
+			}
+		}
 		if dr.Mode != "" {
 			cur.Mode = dr.Mode
 		}
 	})
 	return out
+}
+
+// entered records when a message went into its session's input, as the
+// node reports it (message.delivered): its delivered_at, if not set yet.
+func (r *router) entered(sessionID, messageID string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(messageID)
+	if !ok || cur.ToSession != sessionID || !cur.DeliveredAt.IsZero() {
+		return
+	}
+	if cur.State != model.MsgPending && cur.State != model.MsgDelivered && cur.State != model.MsgAnswered {
+		return
+	}
+	cur.DeliveredAt = nodeTime(at, cur.CreatedAt)
+	_ = r.put(cur)
+}
+
+// onSeen marks a message seen when the turn that carried it has completed
+// (message.seen), keeping the turn and its last agent message for the
+// receipt. An answered ask stays answered; a message seen before the
+// coordinator read the node's answer to its delivery becomes seen then.
+func (r *router) onSeen(sessionID string, p model.MessageSeen, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(p.MessageID)
+	if !ok || cur.ToSession != sessionID || !cur.SeenAt.IsZero() {
+		return
+	}
+	switch cur.State {
+	case model.MsgDelivered:
+		cur.State = model.MsgSeen
+	case model.MsgPending, model.MsgAnswered:
+	default:
+		return // failed, expired or cancelled
+	}
+	cur.SeenAt = nodeTime(at, cur.CreatedAt)
+	cur.SeenTurn, cur.SeenItem = clipText(p.TurnID, 200), clipText(p.ItemID, 200)
+	if cur.DeliveredAt.IsZero() {
+		cur.DeliveredAt = cur.SeenAt
+	}
+	_ = r.put(cur)
+}
+
+// nodeTime bounds a time a node reported to between since and now, so a
+// node's clock cannot put a receipt before its message or in the future.
+func nodeTime(at, since time.Time) time.Time {
+	now := time.Now().UTC()
+	switch {
+	case at.After(now):
+		return now
+	case at.Before(since):
+		return since
+	}
+	return at.UTC()
 }
 
 // settle moves a still-pending message on, reading and writing it under
@@ -1079,7 +1146,7 @@ func (r *router) onFailed(sessionID, messageID, why string) {
 // that it has stopped or gone, and tells their senders.
 func (r *router) failAsksTo(sess model.Session, why string) {
 	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
-		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || m.State != model.MsgDelivered {
+		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || !m.Accepted() {
 			continue
 		}
 		r.failAccepted(m.ID, why, func(m model.Message) string {
@@ -1099,19 +1166,20 @@ func (r *router) failOrphanedAsks() {
 	}
 	seen := map[string]bool{}
 	for _, m := range r.s.store.Messages(store.MessageFilter{}) {
-		if sess, ok := ended[m.ToSession]; ok && !seen[sess.ID] && m.Kind == model.MsgAsk && m.State == model.MsgDelivered {
+		if sess, ok := ended[m.ToSession]; ok && !seen[sess.ID] && m.Kind == model.MsgAsk && m.Accepted() {
 			seen[sess.ID] = true
 			r.failAsksTo(sess, "its session "+sess.Status)
 		}
 	}
 }
 
-// failAccepted fails a message that is pending or was delivered (but not
-// answered), wakes a fleet_ask waiting on it, and notifies its sender.
+// failAccepted fails a message that is pending or was delivered (or seen,
+// but not answered), wakes a fleet_ask waiting on it, and notifies its
+// sender.
 func (r *router) failAccepted(id, why string, notice func(model.Message) string) {
 	r.mu.Lock()
 	cur, ok := r.s.store.Message(id)
-	if !ok || (cur.State != model.MsgPending && cur.State != model.MsgDelivered) {
+	if !ok || (cur.State != model.MsgPending && !cur.Accepted()) {
 		r.mu.Unlock()
 		return
 	}
@@ -1358,7 +1426,7 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 	for i, m := range msgs {
 		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo}
 		if from.sess != nil && m.FromSession == from.sess.ID {
-			out[i].To = m.To
+			out[i].To, out[i].State, out[i].DeliveredAt, out[i].SeenAt = m.To, m.State, m.DeliveredAt, m.SeenAt
 		}
 	}
 	res.Messages = out

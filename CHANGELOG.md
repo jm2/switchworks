@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File attachments** — Messages carry up to 4 text files (patches, logs; 1 MiB each): `files`
   in `fleet_send`/`fleet_ask`, checked like images, and `--file` on `swk send`, `msg` and `ask`.
   The receiving node writes them under `~/.cache/switchworks/files` and the message gives the paths.
+- **Delivery receipts** — A message is `seen` once the turn that carried it completes, with the
+  turn and its last reply; `fleet_send` returns `delivered_at` for a steer, and `fleet_inbox`
+  (`all`) shows sent messages' state. The web UI shows "Delivered 14:02", then "Seen 14:05 · reply".
 
 ### Changed
 
@@ -50,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Queued messages expire on the node** — A message's TTL (default 24 h) now also covers the
   session's queue: the node drops one past its `expires_at` instead of delivering it, the state
   becomes `expired` and an agent sender gets the usual notice. The web UI's queued bubble says when.
+- **delivered_at means in the session's input** — A queued message's `delivered_at` is now set
+  when its turn starts, not when the node queues it; until then it is `delivered` without one,
+  which the web UI shows as "queued".
 
 ### Fixed
 

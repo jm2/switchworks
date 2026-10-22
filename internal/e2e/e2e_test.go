@@ -414,15 +414,28 @@ func TestFleetEndToEnd(t *testing.T) {
 		return e.Kind == model.KindSessionRegistered && p.Resumed
 	})
 	i = w.waitFor(t, "pending message delivered", i, agentSaid("echo: while down"))
-	if m, _ := c.Message(ctx, res.MessageID); m.State != model.MsgDelivered {
+	if m, _ := c.Message(ctx, res.MessageID); !m.Accepted() { // delivered, or seen once its turn completed
 		t.Fatalf("pending message: %+v", m)
 	}
 	waitStatus(t, c, sess.ID, model.StatusIdle)
-	if _, err := c.Send(ctx, sess.ID, "after node restart", "queue", ""); err != nil {
+	after, err := c.Send(ctx, sess.ID, "after node restart", "queue", "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	i = w.waitFor(t, "reply after node restart", i, agentSaid("echo: after node restart"))
 	w.cancel()
+	// Its turn completed: seen, with a receipt naming the turn and its reply.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m, _ := c.Message(ctx, after.MessageID)
+		if m.State == model.MsgSeen && !m.DeliveredAt.IsZero() && !m.SeenAt.IsZero() && m.SeenTurn != "" && m.SeenItem != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("receipt: %+v", m)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	// Coordinator restart: state and events survive; the node reconnects.
 	apiAddr, nodeAddr := co.apiAddr, co.nodeAdd

@@ -20,7 +20,10 @@ const (
 const (
 	MsgPending   = "pending"   // waiting for the target's node
 	MsgDelivered = "delivered" // accepted into the target's queue (or the human inbox)
-	MsgAnswered  = "answered"  // an ask that has been replied to
+	// MsgSeen: the turn that carried it finished (SeenAt, SeenTurn). An
+	// ask can still be answered; answered wins over seen.
+	MsgSeen      = "seen"
+	MsgAnswered  = "answered" // an ask that has been replied to
 	MsgExpired   = "expired"
 	MsgFailed    = "failed"
 	MsgCancelled = "cancelled" // taken out of the queue before delivery
@@ -76,22 +79,38 @@ type Message struct {
 	// a reply that arrives earlier is held rather than delivered as a turn.
 	HoldUntil time.Time `json:"hold_until,omitempty"`
 	// NotBefore (held replies): not delivered as a message before this.
-	NotBefore   time.Time `json:"not_before,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	NotBefore time.Time `json:"not_before,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	// DeliveredAt is when the message went into its target's input: at
+	// once for a steer (and the human inbox), when its turn starts for one
+	// that waited in the session's queue (zero until then).
 	DeliveredAt time.Time `json:"delivered_at,omitempty"`
+	// SeenAt is when the turn that carried it (SeenTurn) finished, and
+	// SeenItem that turn's last agent message (an item id in the session's
+	// events), the reply a receipt links to.
+	SeenAt   time.Time `json:"seen_at,omitzero"`
+	SeenTurn string    `json:"seen_turn,omitempty"`
+	SeenItem string    `json:"seen_item,omitempty"`
 }
 
-// Terminal reports whether the message will not change state again (asks
-// can still move from delivered to answered).
+// Terminal reports whether the message's delivery is over (asks can still
+// move from delivered or seen to answered; another delivered message can
+// still be marked seen, which only adds its receipt).
 func (m Message) Terminal() bool {
 	switch m.State {
 	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled:
 		return true
-	case MsgDelivered:
+	case MsgDelivered, MsgSeen:
 		return m.Kind != MsgAsk
 	}
 	return false
+}
+
+// Accepted reports whether the target's node has taken the message and it
+// has not yet finished: delivered, or seen but (an ask) not answered.
+func (m Message) Accepted() bool {
+	return m.State == MsgDelivered || m.State == MsgSeen
 }
 
 // Attachment is an image sent with a message or a spawn prompt. Data is
@@ -127,6 +146,18 @@ type Settled struct {
 	TurnID      string `json:"turn_id,omitempty"`
 	TurnStatus  string `json:"turn_status,omitempty"`
 	LastMessage string `json:"last_message,omitempty"`
+}
+
+// KindMessageSeen is emitted by a node (from 0.1.5) when the turn that
+// carried a message, as a new turn or a steer, has completed.
+const KindMessageSeen = "message.seen"
+
+// MessageSeen is the payload of message.seen: the turn, and the item id of
+// its last agent message (the reply), if it had one.
+type MessageSeen struct {
+	MessageID string `json:"message_id"`
+	TurnID    string `json:"turn_id"`
+	ItemID    string `json:"item_id,omitempty"`
 }
 
 // KindSessionQueue is emitted by a node when the number of messages queued

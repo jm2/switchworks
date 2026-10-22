@@ -157,8 +157,10 @@ It is there for an agent that wants to look back:
 - `all: true` lists recent messages to and from the session, newest
   first, seen or not, and does not move the cursor.
 - Each message is compact: `{id, kind, from, created_at, text, re}`
-  (`re` on replies; `to` on messages the session sent). `verbose: true`
-  returns full records instead.
+  (`re` on replies; on messages the session sent, `to`, `state`,
+  `delivered_at` and `seen_at`, so an agent checks a message's
+  [receipt](#receipts) with `all: true` instead of sending it again).
+  `verbose: true` returns full records instead.
 - Text is cut at 2,000 bytes, with a note such as `… [1000 more bytes
   cut]`.
 - With `ticket` it reports only on that ask (and lists no messages), so a
@@ -387,6 +389,51 @@ it runs this version.
   then every 30 s. Every 15 s it also looks for sessions that have been
   idle with queued messages for 30 s, logs a warning and tries again.
 
+### States
+
+| State | Meaning |
+| --- | --- |
+| `pending` | stored, waiting for the target's node (its host is offline, or a reply is held for a waiting `fleet_ask`) |
+| `delivered` | the target's node took it: into its input (`delivered_at` set), or into the session's queue (no `delivered_at` yet; the web UI says "queued"); a person's inbox |
+| `seen` | the turn that carried it has completed (`seen_at`, `seen_turn`, `seen_item`); see [Receipts](#receipts) |
+| `answered` | an ask that has been replied to (whether or not it was seen first) |
+| `expired` | not delivered within its TTL, at the coordinator or in the session's queue |
+| `failed` | could not be delivered, or an ask whose target stopped |
+| `cancelled` | taken out of the queue before delivery |
+
+`delivered` (for a message that is not an ask), `seen` (likewise),
+`answered`, `expired`, `failed` and `cancelled` are final. An ask moves on
+from `delivered` or `seen` to `answered`, or to `failed` if its target
+stops first.
+
+### Receipts
+
+A sender can tell whether a message arrived without asking the agent,
+which would cost a model call over its whole context:
+
+- **Delivered.** `delivered_at` is when the message went into the
+  target's input: at once for a steer (and `fleet_send`'s result then
+  carries it), and for one that waited in the queue when the node starts
+  the turn that carries it (`message.delivered`). An agent model sees it
+  on its next call.
+- **Seen.** When that turn (or the running turn it was steered into)
+  completes, the node records `message.seen` with the turn's id and the
+  item id of its last agent message, and the message becomes `seen`, with
+  `seen_at`, `seen_turn` and `seen_item`. A turn that fails or is
+  interrupted leaves its messages `delivered`. An ask that was answered
+  before its turn ended stays `answered`, with `seen_at` set.
+- `fleet_inbox` with `all: true` shows the state, `delivered_at` and
+  `seen_at` of the messages an agent sent, and `GET /v1/messages/{id}`
+  returns the whole record. The web UI shows a receipt under a person's
+  message in the transcript ("Delivered 14:02", then "Seen 14:05 ·
+  reply", which scrolls to the reply), and the state in the Inbox and
+  Traffic lists. Agents get no notice when their message is seen.
+
+`message.seen` comes from nodes from 0.1.5; with an older node messages
+stay `delivered`. An older coordinator ignores the event. With either, a
+queued message's `delivered_at` comes from `message.delivered`, which
+nodes have always recorded.
+
 ## Asks
 
 `fleet_ask` in `swk mcp` is two calls: it sends the ask with `wait_seconds:
@@ -559,7 +606,7 @@ swk usage                                        # tokens by host, model, day
 | --- | --- | --- |
 | POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks) |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
-| GET | `/v1/messages/{id}` | |
+| GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
