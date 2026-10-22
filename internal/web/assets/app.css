@@ -264,6 +264,13 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 }
 .queued-foot, .queued-agents { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 13px; }
 .queued-agents { justify-content: flex-end; }
+.queued.held .bubble { opacity: .45; }
+.queued-agents svg.i { width: 14px; height: 14px; }
+/* the composer's note while the session's host is offline */
+.offline-note { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+  color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: var(--canvas); }
+.offline-note[hidden] { display: none; }
+.offline-note svg.i { width: 16px; height: 16px; }
 .routed .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .routed .kind { font-size: 12px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); }
 .routed .kind.ask { color: var(--accent-ink); }

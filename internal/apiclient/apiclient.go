@@ -222,6 +222,12 @@ func (c *Client) Events(ctx context.Context, id string, after int64, limit int) 
 type Queue struct {
 	Session  string          `json:"session"`
 	Messages []QueuedMessage `json:"messages"`
+	// Offline: the session's host is not connected, so Messages are only
+	// the ones the coordinator holds for it.
+	Offline bool `json:"offline,omitempty"`
+	// NodeTooOld: the host's node (before 0.1.5) cannot list its queue, so
+	// Messages are only the ones the coordinator holds.
+	NodeTooOld bool `json:"node_too_old,omitempty"`
 }
 
 // QueuedMessage is one queued message: the node's entry, and what the
@@ -231,6 +237,10 @@ type QueuedMessage struct {
 	Text      string    `json:"text,omitempty"`
 	Via       string    `json:"via,omitempty"`
 	CreatedAt time.Time `json:"created_at,omitzero"`
+	// Held: the coordinator still holds it, so it is not in the node's
+	// queue yet (its host is offline). Cancel works; it is delivered in its
+	// mode when the host returns, unless it expires first.
+	Held bool `json:"held,omitempty"`
 }
 
 type SendResult struct {

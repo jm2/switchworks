@@ -47,31 +47,56 @@ func (s *Server) queueError(w http.ResponseWriter, err error) bool {
 }
 
 // handleQueue lists a session's queued messages, in the order they will
-// be delivered, with what the coordinator knows of each.
+// be delivered, with what the coordinator knows of each: the node's queue,
+// then the messages the coordinator still holds for it (its host is
+// offline, or they are on their way), marked held. With the host offline
+// the list is only those, and says so.
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.store.Session(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, store.ErrNotFound)
 		return
 	}
-	res, err := s.queueCommand(r.Context(), sess, wire.Cmd{Op: wire.OpQueue})
-	if s.queueError(w, err) {
-		return
-	}
-	var qr wire.QueueResult
-	if err := json.Unmarshal(res.Data, &qr); err != nil {
-		writeErr(w, 502, fmt.Errorf("node %s: bad queue: %w", sess.Host, err))
-		return
-	}
 	out := apiclient.Queue{Session: sess.ID, Messages: []apiclient.QueuedMessage{}}
-	for _, e := range qr.Messages {
-		q := apiclient.QueuedMessage{QueueEntry: e}
-		// The node's word on who sent it is what the agent will see; the
-		// coordinator's record adds the text, credential and times.
-		if m, ok := s.store.Message(e.ID); ok && m.ToSession == sess.ID {
-			q.Text, q.Via, q.CreatedAt = clipText(m.Text, 2000), m.Via, m.CreatedAt
+	res, err := s.queueCommand(r.Context(), sess, wire.Cmd{Op: wire.OpQueue})
+	switch {
+	case errors.Is(err, ErrOffline):
+		out.Offline = true
+	case errors.Is(err, errNodeTooOld):
+		// Its queue can't be listed, but the held messages can.
+		out.NodeTooOld = true
+	case s.queueError(w, err):
+		return
+	default:
+		var qr wire.QueueResult
+		if err := json.Unmarshal(res.Data, &qr); err != nil {
+			writeErr(w, 502, fmt.Errorf("node %s: bad queue: %w", sess.Host, err))
+			return
 		}
-		out.Messages = append(out.Messages, q)
+		for _, e := range qr.Messages {
+			q := apiclient.QueuedMessage{QueueEntry: e}
+			// The node's word on who sent it is what the agent will see; the
+			// coordinator's record adds the text, credential and times.
+			if m, ok := s.store.Message(e.ID); ok && m.ToSession == sess.ID {
+				q.Text, q.Via, q.CreatedAt = clipText(m.Text, 2000), m.Via, m.CreatedAt
+			}
+			out.Messages = append(out.Messages, q)
+		}
+	}
+	listed := make(map[string]bool, len(out.Messages))
+	for _, q := range out.Messages {
+		listed[q.ID] = true
+	}
+	for _, m := range s.store.PendingMessages() {
+		// A held reply goes to its asker, not as a message to this session.
+		if m.ToSession != sess.ID || listed[m.ID] || !m.NotBefore.IsZero() {
+			continue
+		}
+		out.Messages = append(out.Messages, apiclient.QueuedMessage{
+			QueueEntry: wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
+				Images: len(m.Attachments), Position: len(out.Messages), ExpiresAt: m.ExpiresAt},
+			Text: clipText(m.Text, 2000), Via: m.Via, CreatedAt: m.CreatedAt, Held: true,
+		})
 	}
 	writeJSON(w, 200, out)
 }
