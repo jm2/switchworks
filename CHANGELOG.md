@@ -25,10 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Web messages steer by default** — The session composer now delivers into the running turn
-  ("Steer now") unless you pick another mode. "Next turn" queued your message behind every message
-  already waiting, which on a busy session meant hours. A session that can't take input mid-turn
-  still queues it, and says so.
+- **Messages go into the running turn by default** — The new default mode, `auto`, for
+  `fleet_send`, `swk send`/`msg`, the web UI ("Now (steer)") and the API, steers a message into
+  the target's running turn when its harness can, and starts a turn otherwise. Agents may steer
+  any session; interrupting still needs a session they spawned or `allow_steer_any`. Messages
+  arriving during a steer go in as one. `swk spawn --no-steer` (`accept_steer: false`) opts out.
 - **Queued messages go in as one turn** — A session's backlog is delivered as one turn, each
   message with its own header, instead of one turn (and one full-context model call) per message.
 - **People's messages first** — The owner's messages, then other people's, wait ahead of agents'

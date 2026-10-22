@@ -33,11 +33,10 @@ system; the choice is kept per browser.
   queue), and tool calls as cards (commands with their
   output, file changes with a diff, MCP tools, plans, thinking). Pending
   approvals sit above the composer with the decisions the harness offers.
-  The composer **steers** the running turn (the default; an idle session
-  starts a turn, and one that can't take input mid-turn gets it on the next
-  turn), delivers on the **next turn**, **interrupts and sends**, or
-  **asks** with the answer going to your
-  inbox. Next to that menu, **Approvals** changes the session's approval
+  The composer delivers **now** (into the running turn, or as a new turn
+  when none is running; the default; a session that can't take input
+  mid-turn gets it on the next turn), on the **next turn**, **interrupts
+  and sends**, or **asks** with the answer going to your inbox. Next to that menu, **Approvals** changes the session's approval
   policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser

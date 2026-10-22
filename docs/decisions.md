@@ -35,10 +35,18 @@ fix what the test reports.
 threads. If it dies, the adapter restarts it and resumes every live thread.
 See codex-app-server-notes.md for the option of using Codex's own shared daemon instead.
 
-**Delivery semantics.** A message queued with `queue` waits for the session
-to be idle, then becomes a new turn, together with every other message
-waiting then (one turn for the backlog, not one each: each turn costs a
-full-context model call). People's messages wait ahead of agents'. `steer` goes into the running turn and
+**Delivery semantics.** The default mode, `auto`, puts a message into the
+target's running turn when its harness can steer (Codex `turn/steer`), so
+it is seen within one tool call rather than hours later, and never piles
+up; otherwise it starts a turn. Steering only adds input, so any agent may
+steer any session (a session can opt out with `accept_steer: false`), but
+interrupting cancels work, so agents interrupt only their own children
+unless `allow_steer_any` is set. Messages that arrive while a steer is in
+flight go in as one steer. A message queued with `queue` (or by a harness
+that cannot steer) waits for the session to be idle, then becomes a new
+turn, together with every other message waiting then (one turn for the
+backlog, not one each: each turn costs a full-context model call).
+People's messages wait ahead of agents'. `steer` goes into the running turn and
 falls back to `queue` when there is none. Messages from
 people are passed through verbatim; messages from anything else get a
 one-line `[switchworks msg=… from=… kind=…]` header.

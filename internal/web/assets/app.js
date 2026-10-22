@@ -836,11 +836,11 @@ function sessionView(id, full) {
 
   // Composer
   const input = h('textarea', {rows: 1, placeholder: 'Message this session', 'aria-label': 'Message'});
+  // Now (steer) goes into the running turn if there is one, and starts a
+  // turn otherwise; a harness that cannot steer, or a session that does
+  // not accept it, gets it on the next turn.
   const mode = h('select', {'aria-label': 'How to deliver'},
-    // Steer first, so it is the default: a message queued behind a long turn
-    // can wait for hours behind agent traffic. Steering an idle session
-    // starts a turn, the same as Next turn.
-    h('option', {value: 'steer', text: 'Steer now'}),
+    h('option', {value: 'auto', text: 'Now (steer)'}),
     h('option', {value: 'queue', text: 'Next turn'}),
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
@@ -862,10 +862,10 @@ function sessionView(id, full) {
     if (e.metaKey || e.ctrlKey || (!e.shiftKey && !narrow.matches)) { e.preventDefault(); form.requestSubmit(); }
   });
 
-  const running = () => {
+  function busyNow() {
     const s = S.sessions.get(id);
     return !!s && (s.status === 'active' || s.status === 'waiting_approval');
-  };
+  }
 
   async function send(e) {
     e.preventDefault();
@@ -877,7 +877,7 @@ function sessionView(id, full) {
     const attachments = picker.attachments();
     // Whether a turn was running when it was sent: the turn may end before
     // the answer comes back.
-    const wasRunning = running();
+    const wasRunning = busyNow();
     sendBtn.disabled = true;
     try {
       let res;
@@ -887,7 +887,7 @@ function sessionView(id, full) {
       } else {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
-        else if (mode.value === 'steer' && res.mode === 'queue' && wasRunning) toast('This session can’t take messages mid-turn, so it waits for the next turn');
+        else if (mode.value === 'auto' && res.mode === 'queue' && wasRunning) toast('Queued: this session takes it when its turn ends');
       }
       picker.clear();
       input.value = '';

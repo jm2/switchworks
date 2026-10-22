@@ -102,6 +102,9 @@ type Session struct {
 	// reported at spawn; sessions it spawns inherit them.
 	ApprovalPolicy string `json:"approval_policy,omitempty"`
 	Sandbox        string `json:"sandbox,omitempty"`
+	// AcceptSteer false: messages in mode auto wait for the next turn
+	// instead of going into the running one (nil means true).
+	AcceptSteer *bool `json:"accept_steer,omitempty"`
 	// PoliciesReported: the node, not the coordinator, chose them (its
 	// defaults), so they are not trusted beyond that node's own host.
 	PoliciesReported bool   `json:"policies_reported,omitempty"`
@@ -123,6 +126,10 @@ type Session struct {
 	EndedAt time.Time `json:"ended_at,omitzero"`
 }
 
+// Steerable reports whether messages in mode auto may go into the
+// session's running turn.
+func (s Session) Steerable() bool { return s.AcceptSteer == nil || *s.AcceptSteer }
+
 // SpawnSpec is what a client asks for when starting a managed session.
 type SpawnSpec struct {
 	Host           string            `json:"host"`
@@ -137,6 +144,9 @@ type SpawnSpec struct {
 	Sandbox        string            `json:"sandbox,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	Parent         string            `json:"parent,omitempty"`
+	// AcceptSteer false keeps other sessions' messages out of the running
+	// turn (mode auto queues them); default true.
+	AcceptSteer *bool `json:"accept_steer,omitempty"`
 	// CwdRoot, set by the coordinator for spawns by agents, is the
 	// directory Cwd must be inside; the node checks it with symlinks
 	// resolved.

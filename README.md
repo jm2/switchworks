@@ -526,8 +526,8 @@ swk attach devbox/myapp          # follow it live; Ctrl-C detaches
 
 ```bash
 swk ls                                    # every session on every host
-swk send myapp "also update the changelog"           # next turn
-swk send --steer myapp "skip the docs for now"       # into the running turn (Codex)
+swk send myapp "skip the docs for now"               # into the running turn (Codex), else a new one
+swk send --queue myapp "also update the changelog"   # wait for the next turn
 swk send --image shot.png myapp "does this look right?"    # with an image (up to 4)
 swk approve myapp <approval-id> accept    # or answer in the web UI
 swk policy myapp never                    # approvals: untrusted, on-request or never
@@ -570,7 +570,7 @@ limits, rate limits, spawn depth and a fleet-wide daily token budget
 default an agent spawns only on its own host, with its own harness, inside
 its own working directory; its children inherit its approval policy and
 sandbox, and a sandboxed agent cannot start an unsandboxed harness (ACP
-agents such as goose ignore sandboxes). Agents steer, interrupt and stop only sessions they spawned. See
+agents such as goose ignore sandboxes). Agents interrupt and stop only sessions they spawned. See
 [docs/messaging.md](docs/messaging.md), including its trust model: the
 guards are not a sandbox, and an agent with a shell can read its node's
 credentials.

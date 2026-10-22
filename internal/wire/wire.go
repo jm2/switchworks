@@ -157,7 +157,7 @@ type MessageCmd struct {
 	Via     string `json:"via,omitempty"`
 	Owner   bool   `json:"owner,omitempty"`
 	Text    string `json:"text"`
-	Mode    string `json:"mode,omitempty"` // queue (default) | steer | interrupt
+	Mode    string `json:"mode,omitempty"` // queue (default) | auto | steer | interrupt; nodes before 0.1.5 queue auto
 	Kind    string `json:"kind,omitempty"` // notify | ask | reply | done | system
 	ReplyTo string `json:"reply_to,omitempty"`
 	// Attachments carry the image bytes (at most attach.MaxTotalBytes, so

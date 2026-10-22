@@ -30,6 +30,10 @@ const (
 	ModeQueue     = "queue"
 	ModeSteer     = "steer"
 	ModeInterrupt = "interrupt"
+	// ModeAuto steers when the target has a running turn its harness can
+	// steer (and the session accepts steering), and queues otherwise. Nodes
+	// before 0.1.5 take it as queue.
+	ModeAuto = "auto"
 )
 
 // SystemSender is the From of Switchworks's own notices.

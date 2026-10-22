@@ -996,7 +996,7 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	sess := model.Session{
 		ID: ulid.New(), Path: model.JoinPath(spec.Host, spec.Name), Host: spec.Host, Name: spec.Name,
 		Harness: spec.Harness, Mode: model.ModeManaged, Cwd: spec.Cwd, Labels: spec.Labels,
-		Status: model.StatusStarting, Parent: spec.Parent, CreatedAt: now, UpdatedAt: now,
+		Status: model.StatusStarting, Parent: spec.Parent, AcceptSteer: spec.AcceptSteer, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateSession(sess); err != nil {
 		return model.Session{}, err

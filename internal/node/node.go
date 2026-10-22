@@ -159,6 +159,11 @@ type session struct {
 
 	reportedQueue int // queue length last reported in session.queue
 
+	// Steers in flight: steering is set while one is being delivered, and
+	// steerBuf holds the messages that arrived meanwhile, to go in together.
+	steering bool
+	steerBuf []*steerReq
+
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
 	// emitted with the last turn's outcome.
@@ -844,8 +849,9 @@ func containsID(list []string, id string) bool {
 
 // deliver accepts a message into a session. Redeliveries of a message it
 // has already accepted are acknowledged without effect. Steering falls back
-// to queueing when there is no steerable turn; interrupt puts the message at
-// the head of the queue and cancels the running turn.
+// to queueing when there is no steerable turn, and auto steers only when a
+// turn is running; interrupt puts the message at the head of its part of
+// the queue and cancels the running turn.
 func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (json.RawMessage, error) {
 	if m == nil || strings.TrimSpace(m.Text) == "" {
 		return nil, errors.New("deliver: empty message")
@@ -894,8 +900,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		s.mu.Unlock()
 	}
 	caps := h.Caps()
-	if m.Mode == model.ModeSteer && caps.Steer {
-		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverSteer)
+	if caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h))) {
+		err := n.steer(s, h, msg, images)
 		if err == nil {
 			_ = n.saveState()
 			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
@@ -905,7 +911,9 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 			unseen()
 			return nil, err
 		}
-		n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+		if m.Mode == model.ModeSteer || !errors.Is(err, adapter.ErrNotActive) {
+			n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+		}
 	}
 	// imgMu keeps gcImages from removing these files before the message
 	// is in the queue.
@@ -988,6 +996,70 @@ func (n *Node) sweepQueues(now time.Time) {
 		if kick {
 			n.logf("warning: session %s is idle with %d queued message(s) and no turn starting; retrying delivery", path, depth)
 			go n.tryDeliver(s)
+		}
+	}
+}
+
+// turnRunning reports whether the session has a turn in progress.
+func (s *session) turnRunning(h adapter.Handle) bool {
+	s.mu.Lock()
+	active := s.activeTurn != ""
+	s.mu.Unlock()
+	st := h.Status()
+	return active || st == model.StatusActive || st == model.StatusWaitingApproval
+}
+
+// steerReq is a message waiting to be steered into a running turn.
+type steerReq struct {
+	msg    queuedMsg
+	images []model.Attachment
+	done   chan error
+}
+
+// steer delivers msg into the session's running turn and returns the
+// harness's answer. Messages that arrive while a steer is in flight wait
+// for it, then go in together as one input, each with its own header (as
+// in a coalesced turn), rather than one steer each.
+func (n *Node) steer(s *session, h adapter.Handle, msg queuedMsg, images []model.Attachment) error {
+	req := &steerReq{msg: msg, images: images, done: make(chan error, 1)}
+	s.mu.Lock()
+	s.steerBuf = append(s.steerBuf, req)
+	lead := !s.steering
+	s.steering = true
+	s.mu.Unlock()
+	if lead {
+		go n.flushSteers(s, h)
+	}
+	return <-req.done
+}
+
+// flushSteers delivers the waiting steers, a batch at a time, until none
+// are left.
+func (n *Node) flushSteers(s *session, h adapter.Handle) {
+	for {
+		s.mu.Lock()
+		msgs := make([]queuedMsg, len(s.steerBuf))
+		for i, r := range s.steerBuf {
+			msgs[i] = r.msg
+		}
+		k := batchLen(msgs)
+		if k == 0 {
+			s.steering = false
+			s.mu.Unlock()
+			return
+		}
+		batch := s.steerBuf[:k:k]
+		s.steerBuf = s.steerBuf[k:]
+		s.mu.Unlock()
+		var images []model.Attachment
+		for _, r := range batch {
+			images = append(images, r.images...)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := h.Deliver(ctx, batchInput(msgs[:k], images), adapter.DeliverSteer)
+		cancel()
+		for _, r := range batch {
+			r.done <- err
 		}
 	}
 }

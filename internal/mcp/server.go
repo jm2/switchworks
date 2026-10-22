@@ -134,11 +134,11 @@ var Tools = []Tool{
 		})},
 	{Name: "fleet_send", Title: "Send a message",
 		Description: "Send a message to another agent session (or a person) without waiting for an answer. " + addressHelp +
-			` mode: "queue" (default: delivered as a new turn when the target is idle), "steer" (added to the target's running turn), "interrupt" (cancels the target's running turn and delivers now). Set broadcast to send to every session matching an @selector.`,
+			` mode: "auto" (default: added to the target's running turn if it has one, at its next tool call; otherwise it starts a turn), "queue" (waits for the target's turn to end, then starts the next one together with any other waiting messages), "steer" (like auto, for a target that has opted out of auto), "interrupt" (cancels the target's running turn and delivers now; only for sessions you spawned). Set broadcast to send to every session matching an @selector.`,
 		InputSchema: obj(map[string]any{
 			"to":        str("Recipient address."),
 			"text":      str("The message."),
-			"mode":      map[string]any{"type": "string", "enum": []string{"queue", "steer", "interrupt"}, "description": "Delivery mode (default queue)."},
+			"mode":      map[string]any{"type": "string", "enum": []string{"auto", "queue", "steer", "interrupt"}, "description": "Delivery mode (default auto)."},
 			"broadcast": map[string]any{"type": "boolean", "description": "Send to every session matching an @selector."},
 			"images":    imagesProp,
 		}, "to", "text")},

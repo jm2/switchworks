@@ -39,7 +39,7 @@ type Guards struct {
 
 	// What agents may do to sessions they did not spawn.
 	AllowStopAny  bool `json:"allow_stop_any,omitempty"`  // stop them
-	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // steer or interrupt their running turn
+	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // interrupt their running turn, and steer one that does not accept steering
 	AllowReadAny  bool `json:"allow_read_any,omitempty"`  // read their last message with fleet_status
 	MaxBroadcast  int  `json:"max_broadcast,omitempty"`   // recipients of one broadcast from an agent (default 8)
 	// AllowUnsandboxedSpawn lets a sandboxed agent spawn a harness that
@@ -527,9 +527,9 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		return nil, fmt.Errorf("text is %d bytes; the limit is %d", len(args.Text), fleet.MaxTextBytes)
 	}
 	switch args.Mode {
-	case "", model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
+	case "", model.ModeAuto, model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
 	default:
-		return nil, fmt.Errorf("unknown mode %q (queue, steer, interrupt)", args.Mode)
+		return nil, fmt.Errorf("unknown mode %q (auto, queue, steer, interrupt)", args.Mode)
 	}
 	if kind == model.MsgBroadcast {
 		args.Broadcast = true
@@ -560,10 +560,12 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if len(targets) > r.guards.MaxBroadcast {
 			return nil, fmt.Errorf("%s matches %d sessions; agents may broadcast to at most %d", args.To, len(targets), r.guards.MaxBroadcast)
 		}
-		if args.Mode == model.ModeSteer || args.Mode == model.ModeInterrupt {
+		// Steering only adds input to a turn, so agents may steer any
+		// session; interrupting cancels its work.
+		if args.Mode == model.ModeInterrupt {
 			for _, t := range targets {
 				if t.sess != nil && t.sess.Parent != from.sess.ID && !r.guards.AllowSteerAny {
-					return nil, fmt.Errorf("agents may %s only sessions they spawned; send it queued instead", args.Mode)
+					return nil, errors.New("agents may interrupt only sessions they spawned; send it without a mode (auto) instead")
 				}
 			}
 		}
@@ -634,6 +636,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
+			m.Mode = r.steerMode(from, *t.sess, m.Mode)
 		} else {
 			m.ToUser, m.ToPath = t.user, t.user
 		}
@@ -646,6 +649,22 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		out = append(out, r.deliver(ctx, m))
 	}
 	return out, nil
+}
+
+// steerMode is the mode a message to sess goes with: a session that does
+// not accept steering gets messages in mode auto, and an agent's steers
+// unless the agent spawned it (or allow_steer_any is set), queued.
+func (r *router) steerMode(from sender, sess model.Session, mode string) string {
+	if sess.Steerable() {
+		return mode
+	}
+	switch {
+	case mode == model.ModeAuto:
+		return model.ModeQueue
+	case mode == model.ModeSteer && from.sess != nil && sess.Parent != from.sess.ID && !r.guards.AllowSteerAny:
+		return model.ModeQueue
+	}
+	return mode
 }
 
 // errRejected marks errors the node itself returned (the command reached

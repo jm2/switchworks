@@ -326,3 +326,70 @@ func TestEnqueueRanks(t *testing.T) {
 		t.Fatalf("order %v", got)
 	}
 }
+
+// #40: auto goes into a running turn on a harness that can steer, and
+// queues when nothing runs or the harness cannot steer.
+func TestAutoSteersRunningTurn(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive, steer: true}
+	n, s := queueNode(t, h)
+	if dr := send(t, n, s, wire.MessageCmd{From: "devbox/b", Text: "mid-turn", Mode: model.ModeAuto}); dr.Mode != model.ModeSteer {
+		t.Fatalf("auto into a running turn: %s", dr.Mode)
+	}
+	if got := h.deliveries(); len(got) != 1 || got[0].mode != adapter.DeliverSteer {
+		t.Fatalf("deliveries %+v", got)
+	}
+	h.setStatus(model.StatusIdle)
+	if dr := send(t, n, s, wire.MessageCmd{From: "devbox/b", Text: "idle", Mode: model.ModeAuto}); dr.Mode != model.ModeQueue {
+		t.Fatalf("auto to an idle session: %s", dr.Mode)
+	}
+	eventually(t, "a new turn", func() bool { d := h.deliveries(); return len(d) == 2 && d[1].mode == adapter.DeliverQueue })
+
+	h2 := &queueHandle{status: model.StatusActive} // cannot steer
+	n2, s2 := queueNode(t, h2)
+	if dr := send(t, n2, s2, wire.MessageCmd{From: "devbox/b", Text: "x", Mode: model.ModeAuto}); dr.Mode != model.ModeQueue {
+		t.Fatalf("auto on a harness that cannot steer: %s", dr.Mode)
+	}
+	if len(h2.deliveries()) != 0 || s2.queueLen() != 1 {
+		t.Fatal("not queued")
+	}
+}
+
+// #40: messages that arrive while a steer is in flight go in together as
+// one steer input.
+func TestSteersBatchedWhileInFlight(t *testing.T) {
+	gate := make(chan struct{})
+	h := &queueHandle{status: model.StatusActive, steer: true, gate: gate}
+	n, s := queueNode(t, h)
+	results := make(chan wire.DeliverResult, 10)
+	go func() {
+		results <- send(t, n, s, wire.MessageCmd{From: "devbox/b", Text: "first", Mode: model.ModeAuto})
+	}()
+	eventually(t, "the first steer in flight", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.steering && len(s.steerBuf) == 0
+	})
+	for i := 0; i < 9; i++ {
+		go func() {
+			results <- send(t, n, s, wire.MessageCmd{From: "devbox/c", Text: "later", Mode: model.ModeAuto})
+		}()
+	}
+	eventually(t, "nine steers waiting", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.steerBuf) == 9
+	})
+	close(gate)
+	for i := 0; i < 10; i++ {
+		if dr := <-results; dr.Mode != model.ModeSteer {
+			t.Fatalf("result %d: %s", i, dr.Mode)
+		}
+	}
+	got := h.deliveries()
+	if len(got) != 2 || strings.Count(got[1].in.Text, "from=devbox/c kind=notify]\nlater") != 9 {
+		t.Fatalf("%d steers; want the first, then the other nine as one: %+v", len(got), got)
+	}
+	if delivered := s.events(model.KindMessageDelivered); len(delivered) != 10 {
+		t.Fatalf("%d delivered events", len(delivered))
+	}
+}

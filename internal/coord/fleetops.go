@@ -88,6 +88,9 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 		if a.Broadcast {
 			kind = model.MsgBroadcast
 		}
+		if a.Mode == "" {
+			a.Mode = model.ModeAuto
+		}
 		msgs, err := s.router.send(ctx, from, kind, a)
 		if err != nil {
 			return nil, err

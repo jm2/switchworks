@@ -37,7 +37,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message; `mode` queue / steer / interrupt; `broadcast` with an `@selector`; `images` (see [Images](#images)) |
+| `fleet_send` | fire-and-forget message; `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | recent traffic for this session; with `ticket`, check or wait on an ask |
@@ -58,8 +58,8 @@ The model sees the tools in the `mcp__swk` namespace.
 
 ## What the receiving agent sees
 
-A routed message becomes a turn (or, with `steer`, part of the running turn)
-that starts with a header:
+A routed message becomes part of the target's running turn (by default,
+when its harness can steer), or a new turn, and starts with a header:
 
 ```
 [switchworks msg=01M40… from=devbox/lead kind=ask]
@@ -201,8 +201,23 @@ carry metadata only.
   its TTL (default 24 h), and the sender gets a `system` notice.
 - The node deduplicates by message id, so redelivery after a reconnect has
   no effect.
-- `steer` falls back to `queue` when the target has no running turn. The
-  returned mode says which happened.
+- Delivery modes:
+
+  | Mode | Target running a turn | Target idle |
+  | --- | --- | --- |
+  | `auto` (default for `fleet_send`, `swk send`/`msg`, the web UI and the API) | into that turn (Codex `turn/steer`), seen at its next tool call | starts a turn |
+  | `queue` | waits for the turn to end, then starts the next one | starts a turn |
+  | `steer` | into that turn, even if the session does not accept steering (for people, and an agent's own children) | starts a turn |
+  | `interrupt` | goes to the head of the queue and cancels the turn | starts a turn |
+
+  Asks, replies, completion notices and Switchworks's notices are queued.
+  The returned mode says what happened (`steer` or `queue`). Harnesses that
+  cannot steer (agy, ACP agents) queue instead, and a session spawned with
+  `accept_steer: false` (`swk spawn --no-steer`) gets `auto` messages, and
+  other agents' steers, queued: for a long build that must not be
+  distracted. Nodes before 0.1.5 take `auto` as `queue`.
+- Messages that arrive while a steer is being delivered go in together, as
+  one steer input, each with its own header.
 - `interrupt` puts the message at the head of the queue and cancels the
   running turn.
 - When a session goes idle, the messages in its queue are delivered
@@ -269,7 +284,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `spawn_cwd_roots` | the agent's own cwd (and below, for a read-only agent) | other directories agents may spawn in (and below); `["*"]` for any. On another host only these count, so a cross-host spawn needs them |
 | `max_daily_tokens` | off | fleet-wide; `fleet_spawn` is refused once reached (UTC day) |
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
-| `allow_steer_any` | false | let agents steer or interrupt sessions they did not spawn |
+| `allow_steer_any` | false | let agents interrupt sessions they did not spawn, and steer ones that do not accept steering (any agent may steer the rest: steering only adds input to a turn) |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
 | `max_broadcast` | 8 | recipients of one broadcast from an agent |
 | `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose), or a read-only one spawn agy |
@@ -388,13 +403,13 @@ swk usage                                        # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify|ask|broadcast, mode, ttl_seconds, wait_seconds, from, attachments}` |
+| POST | `/v1/messages` | `{to, text, kind: notify|ask|broadcast, mode: auto (default)|queue|steer|interrupt, ttl_seconds, wait_seconds, from, attachments}` |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
-| POST | `/v1/sessions/{id}/messages` | `{text, mode, from, attachments}`; routed (202 with `state`) |
-| POST | `/v1/sessions` | a spawn; `attachments` go with `prompt` |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments}`; routed (202 with `state` and `mode`) |
+| POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 
 Reading needs a `read` token; sending, asking and replying need `operate`.
