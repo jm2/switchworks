@@ -143,6 +143,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .sess-row.on { background: var(--hover); }
 .sess-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-row .age { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sess-row .queued { min-width: 20px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.sess-row .queued.many { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .sess-row.stopped .name { color: var(--faint); }
 .none { padding: 4px 12px 8px 39px; color: var(--faint); font-size: 14px; }
 /* status mark: a quiet dot, coloured only when it needs attention or is working */
@@ -245,6 +247,7 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .routed { border-left: 2px solid var(--line); padding: 2px 0 2px 14px; }
+.batch { display: flex; flex-direction: column; gap: 12px; }
 .routed .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .routed .kind { font-size: 12px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); }
 .routed .kind.ask { color: var(--accent-ink); }

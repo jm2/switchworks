@@ -719,6 +719,11 @@ func (s *Server) project(ev model.Event) {
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				sess.Status = p.Status
 			}
+		case model.KindSessionQueue:
+			var p model.SessionQueue
+			if json.Unmarshal(ev.Payload, &p) == nil && p.Queued >= 0 {
+				sess.Queued = p.Queued
+			}
 		case model.KindSessionPolicy:
 			// handlePolicy records the value it sent; this event keeps a
 			// change the record missed (a coordinator that stopped before

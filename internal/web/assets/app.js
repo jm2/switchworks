@@ -436,6 +436,7 @@ function renderSide() {
       list.length ? list.map((s) => h('a', {class: 'sess-row' + (s.id === current.session ? ' on' : ''), href: '#/s/' + s.id},
         h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
         h('span', {class: 'name', text: s.name, title: s.name}),
+        s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
         h('span', {class: 'age', text: ago(s.updated_at)})))
         : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
   }) : h('div', {class: 'none', text: 'No hosts enrolled yet'}));
@@ -632,6 +633,7 @@ function fleetView() {
         list.length ? list.map((s) => h('a', {class: 'sess-row' + (liveSession(s) ? '' : ' stopped'), href: '#/s/' + s.id},
           h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
           h('span', {class: 'name', text: s.name, title: s.name}),
+          s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
           h('span', {class: 'age', text: ago(s.updated_at)}),
           s.preview ? h('span', {class: 'preview', text: s.preview}) : null))
           : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
@@ -734,6 +736,15 @@ function parseRouted(text) {
   body = body.replace(/^\((?:.*?is waiting for an answer.*?|This answers your earlier fleet_ask.*?)\)\n/, '');
   body = body.replace(/^\(\d+ images? attached, in this turn's input: .*\)\n/, ''); // shown as thumbnails
   return {from: f.from, kind: f.kind, msg: f.msg, re: f.re, body};
+}
+
+// splitRouted splits a turn's input into its messages: the node delivers a
+// session's queued messages as one turn, each starting with its own header
+// (the owner's plain messages, which have none, first). Lines that look
+// like a header inside a message are quoted by the node, so they never
+// split one.
+function splitRouted(text) {
+  return text.split(/\n\n(?=\[switchworks [^\]\n]*\](?:\n|$))/);
 }
 
 const defaultDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'];
@@ -939,6 +950,7 @@ function sessionView(id, full) {
         row('Approvals', policyLabel[s.approval_policy] || s.approval_policy),
         // caps.read_only is what the harness reports the session runs with.
         row('Sandbox', s.sandbox && s.sandbox !== 'read-only' && s.caps && s.caps.read_only ? s.sandbox + ' (runs read-only)' : s.sandbox),
+        row('Queued', s.queued ? `${s.queued} message${s.queued === 1 ? '' : 's'} for the next turn` : ''),
         row('Tokens', u ? `${human(u.input_tokens)} in (${human(u.cached_input_tokens)} cached), ${human(u.output_tokens)} out` : ''),
         row('Started by', parent ? h('a', {href: '#/s/' + parent.id, text: parent.path}) : ''),
         row('Started', kids.length ? kids.map((k, i) => [i ? ', ' : '', h('a', {href: '#/s/' + k.id, text: k.name})]) : ''),
@@ -1038,11 +1050,14 @@ function sessionView(id, full) {
       case 'userMessage': {
         if (done || known) return;
         const text = (raw.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        const r = parseRouted(text);
-        const el = r
-          ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
-            h('div', {class: 'body'}, md(r.body)))
-          : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text}));
+        const parts = splitRouted(text).map((part) => {
+          const r = parseRouted(part);
+          return r
+            ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
+              h('div', {class: 'body'}, md(r.body)))
+            : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text: part}));
+        });
+        const el = parts.length === 1 ? parts[0] : h('div', {class: 'batch'}, parts);
         items.set(p.item_id, {el});
         add(h('div', {class: 'ev'}, el));
         break;

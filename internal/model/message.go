@@ -119,3 +119,12 @@ type Settled struct {
 	TurnStatus  string `json:"turn_status,omitempty"`
 	LastMessage string `json:"last_message,omitempty"`
 }
+
+// KindSessionQueue is emitted by a node when the number of messages queued
+// for a session changes.
+const KindSessionQueue = "session.queue"
+
+// SessionQueue is the payload of session.queue.
+type SessionQueue struct {
+	Queued int `json:"queued"`
+}

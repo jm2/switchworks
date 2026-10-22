@@ -126,7 +126,7 @@ const addressHelp = `Addresses: "host/name" (a session path), a fleet-unique ses
 // Tools are the fleet tools.
 var Tools = []Tool{
 	{Name: "fleet_list", Title: "List fleet sessions", Annotations: map[string]bool{"readOnlyHint": true},
-		Description: "List the agent sessions in the Switchworks fleet, across all hosts, with their status. Use a session's path (host/name) to address it in other fleet tools.",
+		Description: "List the agent sessions in the Switchworks fleet, across all hosts, with their status (and how many messages wait in each one's queue). Use a session's path (host/name) to address it in other fleet tools.",
 		InputSchema: obj(map[string]any{
 			"host":  str("Only sessions on this host."),
 			"label": str(`Only sessions with this label, as "key=value".`),
@@ -184,7 +184,7 @@ var Tools = []Tool{
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
 }
 
-const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as turns that start with "[switchworks msg=... from=... kind=...]". When kind=ask, answer with fleet_reply using that msg id.`
+const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id.`
 
 // Server serves MCP on one connection.
 type Server struct {

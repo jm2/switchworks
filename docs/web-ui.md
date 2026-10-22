@@ -23,12 +23,14 @@ system; the choice is kept per browser.
 ## Views
 
 - **Home**: every host and its sessions, live, newest first, with each
-  session's last reply. Sessions waiting for approval and questions agents
+  session's last reply, and how many messages wait for its next turn.
+  Sessions waiting for approval and questions agents
   asked you are listed at the top. The composer at the bottom starts a
   session: describe the task, pick the host, harness and folder, and send.
   "More options" opens the full form.
 - **Session**: the live transcript. Agent replies, your messages, messages
-  routed from other sessions, and tool calls as cards (commands with their
+  routed from other sessions (several in one turn when they waited in its
+  queue), and tool calls as cards (commands with their
   output, file changes with a diff, MCP tools, plans, thinking). Pending
   approvals sit above the composer with the decisions the harness offers.
   The composer **steers** the running turn (the default; an idle session

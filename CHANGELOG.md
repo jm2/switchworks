@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a status detail), and `caps.read_only` in `fleet_list` now follows the reported sandbox.
 - **Store PowerShell warning** — On Windows the node warns at start when `pwsh` is the Microsoft
   Store alias, which Codex's sandbox can't start, and says to install the PowerShell 7 MSI.
+- **Queue length** — Nodes report how many messages wait in each session's queue; `fleet_list`,
+  `fleet_status`, the API and the web UI's session lists and details show it.
 
 ### Changed
 
@@ -27,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("Steer now") unless you pick another mode. "Next turn" queued your message behind every message
   already waiting, which on a busy session meant hours. A session that can't take input mid-turn
   still queues it, and says so.
+- **Queued messages go in as one turn** — A session's backlog is delivered as one turn, each
+  message with its own header, instead of one turn (and one full-context model call) per message.
+- **People's messages first** — The owner's messages, then other people's, wait ahead of agents'
+  in a session's queue, so a backlog of agent traffic no longer holds them back for hours.
 
 ### Fixed
 

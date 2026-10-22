@@ -36,7 +36,7 @@ The model sees the tools in the `mcp__swk` namespace.
 
 | Tool | What it does |
 | --- | --- |
-| `fleet_list` | sessions across the fleet, with status (filter by host or label) |
+| `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
 | `fleet_send` | fire-and-forget message; `mode` queue / steer / interrupt; `broadcast` with an `@selector`; `images` (see [Images](#images)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
 | `fleet_reply` | answer an ask, by its `msg` id |
@@ -66,6 +66,10 @@ that starts with a header:
 (devbox/lead is waiting for an answer: reply with the fleet_reply tool, message_id=01M40….)
 what is 6x7?
 ```
+
+Messages that waited in the queue go in together, as one turn: each keeps
+its own header, in the order they are delivered (see [Delivery](#delivery)),
+separated by a blank line.
 
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
 notice), `system` (delivery failures and expiry). A line in a relayed
@@ -201,6 +205,20 @@ carry metadata only.
   returned mode says which happened.
 - `interrupt` puts the message at the head of the queue and cancels the
   running turn.
+- When a session goes idle, the messages in its queue are delivered
+  together as **one** turn, each with its own header, rather than one turn
+  each (every turn resends the session's whole context to the model). One
+  turn takes at most 50 messages, 256 KiB of text and one message's image
+  limits; the rest go in the next. Each message is still reported
+  delivered on its own (`message.delivered`) and keeps its id.
+- The queue puts people first: the owner's plain messages, then other
+  people's, then agents' and Switchworks's own, each in the order they
+  came. `interrupt` goes ahead of its own group, never ahead of the
+  owner's messages. In a turn, the owner's plain messages (which have no
+  header) come first, so their text never follows another sender's.
+- Each node reports how many messages wait in each session's queue
+  (`session.queue`); `fleet_list`, `fleet_status`, `GET /v1/sessions` and
+  the web UI show it. Older nodes do not report it.
 - A queued message is delivered when its session goes idle. If the harness
   still says it is busy (Codex reports the thread idle a moment before the
   turn ends), the node tries again once the turn ends, or after 1, 5 and

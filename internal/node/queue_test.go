@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -215,4 +216,113 @@ func TestSweepKicksStalledQueue(t *testing.T) {
 	}
 	n.sweepQueues(now.Add(time.Second))
 	eventually(t, "the sweep to deliver", func() bool { return len(h.deliveries()) == 1 && s.queueLen() == 0 })
+}
+
+// events returns the payloads of the session's events of one kind.
+func (s *session) events(kind string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, ev := range s.unacked {
+		if ev.Kind == kind {
+			out = append(out, string(ev.Payload))
+		}
+	}
+	return out
+}
+
+// #32: messages queued while a session works go in as one turn when it is
+// idle, each with its own header and in order, the owner's first; each is
+// reported delivered, and the queue's length is reported as it changes.
+func TestQueueCoalescesOwnerFirst(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive}
+	n, s := queueNode(t, h)
+	ids := []string{ulid.New(), ulid.New(), ulid.New(), ulid.New()}
+	send(t, n, s, wire.MessageCmd{ID: ids[0], From: "devbox/b", Text: "one"})
+	send(t, n, s, wire.MessageCmd{ID: ids[1], From: "devbox/c", Text: "two", Kind: model.MsgAsk})
+	send(t, n, s, wire.MessageCmd{ID: ids[2], From: "user:web", Via: "admin", Owner: true, Text: "owner here"})
+	send(t, n, s, wire.MessageCmd{ID: ids[3], From: "user:cli", Via: "token:laptop", Text: "a person"})
+	s.mu.Lock()
+	var order []string
+	for _, q := range s.rec.Queue {
+		order = append(order, q.ID)
+	}
+	s.mu.Unlock()
+	if want := []string{ids[2], ids[3], ids[0], ids[1]}; strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("queue order %v, want owner, person, then agents in order %v", order, want)
+	}
+	if dup := send(t, n, s, wire.MessageCmd{ID: ids[0], From: "devbox/b", Text: "one"}); !dup.Duplicate {
+		t.Fatal("redelivery not deduplicated")
+	}
+
+	h.setStatus(model.StatusIdle)
+	eventually(t, "one coalesced turn", func() bool { return len(h.deliveries()) == 1 && s.queueLen() == 0 })
+	time.Sleep(20 * time.Millisecond) // no second turn follows
+	got := h.deliveries()
+	if len(got) != 1 {
+		t.Fatalf("%d turns, want 1", len(got))
+	}
+	text := got[0].in.Text
+	if !strings.HasPrefix(text, "owner here\n\n") {
+		t.Fatalf("the owner's plain message must come first:\n%s", text)
+	}
+	at := func(sub string) int {
+		i := strings.Index(text, sub)
+		if i < 0 {
+			t.Fatalf("missing %q in:\n%s", sub, text)
+		}
+		return i
+	}
+	if !(at("from=user:cli via=token:laptop kind=notify]\na person") < at("msg="+ids[0]+" from=devbox/b kind=notify]\none") &&
+		at("msg="+ids[0]) < at("msg="+ids[1]+" from=devbox/c kind=ask]")) {
+		t.Fatalf("headers out of order:\n%s", text)
+	}
+	if got[0].in.ClientMessageID != ids[2] {
+		t.Fatalf("client message id %s", got[0].in.ClientMessageID)
+	}
+	delivered := strings.Join(s.events(model.KindMessageDelivered), "\n")
+	for _, id := range ids {
+		if strings.Count(delivered, id) != 1 {
+			t.Fatalf("message %s not reported delivered once:\n%s", id, delivered)
+		}
+	}
+	if q := s.events(model.KindSessionQueue); len(q) != 5 || q[3] != `{"queued":4}` || q[4] != `{"queued":0}` {
+		t.Fatalf("queue reports %v", q)
+	}
+}
+
+// A batch stays within its bounds; the rest goes in the next turn.
+func TestBatchLen(t *testing.T) {
+	var q []queuedMsg
+	for i := 0; i < maxBatchMessages+3; i++ {
+		q = append(q, queuedMsg{Text: "x"})
+	}
+	if n := batchLen(q); n != maxBatchMessages {
+		t.Fatalf("batch of %d", n)
+	}
+	big := strings.Repeat("y", maxBatchText)
+	if n := batchLen([]queuedMsg{{Text: big}, {Text: big}}); n != 1 {
+		t.Fatalf("text bound: batch of %d", n)
+	}
+	img := func(k int) []model.Attachment { return make([]model.Attachment, k) }
+	if n := batchLen([]queuedMsg{{Attachments: img(3)}, {Attachments: img(2)}, {Text: "z"}}); n != 1 {
+		t.Fatalf("image bound: batch of %d", n)
+	}
+}
+
+// Interrupts go ahead of their own rank, never ahead of the owner's.
+func TestEnqueueRanks(t *testing.T) {
+	var q []queuedMsg
+	q = enqueue(q, queuedMsg{ID: "a1", From: "h/a"}, false)
+	q = enqueue(q, queuedMsg{ID: "o1", From: "user:web", Owner: true}, false)
+	q = enqueue(q, queuedMsg{ID: "a2", From: "h/b"}, true)
+	q = enqueue(q, queuedMsg{ID: "p1", From: "user:cli"}, false)
+	q = enqueue(q, queuedMsg{ID: "o2", From: "user:web", Owner: true, Kind: model.MsgAsk}, false) // has a header
+	var got []string
+	for _, m := range q {
+		got = append(got, m.ID)
+	}
+	if strings.Join(got, ",") != "o1,p1,o2,a2,a1" {
+		t.Fatalf("order %v", got)
+	}
 }

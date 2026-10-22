@@ -157,6 +157,8 @@ type session struct {
 	busyTries  int
 	stuckSince time.Time
 
+	reportedQueue int // queue length last reported in session.queue
+
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
 	// emitted with the last turn's outcome.
@@ -574,7 +576,9 @@ func (n *Node) resume(s *session) {
 	}
 	s.mu.Lock()
 	s.h = h
+	s.reportQueueLocked() // a backlog kept across a restart
 	s.mu.Unlock()
+	n.wakeSender()
 	n.logf("session %s resumed (%s %s)", rec.Path, rec.Harness, rec.NativeRef.ID)
 	go n.tryDeliver(s)
 }
@@ -783,6 +787,12 @@ func quoteHeaders(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// headerless reports whether m reaches the agent as it is: a plain message
+// sent with the owner's credential.
+func headerless(m queuedMsg) bool {
+	return strings.HasPrefix(m.From, "user:") && (m.Kind == "" || m.Kind == model.MsgNotify) && m.Owner
+}
+
 // formatMessage renders a queued message for the agent. Plain messages
 // sent with the owner's credential are passed through; everything else,
 // including a person's message sent with any other token (which an agent
@@ -793,7 +803,7 @@ func formatMessage(m queuedMsg) string {
 	if kind == "" {
 		kind = model.MsgNotify
 	}
-	if strings.HasPrefix(m.From, "user:") && kind == model.MsgNotify && m.Owner {
+	if headerless(m) {
 		return m.Text
 	}
 	var b strings.Builder
@@ -908,7 +918,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	switch {
 	case m.Mode == model.ModeInterrupt && caps.Interrupt:
 		s.mu.Lock()
-		s.rec.Queue = append([]queuedMsg{msg}, s.rec.Queue...)
+		s.rec.Queue = enqueue(s.rec.Queue, msg, true)
+		s.reportQueueLocked()
 		s.mu.Unlock()
 		s.imgMu.Unlock()
 		_ = n.saveState()
@@ -920,7 +931,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		return model.Marshal(wire.DeliverResult{Mode: model.ModeInterrupt}), nil
 	}
 	s.mu.Lock()
-	s.rec.Queue = append(s.rec.Queue, msg)
+	s.rec.Queue = enqueue(s.rec.Queue, msg, false)
+	s.reportQueueLocked()
 	s.mu.Unlock()
 	s.imgMu.Unlock()
 	_ = n.saveState()
@@ -1014,28 +1026,38 @@ func (n *Node) tryDeliver(s *session) {
 			return
 		}
 		s.delivering, s.redeliver = true, false
-		msg := s.rec.Queue[0]
+		batch := append([]queuedMsg(nil), s.rec.Queue[:batchLen(s.rec.Queue)]...)
 		h := s.h
 		// Record delivery before the turn's own events, so the log reads in
 		// order; a failure is recorded right after.
 		s.flushDeltaLocked()
-		s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Attachments: msg.Attachments})
+		for _, m := range batch {
+			s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: m.ID, From: m.From, Mode: "queue", Attachments: m.Attachments})
+		}
 		id := s.rec.ID
 		s.mu.Unlock()
 		n.wakeSender()
 
-		images, err := n.loadImages(id, msg.Attachments)
+		var images []model.Attachment
+		var err error
+		for _, m := range batch {
+			var im []model.Attachment
+			if im, err = n.loadImages(id, m.Attachments); err != nil {
+				break
+			}
+			images = append(images, im...)
+		}
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			err = h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverQueue)
+			err = h.Deliver(ctx, batchInput(batch, images), adapter.DeliverQueue)
 			cancel()
 		}
 
 		s.mu.Lock()
 		s.delivering = false
 		if errors.Is(err, adapter.ErrBusy) {
-			// Not delivered after all: it stays at the head of the queue and
-			// is retried on the next idle status, at once if one came in
+			// Not delivered after all: they stay at the head of the queue and
+			// are retried on the next idle status, at once if one came in
 			// meanwhile, or after a backoff if the session says it is idle
 			// already (no such status may come).
 			again := s.redeliver
@@ -1045,7 +1067,9 @@ func (n *Node) tryDeliver(s *session) {
 				wait = busyBackoff[min(s.busyTries, len(busyBackoff)-1)]
 				s.busyTries++
 			}
-			s.appendLocked(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Error: "session busy; requeued"})
+			for _, m := range batch {
+				s.appendLocked(model.KindMessageQueued, model.MessageEvent{MessageID: m.ID, From: m.From, Mode: "queue", Error: "session busy; requeued"})
+			}
 			path, tries := s.rec.Path, s.busyTries
 			s.mu.Unlock()
 			n.wakeSender()
@@ -1059,19 +1083,123 @@ func (n *Node) tryDeliver(s *session) {
 			return
 		}
 		s.busyTries = 0
-		if len(s.rec.Queue) > 0 && s.rec.Queue[0].ID == msg.ID {
-			s.rec.Queue = s.rec.Queue[1:]
-		}
+		s.rec.Queue = without(s.rec.Queue, batch)
+		s.reportQueueLocked()
 		s.mu.Unlock()
-		if err != nil {
-			s.emit(model.KindMessageFailed, model.MessageEvent{MessageID: msg.ID, From: msg.From, Error: err.Error()})
+		hasImages := false
+		for _, m := range batch {
+			if err != nil {
+				s.emit(model.KindMessageFailed, model.MessageEvent{MessageID: m.ID, From: m.From, Error: err.Error()})
+			}
+			hasImages = hasImages || len(m.Attachments) > 0
 		}
+		n.wakeSender()
 		_ = n.saveState()
-		if len(msg.Attachments) > 0 {
+		if hasImages {
 			n.gcImages(s)
 		}
 		// Loop: if the turn already finished (or failed to start), the next
-		// queued message goes now; otherwise the idle status triggers it.
+		// queued messages go now; otherwise the idle status triggers it.
+	}
+}
+
+// Coalescing: an idle session's queued messages go in together, as one
+// turn, rather than one turn each (every turn resends the session's whole
+// context to the model). A batch stays within these bounds, and within one
+// message's image limits; the first message always goes.
+const (
+	maxBatchMessages = 50
+	maxBatchText     = 256 << 10
+)
+
+// batchLen is how many of the queue's first messages go in one input.
+func batchLen(q []queuedMsg) int {
+	text, imgs := 0, 0
+	var imgBytes int64
+	for i, m := range q {
+		text += len(m.Text)
+		imgs += len(m.Attachments)
+		for _, a := range m.Attachments {
+			imgBytes += a.Size
+		}
+		if i > 0 && (i >= maxBatchMessages || text > maxBatchText || imgs > attach.MaxImages || imgBytes > attach.MaxTotalBytes) {
+			return i
+		}
+	}
+	return len(q)
+}
+
+// batchInput joins messages into one input, each with its own header, and
+// their images in the same order. The owner's plain messages, which have no
+// header, go first, so no text without a header follows another sender's.
+func batchInput(batch []queuedMsg, images []model.Attachment) adapter.Input {
+	if len(batch) == 1 {
+		return adapter.Input{Text: formatMessage(batch[0]), ClientMessageID: batch[0].ID, Images: images}
+	}
+	byID := map[string][]model.Attachment{}
+	off := 0
+	for _, m := range batch {
+		k := min(off+len(m.Attachments), len(images))
+		byID[m.ID] = images[off:k]
+		off = k
+	}
+	ordered := append([]queuedMsg(nil), batch...)
+	sort.SliceStable(ordered, func(i, j int) bool { return headerless(ordered[i]) && !headerless(ordered[j]) })
+	parts := make([]string, len(ordered))
+	var imgs []model.Attachment
+	for i, m := range ordered {
+		parts[i] = formatMessage(m)
+		imgs = append(imgs, byID[m.ID]...)
+	}
+	return adapter.Input{Text: strings.Join(parts, "\n\n"), ClientMessageID: ordered[0].ID, Images: imgs}
+}
+
+// without returns q without the messages of batch.
+func without(q, batch []queuedMsg) []queuedMsg {
+	drop := map[string]bool{}
+	for _, m := range batch {
+		drop[m.ID] = true
+	}
+	out := q[:0:0]
+	for _, m := range q {
+		if !drop[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Queue order: the owner's plain messages first, then other people's, then
+// agents' and Switchworks's own, each in the order they came. A backlog of
+// agent messages then never holds back a person's.
+func queueRank(m queuedMsg) int {
+	switch {
+	case headerless(m):
+		return 0
+	case strings.HasPrefix(m.From, "user:"):
+		return 1
+	}
+	return 2
+}
+
+// enqueue adds m behind the messages that rank with or above it; with
+// head (an interrupt), ahead of those that rank with it.
+func enqueue(q []queuedMsg, m queuedMsg, head bool) []queuedMsg {
+	r := queueRank(m)
+	i := 0
+	for i < len(q) && (queueRank(q[i]) < r || (!head && queueRank(q[i]) == r)) {
+		i++
+	}
+	return append(q[:i:i], append([]queuedMsg{m}, q[i:]...)...)
+}
+
+// reportQueueLocked emits session.queue when the queue's length differs
+// from the one last reported, so the coordinator can show it.
+func (s *session) reportQueueLocked() {
+	if d := len(s.rec.Queue); d != s.reportedQueue {
+		s.reportedQueue = d
+		s.flushDeltaLocked()
+		s.appendLocked(model.KindSessionQueue, model.SessionQueue{Queued: d})
 	}
 }
 

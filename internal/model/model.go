@@ -108,7 +108,10 @@ type Session struct {
 	Model            string `json:"model,omitempty"`
 	Provider         string `json:"provider,omitempty"`
 	Usage            *Usage `json:"usage,omitempty"`
-	LastSeq          int64  `json:"last_seq"`
+	// Queued is how many messages wait in the session's queue on its
+	// node, as it last reported (session.queue; older nodes do not).
+	Queued  int   `json:"queued,omitempty"`
+	LastSeq int64 `json:"last_seq"`
 	// ProjectedSeq is the last event whose effects (status, usage, native
 	// ref) this record holds. Events are durable before the record is, so a
 	// coordinator that starts with LastSeq above it projects the rest again.

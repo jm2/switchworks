@@ -36,7 +36,9 @@ threads. If it dies, the adapter restarts it and resumes every live thread.
 See codex-app-server-notes.md for the option of using Codex's own shared daemon instead.
 
 **Delivery semantics.** A message queued with `queue` waits for the session
-to be idle, then becomes a new turn. `steer` goes into the running turn and
+to be idle, then becomes a new turn, together with every other message
+waiting then (one turn for the backlog, not one each: each turn costs a
+full-context model call). People's messages wait ahead of agents'. `steer` goes into the running turn and
 falls back to `queue` when there is none. Messages from
 people are passed through verbatim; messages from anything else get a
 one-line `[switchworks msg=… from=… kind=…]` header.

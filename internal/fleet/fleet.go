@@ -37,6 +37,8 @@ type SessionInfo struct {
 	Cwd     string            `json:"cwd,omitempty"`
 	Usage   *model.Usage      `json:"usage,omitempty"`
 	Caps    model.Caps        `json:"caps"`
+	// Queued is how many messages wait for the session's next turn.
+	Queued int `json:"queued,omitempty"`
 }
 
 type ListResult struct {
