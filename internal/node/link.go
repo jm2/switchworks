@@ -190,6 +190,7 @@ func (n *Node) applyAcks(acked map[string]int64, welcome bool) {
 	if save {
 		n.compact()
 	}
+	n.forgetStopped()
 }
 
 // compact persists acked seqs, then empties fully acked large spools.

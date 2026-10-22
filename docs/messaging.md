@@ -95,7 +95,16 @@ separated by a blank line.
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
 notice), `system` (delivery failures and expiry). A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so no
-sender can put a header of its own in its text.
+sender can put a header of its own in its text. The node matches a
+line's skeleton, not its bytes: leading spaces and markup (`>`, `*`,
+`-`, backticks), spaces and invisible characters (zero-width, format,
+combining marks, blank fillers) are skipped, case is ignored, and
+lookalikes are folded to the letters they pass for (fullwidth forms,
+Cyrillic and Greek letters such as `ѕ` and `і`, mathematical, circled
+and small capital letters, accented letters, `1` and `0`, and brackets
+such as `［` and `【`). So `［switchworks`, `[ѕwitchworks` and
+`[ switchworks` are quoted too. Nodes before 0.1.5 catch only `[switchworks`
+in any case after leading spaces.
 
 Messages from people name the credential they were sent with, which the
 coordinator takes from the request (the `from=user:<name>` part is only
@@ -342,7 +351,19 @@ it runs this version.
   (promote) sends a message whatever its expiry. Nodes before 0.1.5
   ignore `expires_at` and keep a queued message until it is delivered.
 - The node deduplicates by message id, so redelivery after a reconnect has
-  no effect.
+  no effect. It keeps each id for as long as the coordinator could
+  redeliver the message: until an hour past its `expires_at`, or 25 h
+  for a message without one (from a coordinator before 0.1.5), and at
+  most 4096 ids per session. Nodes before 0.1.5 kept the last 512.
+- A session's queue holds at most 256 messages and 4 MiB of text, and a
+  node's sessions at most 256 MiB of queued images. The owner's plain
+  messages may use all of it; everyone else's (other people's, agents',
+  Switchworks's notices) three quarters, so agents filling a queue never
+  lock the owner out. A message that does not fit is refused: it
+  becomes `failed` with an error saying the queue is full, and the
+  sender can send it again later. A message the node cannot save to its
+  `state.json` (a full disk) is refused the same way, rather than kept
+  in memory only.
 - Delivery modes:
 
   | Mode | Target running a turn | Target idle |
@@ -397,7 +418,28 @@ it runs this version.
   still says it is busy (Codex reports the thread idle a moment before the
   turn ends), the node tries again once the turn ends, or after 1, 5 and
   then every 30 s. Every 15 s it also looks for sessions that have been
-  idle with queued messages for 30 s, logs a warning and tries again.
+  idle with queued messages for 30 s, logs a warning and tries again, and
+  drops expired messages from every queue, also while its session runs
+  a long turn or waits for an approval.
+- If the harness refuses a turn of several messages (for any reason but
+  being busy), each is tried again on its own, and only a message that
+  fails alone becomes `failed`; one whose stored images are gone fails
+  before the others go. If the harness does not answer in time (60 s
+  for a turn, 30 s for a steer), whether the message went in is unknown:
+  Codex may still start the turn. It is then neither sent again nor
+  failed; the session's log gets a warning, and if the turn does start,
+  its messages are reported delivered and then seen as usual.
+- Delivery is at most once across a node crash: the node saves a turn's
+  messages as being sent before the harness gets them (and a steered
+  message's id before it goes in). One still marked so when the node
+  starts again may or may not have arrived, so it is reported `failed`,
+  with an error saying so, rather than delivered a second time.
+- When a session stops, the messages in its queue become `failed` ("the
+  session was stopped before it was delivered"), so their senders hear,
+  and once the coordinator has all its events the node forgets the
+  session: its record, spool, images and its received files (after the
+  usual week). Nodes before 0.1.5 kept a stopped session's record and
+  queue for good.
 
 ### States
 
@@ -427,8 +469,9 @@ which would cost a model call over its whole context:
 - **Delivered.** `delivered_at` is when the message went into the
   target's input: at once for a steer (and `fleet_send`'s result then
   carries it), and for one that waited in the queue when the node starts
-  the turn that carries it (`message.delivered`). An agent model sees it
-  on its next call.
+  the turn that carries it (`message.delivered`, recorded once the
+  harness has taken the turn: when it starts, or when the harness
+  answers). An agent model sees it on its next call.
 - **Seen.** When that turn (or the running turn it was steered into)
   completes, the node records `message.seen` with the turn's id and the
   item id of its last agent message, and the message becomes `seen`, with
