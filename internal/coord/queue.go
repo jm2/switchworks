@@ -121,11 +121,12 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.State == model.MsgPending {
 		out, changed := s.router.settle(m.ID, func(cur *model.Message) { cur.Mode = body.Mode })
-		if !changed {
-			out, _ = s.store.Message(m.ID)
+		if changed {
+			writeJSON(w, 202, apiclient.SendResult{MessageID: out.ID, State: out.State, Mode: out.Mode})
+			return
 		}
-		writeJSON(w, 202, apiclient.SendResult{MessageID: out.ID, State: out.State, Mode: out.Mode})
-		return
+		// Delivered to its node meanwhile: promote it there.
+		m, _ = s.store.Message(m.ID)
 	}
 	if m.State != model.MsgDelivered {
 		writeErr(w, 409, fmt.Errorf("message %s is %s", m.ID, m.State))

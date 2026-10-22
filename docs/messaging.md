@@ -413,7 +413,7 @@ swk usage                                        # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify|ask|broadcast, mode: auto (default)|queue|steer|interrupt, ttl_seconds, wait_seconds, from, attachments}` |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments}` |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
@@ -422,7 +422,7 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at}]}`; `position` counts those ahead |
-| POST | `/v1/messages/{id}/promote` | `{mode: steer|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
+| POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
 Reading needs a `read` token; sending, asking, replying, promoting and
