@@ -895,7 +895,7 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		Attachments: images, Files: files}}, 30*time.Second)
+		Attachments: images, Files: files, ExpiresAt: m.ExpiresAt}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -905,6 +905,12 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	var dr wire.DeliverResult
 	_ = json.Unmarshal(res.Data, &dr)
+	if dr.Expired {
+		// It expired while waiting to be steered in, and the node dropped it.
+		r.expireQueued(m.ID)
+		out, _ := r.s.store.Message(m.ID)
+		return out
+	}
 	out, _ := r.settle(m.ID, func(cur *model.Message) {
 		cur.State, cur.DeliveredAt = model.MsgDelivered, time.Now().UTC()
 		if dr.Mode != "" {
@@ -994,13 +1000,45 @@ func (r *router) fail(m model.Message, why string) model.Message {
 	return out
 }
 
+// expire expires a message still waiting at the coordinator for its host.
 func (r *router) expire(m model.Message) {
-	out, changed := r.settle(m.ID, func(cur *model.Message) {
-		cur.State, cur.Error = model.MsgExpired, "expired before it could be delivered"
-	})
-	if changed {
-		r.notifySender(out, fmt.Sprintf("Your %s message %s to %s expired before it could be delivered (its host was offline).", out.Kind, out.ID, out.To))
+	r.expireIn(m.ID, false, "expired before it could be delivered", "its host was offline")
+}
+
+// onExpired expires a message its target's node dropped from the session's
+// queue past its expiry (message.expired), and tells the sender.
+func (r *router) onExpired(sessionID, messageID string) {
+	m, ok := r.s.store.Message(messageID)
+	if !ok || m.ToSession != sessionID {
+		return // not this session's to expire
 	}
+	r.expireQueued(m.ID)
+}
+
+// expireQueued expires a message the node dropped from its queue.
+func (r *router) expireQueued(id string) {
+	r.expireIn(id, true, "expired in the session's queue before it was delivered", "it waited in the session's queue past its expiry")
+}
+
+// expireIn marks a pending message (with queued, also one its node had
+// accepted) expired, wakes a fleet_ask waiting on it and tells an agent
+// that sent it, with the notice a coordinator-side expiry sends.
+func (r *router) expireIn(id string, queued bool, why, cause string) {
+	r.mu.Lock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || !(cur.State == model.MsgPending || queued && cur.State == model.MsgDelivered) {
+		r.mu.Unlock()
+		return
+	}
+	cur.State, cur.Error = model.MsgExpired, why
+	_ = r.put(cur)
+	ws := r.waiters[id]
+	delete(r.waiters, id)
+	for _, w := range ws {
+		w <- cur // the ask itself, expired
+	}
+	r.mu.Unlock()
+	r.notifySender(cur, fmt.Sprintf("Your %s message %s to %s expired before it could be delivered (%s).", cur.Kind, cur.ID, cur.To, cause))
 }
 
 // notifySender queues a system notice for the sending session. Notices are

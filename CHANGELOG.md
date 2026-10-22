@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **fleet_inbox lists unread messages** — By default it returns only messages the session has
   not seen (in an earlier call or as a turn), in a compact form, instead of the last 20 full
   records each time. `all: true` lists recent traffic and `verbose: true` gives full records.
+- **Queued messages expire on the node** — A message's TTL (default 24 h) now also covers the
+  session's queue: the node drops one past its `expires_at` instead of delivering it, the state
+  becomes `expired` and an agent sender gets the usual notice. The web UI's queued bubble says when.
 
 ### Fixed
 

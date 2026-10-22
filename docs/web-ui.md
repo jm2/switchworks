@@ -40,8 +40,9 @@ system; the choice is kept per browser.
   that waits for the next turn shows below the transcript as a dimmed
   **Queued** bubble with its place ("Queued, 3 ahead"), **Send now**
   (steers it into the running turn, or interrupts a session that cannot
-  take one mid-turn) and **Cancel**; it becomes the usual message when its
-  turn starts. Messages queued by agents show as one row, "N queued from
+  take one mid-turn) and **Cancel**, and when it expires undelivered
+  ("expires 14:30", from a node that enforces it); it becomes the usual
+  message when its turn starts. Messages queued by agents show as one row, "N queued from
   agents", with **Clear** (an owner's browser only). Next to that menu,
   **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other

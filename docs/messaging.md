@@ -326,6 +326,16 @@ it runs this version.
 - A message to a host that is offline stays **pending** and is delivered
   when the host reconnects (the router retries every 2 s). It expires after
   its TTL (default 24 h), and the sender gets a `system` notice.
+- The TTL also covers the session's queue. The coordinator gives the node
+  each message's `expires_at`, and when the node builds a turn from the
+  queue, or steers in messages that waited for another steer, it drops any
+  past it: an expired message is never delivered and never starts a turn.
+  The node records `message.expired`, the message's state becomes
+  `expired`, and an agent that sent it gets the same `system` notice (an
+  expired ask fails, like a cancelled one). People's messages have the
+  same default TTL as agents'; `ttl_seconds` sets a shorter one. Send now
+  (promote) sends a message whatever its expiry. Nodes before 0.1.5
+  ignore `expires_at` and keep a queued message until it is delivered.
 - The node deduplicates by message id, so redelivery after a reconnect has
   no effect.
 - Delivery modes:
@@ -555,7 +565,7 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
-| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at}]}`; `position` counts those ahead |
+| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 

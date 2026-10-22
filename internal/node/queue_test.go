@@ -485,3 +485,94 @@ func TestPromoteAndCancel(t *testing.T) {
 		t.Fatalf("promoting an unknown message: %+v", res)
 	}
 }
+
+// #46: a queued message past its expiry is never delivered: it is dropped
+// when the next turn's batch is built, reported expired, and a batch with
+// a live message carries only that one.
+func TestQueueDropsExpired(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive}
+	n, s := queueNode(t, h)
+	stale, live := ulid.New(), ulid.New()
+	send(t, n, s, wire.MessageCmd{ID: stale, From: "devbox/b", Text: "stale", ExpiresAt: time.Now().Add(20 * time.Millisecond)})
+	send(t, n, s, wire.MessageCmd{ID: live, From: "devbox/c", Text: "live", ExpiresAt: time.Now().Add(time.Hour)})
+	if got := queueIDs(t, n, s); len(got) != 2 {
+		t.Fatalf("queue %v", got)
+	}
+	time.Sleep(40 * time.Millisecond)
+	h.setStatus(model.StatusIdle)
+	eventually(t, "the live message delivered", func() bool { return len(h.deliveries()) == 1 && s.queueLen() == 0 })
+	time.Sleep(20 * time.Millisecond) // no second turn follows
+	got := h.deliveries()
+	if len(got) != 1 || strings.Contains(got[0].in.Text, "stale") || !strings.Contains(got[0].in.Text, "live") {
+		t.Fatalf("deliveries %+v", got)
+	}
+	if ex := s.events(model.KindMessageExpired); len(ex) != 1 || !strings.Contains(ex[0], stale) {
+		t.Fatalf("message.expired events %v", ex)
+	}
+	for _, d := range s.events(model.KindMessageDelivered) {
+		if strings.Contains(d, stale) {
+			t.Fatalf("expired message reported delivered: %s", d)
+		}
+	}
+	if dup := send(t, n, s, wire.MessageCmd{ID: stale, From: "devbox/b", Text: "stale"}); !dup.Duplicate {
+		t.Fatal("an expired message came back")
+	}
+
+	// Alone in the queue, an expired message starts no turn at all.
+	h.setStatus(model.StatusActive)
+	other := ulid.New()
+	send(t, n, s, wire.MessageCmd{ID: other, From: "devbox/b", Text: "late", ExpiresAt: time.Now().Add(20 * time.Millisecond)})
+	time.Sleep(40 * time.Millisecond)
+	h.setStatus(model.StatusIdle)
+	eventually(t, "the queue emptied", func() bool { return s.queueLen() == 0 })
+	time.Sleep(20 * time.Millisecond)
+	if len(h.deliveries()) != 1 {
+		t.Fatalf("a turn started for an expired message: %+v", h.deliveries())
+	}
+	if ex := s.events(model.KindMessageExpired); len(ex) != 2 || !strings.Contains(ex[1], other) {
+		t.Fatalf("message.expired events %v", ex)
+	}
+}
+
+// #46: a steer that expires while waiting for the one in flight is dropped,
+// not steered in, and reported expired.
+func TestSteerDropsExpired(t *testing.T) {
+	gate := make(chan struct{})
+	h := &queueHandle{status: model.StatusActive, steer: true, gate: gate}
+	n, s := queueNode(t, h)
+	first := make(chan wire.DeliverResult, 1)
+	go func() { first <- send(t, n, s, wire.MessageCmd{From: "devbox/b", Text: "first", Mode: model.ModeAuto}) }()
+	eventually(t, "the first steer in flight", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.steering && len(s.steerBuf) == 0
+	})
+	stale := ulid.New()
+	second := make(chan wire.DeliverResult, 1)
+	go func() {
+		second <- send(t, n, s, wire.MessageCmd{ID: stale, From: "devbox/c", Text: "stale", Mode: model.ModeAuto,
+			ExpiresAt: time.Now().Add(20 * time.Millisecond)})
+	}()
+	eventually(t, "the second steer waiting", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.steerBuf) == 1
+	})
+	time.Sleep(40 * time.Millisecond)
+	close(gate)
+	if dr := <-first; dr.Mode != model.ModeSteer || dr.Expired {
+		t.Fatalf("first: %+v", dr)
+	}
+	if dr := <-second; !dr.Expired {
+		t.Fatalf("second: %+v, want expired", dr)
+	}
+	if got := h.deliveries(); len(got) != 1 || strings.Contains(got[0].in.Text, "stale") {
+		t.Fatalf("deliveries %+v", got)
+	}
+	if ex := s.events(model.KindMessageExpired); len(ex) != 1 || !strings.Contains(ex[0], stale) {
+		t.Fatalf("message.expired events %v", ex)
+	}
+	if d := s.events(model.KindMessageDelivered); len(d) != 1 {
+		t.Fatalf("delivered events %v", d)
+	}
+}

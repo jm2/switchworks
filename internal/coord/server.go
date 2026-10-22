@@ -656,6 +656,12 @@ func (s *Server) route(ev model.Event) {
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			s.router.onFailed(ev.SessionID, p.MessageID, p.Error)
 		}
+	case model.KindMessageExpired:
+		// The node dropped a queued message past its expiry.
+		var p model.MessageEvent
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.router.onExpired(ev.SessionID, p.MessageID)
+		}
 	}
 }
 

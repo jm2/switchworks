@@ -39,6 +39,15 @@ function ago(ts) {
   return Math.floor(s / 86400) + 'd';
 }
 
+// clock shows a time as 14:02, with the day too when it is not today; ''
+// for none (Go's zero time).
+function clock(ts) {
+  if (!ts || ts.startsWith('0001')) return '';
+  const d = new Date(ts);
+  const t = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + t;
+}
+
 function human(n) {
   n = n || 0;
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -926,6 +935,9 @@ function sessionView(id, full) {
         h('div', {class: 'bubble', text: m.text || 'A message'}),
         h('div', {class: 'queued-foot'},
           h('span', {text: m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
+          // The node drops it undelivered at expires_at (a node from
+          // 0.1.5); Send now still sends it.
+          clock(m.expires_at) ? h('span', {title: 'Not delivered after this; Send now still sends it', text: `expires ${clock(m.expires_at)}`}) : null,
           h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
           h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)})))),
       agents.length ? h('div', {class: 'queued-agents'}, icon('list'),
@@ -1086,6 +1098,10 @@ function sessionView(id, full) {
         add(h('div', {class: 'sys', text: `A queued message from ${p.from} was cancelled`}));
         queueSoon();
         break;
+      case 'message.expired':
+        add(h('div', {class: 'sys', text: `A queued message from ${p.from} expired before it was delivered`}));
+        queueSoon();
+        break;
       case 'message.queued':
       case 'message.promoted':
       case 'session.queue':
@@ -1226,7 +1242,7 @@ function sessionView(id, full) {
     es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
-      'message.failed', 'message.promoted', 'message.cancelled', 'session.queue', 'usage', 'error', 'warning', 'session.settled',
+      'message.failed', 'message.promoted', 'message.cancelled', 'message.expired', 'session.queue', 'usage', 'error', 'warning', 'session.settled',
       'session.policy'];
     for (const k of kinds) {
       es.addEventListener(k, (e) => {
