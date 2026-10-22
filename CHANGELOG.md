@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Delivery mode in the web UI** — The composer keeps Now (steer) as the default and keeps a
+  session's other pick across sends and reopening the session, until the session ends.
 - **Codex args without a subcommand** — `codex.args` is Codex's whole argument list; one with only
   `-c` overrides dropped `app-server` and every session failed with "connection closed". The node
   now refuses it at start, and logs app-server's stderr when it fails to start.
