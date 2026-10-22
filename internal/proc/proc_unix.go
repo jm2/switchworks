@@ -79,16 +79,22 @@ func (s *platformState) endTree(cmd *exec.Cmd) {
 }
 
 // signalGroup signals the leader's process group unless the leader may
-// have been reaped, in which case wait (endTree) has the group in hand.
+// have been reaped and wait (endTree) has the group in hand.
 func (s *platformState) signalGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd.Process == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// ErrProcessDone: reaped, though wait has not marked it yet.
+	// ErrProcessDone: reaped, though wait has not marked it yet. On Linux
+	// wait has ended the group by then. Elsewhere it ends the group only
+	// after cmd.Wait, which also waits for every member still holding the
+	// output pipes, so the group is signalled while it has members (they
+	// keep the id taken); skipping it would leave Kill waiting forever.
 	if s.reaped || cmd.Process.Signal(syscall.Signal(0)) == os.ErrProcessDone {
-		return nil
+		if runtime.GOOS == "linux" || !groupAlive(cmd.Process.Pid) {
+			return nil
+		}
 	}
 	err := syscall.Kill(-cmd.Process.Pid, sig)
 	if err == syscall.ESRCH {

@@ -107,8 +107,12 @@ func TestGroupAliveIgnoresZombies(t *testing.T) {
 }
 
 // Once the leader may have been reaped, Stop and Kill leave the group id
-// alone: it can belong to an unrelated group by then.
+// alone on Linux: it can belong to an unrelated group by then. Elsewhere
+// the group is signalled while it has members (see signalGroup).
 func TestKillSparesGroupAfterReap(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux ends the group before the reap")
+	}
 	cmd := exec.Command("sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
