@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Web messages steer by default** — The session composer now delivers into the running turn
+  ("Steer now") unless you pick another mode. "Next turn" queued your message behind every message
+  already waiting, which on a busy session meant hours. A session that can't take input mid-turn
+  still queues it, and says so.
+
 ### Security
 
 - **Longer Codex deny list** — The permission-profile docs now list the other credential stores a

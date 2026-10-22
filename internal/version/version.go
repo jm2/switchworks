@@ -20,4 +20,4 @@ const (
 // -ldflags "-X github.com/jm2/switchworks/internal/version.Version=...".
 // It must stay a variable: the linker's -X flag cannot set a constant and
 // silently ignores one.
-var Version = "0.1.4-dev"
+var Version = "0.1.5-dev"
