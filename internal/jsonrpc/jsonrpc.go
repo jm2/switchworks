@@ -238,6 +238,10 @@ func (c *Conn) dispatch(line []byte) {
 type outMsg struct {
 	b    []byte
 	sent chan error
+	// ctx, set for a write that waits, drops the message if it ends
+	// before the write starts: its caller has given up and must not have
+	// the request run behind its back.
+	ctx context.Context
 }
 
 func (c *Conn) enqueue(m outMsg) {
@@ -271,6 +275,10 @@ func (c *Conn) writeLoop() {
 		c.qmu.Unlock()
 		if m.b == nil {
 			m.sent <- nil
+			continue
+		}
+		if m.ctx != nil && m.ctx.Err() != nil {
+			m.sent <- m.ctx.Err()
 			continue
 		}
 		err := c.writeOne(m.b)
@@ -334,7 +342,7 @@ func (c *Conn) write(ctx context.Context, m Message, wait bool) error {
 	}
 	om := outMsg{b: append(b, '\n')}
 	if wait {
-		om.sent = make(chan error, 1)
+		om.sent, om.ctx = make(chan error, 1), ctx
 	}
 	c.enqueue(om)
 	if !wait {

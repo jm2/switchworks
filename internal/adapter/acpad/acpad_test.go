@@ -695,10 +695,20 @@ func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
 	_ = h.Stop(context.Background())
 }
 
-// An agent with no session modes at all: a person's spawn runs with the
-// agent's own configuration and a warning; an agent's spawn is refused.
+// An agent with no session modes at all, or an empty list of them: a
+// person's spawn runs with the agent's own configuration and a warning;
+// an agent's spawn is refused.
 func TestApprovalPolicyWithoutModes(t *testing.T) {
-	setup := &acp.SessionSetup{SessionID: "s"}
+	for _, setup := range []*acp.SessionSetup{
+		{SessionID: "s"},
+		{SessionID: "s", Modes: &acp.SessionModeState{AvailableModes: []acp.SessionMode{}}},
+	} {
+		testApprovalPolicyWithoutModes(t, setup)
+	}
+}
+
+func testApprovalPolicyWithoutModes(t *testing.T, setup *acp.SessionSetup) {
+	t.Helper()
 	for _, c := range []struct {
 		spec         adapter.StartSpec
 		fails, warns bool

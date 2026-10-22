@@ -3,10 +3,12 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,6 +211,53 @@ func TestCallContextBoundsWrite(t *testing.T) {
 	defer cancel()
 	if err := c.Call(ctx, "x", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+}
+
+// gateWriter blocks writes until open is closed, then records them.
+type gateWriter struct {
+	open chan struct{}
+	mu   sync.Mutex
+	buf  bytes.Buffer
+}
+
+func (w *gateWriter) Write(b []byte) (int, error) {
+	<-w.open
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(b)
+}
+
+// A call that gives up while queued behind a slow write is never sent:
+// its caller saw it fail, so the peer must not run it.
+func TestCallGivenUpWhileQueuedIsNotSent(t *testing.T) {
+	in, _ := io.Pipe()
+	w := &gateWriter{open: make(chan struct{})}
+	c := NewConnWith(in, w, nil, nil, Options{WriteTimeout: -1})
+	go func() { _ = c.Notify("first", nil) }()
+	time.Sleep(50 * time.Millisecond) // "first" is in Write
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.Call(ctx, "given-up", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+	close(w.open)
+	_ = c.Notify("last", nil)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.mu.Lock()
+		out := w.buf.String()
+		w.mu.Unlock()
+		if strings.Contains(out, `"last"`) {
+			if strings.Contains(out, "given-up") {
+				t.Fatalf("given-up call was sent: %s", out)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("writes never finished: %s", out)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -419,7 +419,7 @@ func (h *handle) configure(ctx context.Context, c *acp.Client, s *acp.SessionSet
 	h.mu.Lock()
 	policy := h.spec.ApprovalPolicy // SetApprovalPolicy may change it
 	h.mu.Unlock()
-	hasModes := s.Modes != nil || s.Option("mode") != nil
+	hasModes := s.Modes != nil && len(s.Modes.AvailableModes) > 0 || s.Option("mode") != nil
 	if mode := h.modeFor(s, policy); mode != "" {
 		if o := s.Option("mode"); o != nil {
 			if o.Current() != mode {
