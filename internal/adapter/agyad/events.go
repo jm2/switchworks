@@ -130,11 +130,8 @@ func (h *handle) handleLine(p *proc.Process, line []byte) {
 		}
 		_ = json.Unmarshal(payload, &in)
 		h.mu.Lock()
-		first := h.deniedSeen == nil || !h.deniedSeen["\x00init"]
-		if h.deniedSeen == nil {
-			h.deniedSeen = map[string]bool{}
-		}
-		h.deniedSeen["\x00init"] = true
+		first := !h.initSeen
+		h.initSeen = true
 		h.mu.Unlock()
 		if first && in.PermissionMode != "" && in.PermissionMode != "always-proceed" && !(h.spec.MCP != nil && h.a.cfg.Options.FleetTools) {
 			h.a.cfg.Logf("agy: permission mode %s: tools that need confirmation will be soft-denied", in.PermissionMode)
@@ -475,6 +472,9 @@ func (t *turnState) toolItem(s *step, done bool) model.Item {
 			server, tool = a, b
 		} else {
 			tool = n
+		}
+		if h := t.h; h.fleetName != "" && server == h.fleetName {
+			server = h.spec.MCP.Name // the random name is only for agy's sake
 		}
 		raw["server"], raw["tool"], raw["arguments"] = server, tool, p
 		if done {

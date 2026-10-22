@@ -263,8 +263,11 @@ single-shot mode. Usage is cumulative per process, so the baseline resets
 when a process starts.
 
 **agy fleet tools are opt-in and write files.** agy has no per-run MCP
-option. The node merges a credential-free `swk` entry into the
-workspace's `.agents/mcp_config.json` (never touching other entries or an
-unparsable file) and an `mcp(swk/*)` allow rule into agy's settings. It is
-off by default because it changes files outside Switchworks's own
-directories.
+option. The node merges a credential-free entry into the workspace's
+`.agents/mcp_config.json` (never touching other entries or an unparsable
+file) and an allow rule for it into agy's settings. The entry's name is
+random (`swk-` and 16 hex digits) and its rule lives only while sessions
+in that workspace run: a fixed `mcp(swk/*)` rule, left in agy's global
+settings, would pre-approve any server named `swk`, such as one an
+untrusted repository defines. It is off by default because it changes
+files outside Switchworks's own directories.

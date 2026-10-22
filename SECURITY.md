@@ -63,7 +63,7 @@ or tailnet:
   other than from the admin token, an owner token or a browser one of those signed in, or carry
   a credential (`via=`) other than the one it was sent with.
 - The node's local API used by `swk mcp`, and files the node writes into workspaces (agy's
-  `.agents/mcp_config.json`, `.git/info/exclude`).
+  `.agents/mcp_config.json`, `.git/info/exclude`) or agy's settings (the fleet tools' allow rule).
 - Image attachments: whether an agent can make its node read a file outside its working
   directory, or under Switchworks's own directories, through the fleet tools' `images`; whether a
   non-image (or an image of a type other than PNG, JPEG, WebP and GIF) gets through; and the

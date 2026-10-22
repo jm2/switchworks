@@ -23,11 +23,14 @@
 // are measured here instead; input_tokens excludes cache reads, which are
 // added in).
 //
-// Approval policy maps to agy's permission modes: "never" runs with
-// --dangerously-skip-permissions (as does sandbox danger-full-access),
-// "on-request" and "on-failure" with --mode accept-edits (file edits
-// proceed, commands and MCP calls do not), and "untrusted" or none with
-// agy's default request-review. A --mode in node.json agy.args wins.
+// Only sandbox danger-full-access runs agy with
+// --dangerously-skip-permissions: agy's --sandbox confines its terminal, not
+// its edit tools, so skipping permissions in a sandbox would let it write
+// anywhere. Below full access, approval policy maps to agy's permission
+// modes: "never", "on-request" and "on-failure" to --mode accept-edits (file
+// edits proceed, commands and MCP calls do not), "untrusted" or none to
+// agy's default request-review; a read-only session always keeps
+// request-review, so it cannot edit. A --mode in node.json agy.args wins.
 //
 // Differences from Codex: no approval relay (headless agy never asks; tools
 // that would need confirmation are soft-denied unless allowed in agy's
@@ -37,13 +40,17 @@
 // reports it; session.registered is emitted again then.
 //
 // Fleet tools (Options.FleetTools, opt-in): agy has no per-run MCP flag, so
-// the node adds a "swk" entry to the workspace's .agents/mcp_config.json
-// (command and args only; the per-session credentials reach `swk mcp`
-// through the agy process environment) and, unless the session already
-// skips permissions, an "mcp(swk/*)" allow rule to agy's settings.json.
-// This happens for new sessions only, never on Resume. An explicit Stop
-// removes the workspace entry (and its .git/info/exclude line) if the
-// session created the file; the global allow rule stays.
+// the node adds an entry with a random name ("swk-" and 16 hex digits) to
+// the workspace's .agents/mcp_config.json (command and args only; the
+// per-session credentials reach `swk mcp` through the agy process
+// environment) and, unless the session already skips permissions, an
+// allow rule for that name alone to agy's settings.json. A fixed name would
+// pre-approve any server so named, such as one an untrusted repository
+// defines. New sessions set this up; a resumed one only takes over an entry
+// of exactly that shape left by an earlier node. The rule is removed when
+// the workspace's last session ends (and stale ones when the adapter first
+// sets up fleet tools); an explicit Stop also removes the workspace entry
+// (and its .git/info/exclude line) if the session created the file.
 package agyad
 
 import (
@@ -51,6 +58,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -104,6 +112,7 @@ type Adapter struct {
 	// using it.
 	fleetMu sync.Mutex
 	owners  map[string]*fleetOwner
+	swept   bool // stale allow rules were taken out of agy's settings
 }
 
 // fleetOwner is a workspace entry this adapter added, and the number of
@@ -161,29 +170,42 @@ func (a *Adapter) open(spec adapter.StartSpec, sink adapter.Sink, convID string)
 	a.hs[h] = true
 	a.mu.Unlock()
 	// Only a new session gets the fleet tools set up: a resumed one may be a
-	// user's own conversation in their own repository, and keeps whatever
-	// its workspace already has (the credentials still reach it via env).
+	// user's own conversation in their own repository, so it only takes
+	// over an entry an earlier node left there (the credentials reach it
+	// via env either way).
 	if spec.MCP != nil && a.cfg.Options.FleetTools {
 		key := fleetKey(spec.Cwd, spec.MCP.Name)
 		var warns []string
 		a.fleetMu.Lock()
 		o := a.owners[key]
-		if o == nil && convID == "" {
-			var made *fleetSetup
-			made, warns = setupFleetTools(spec, a.cfg)
-			if made != nil {
-				o = &fleetOwner{setup: made}
+		switch {
+		case o == nil:
+			warns = a.sweepRules(spec.MCP.Name)
+			var f *fleetSetup
+			var w []string
+			if convID == "" {
+				f, w = setupFleetTools(spec, a.cfg)
+			} else {
+				f, w = adoptFleetTools(spec, a.cfg)
+			}
+			warns = append(warns, w...)
+			if f != nil {
+				o = &fleetOwner{setup: f}
 				if a.owners == nil {
 					a.owners = map[string]*fleetOwner{}
 				}
 				a.owners[key] = o
 			}
+		case o.setup.rule == "" && !skipsPermissions(spec):
+			// The workspace's first session skipped permissions; this one
+			// needs the rule.
+			warns = addFleetRule(o.setup, spec, a.cfg)
 		}
 		if o != nil {
 			// Resumed sessions there count too: the entry stays while any
 			// session in the workspace runs.
 			o.refs++
-			h.fleetKey = key
+			h.fleetKey, h.fleetName = key, o.setup.name
 		}
 		a.fleetMu.Unlock()
 		for _, w := range warns {
@@ -224,9 +246,15 @@ type handle struct {
 	interrupting bool
 	lastRep      *model.Usage // last cumulative usage agy reported
 	total        model.Usage
-	deniedSeen   map[string]bool
-	fleetKey     string // the workspace entry this session holds (Adapter.owners)
+	deniedSeen   map[string]bool // stderr notices already warned about (at most maxDenied)
+	initSeen     bool            // an init event was seen
+	fleetKey     string          // the workspace entry this session holds (Adapter.owners)
+	fleetName    string          // that entry's server name; set before the first turn
 }
+
+// maxDenied bounds deniedSeen; past it the set starts again, so a notice
+// may be repeated but memory does not grow with a noisy agy.
+const maxDenied = 256
 
 func (h *handle) emit(kind string, p any) { h.sink(adapter.Event{Kind: kind, Payload: p}) }
 
@@ -269,7 +297,8 @@ func (h *handle) args() []string {
 		args = append(args, "--input-format", "stream-json")
 	}
 	if h.spec.Model != "" {
-		args = append(args, "--model", h.spec.Model)
+		// One argv item, so a model name cannot pass for a flag.
+		args = append(args, "--model="+h.spec.Model)
 	}
 	h.mu.Lock()
 	if h.convID != "" {
@@ -285,16 +314,21 @@ func (h *handle) args() []string {
 		args = append(args, "--dangerously-skip-permissions")
 	case hasModeArg(h.a.cfg.ExtraArgs):
 		// node.json agy.args chose the mode.
-	case h.spec.ApprovalPolicy == "on-request" || h.spec.ApprovalPolicy == "on-failure":
+	case h.spec.Sandbox == "read-only":
+		// agy's default mode: --sandbox does not stop its edit tools, but
+		// request-review does.
+	case h.spec.ApprovalPolicy == "on-request" || h.spec.ApprovalPolicy == "on-failure" || h.spec.ApprovalPolicy == "never":
 		args = append(args, "--mode", "accept-edits")
 	}
 	return append(args, h.a.cfg.ExtraArgs...)
 }
 
 // skipsPermissions reports whether the session runs agy with
-// --dangerously-skip-permissions.
+// --dangerously-skip-permissions: only with full access, since agy's
+// --sandbox does not confine its edit tools and the prompts it skips are
+// all that would.
 func skipsPermissions(spec adapter.StartSpec) bool {
-	return spec.Sandbox == "danger-full-access" || spec.ApprovalPolicy == "never"
+	return spec.Sandbox == "danger-full-access"
 }
 
 func hasModeArg(args []string) bool {
@@ -472,7 +506,14 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 func (h *handle) read(p *proc.Process) {
 	br := bufio.NewReaderSize(p.Stdout, 1<<20)
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := readLine(br, maxLine)
+		if errors.Is(err, errLineTooLong) {
+			if tap := h.a.cfg.Tap; tap != nil {
+				tap("in", []byte(`{"switchworks":"dropped an over-long line"}`))
+			}
+			h.a.cfg.Logf("agy: dropped a stdout line over %d bytes", maxLine)
+			continue
+		}
 		if s := bytes.TrimSpace(line); len(s) > 0 {
 			if tap := h.a.cfg.Tap; tap != nil {
 				tap("in", s)
@@ -576,6 +617,11 @@ func (h *handle) shutdown(announce bool) {
 			if o.refs <= 0 {
 				o.refs = 0
 				if !announce {
+					// The workspace entry stays, but not the global rule:
+					// the session that resumes there adds it again.
+					if err := removeFleetRule(o.setup); err != nil {
+						h.a.cfg.Logf("agy: removing %s from %s: %v", o.setup.rule, o.setup.settings, err)
+					}
 					delete(h.a.owners, key)
 				} else if err := removeFleetTools(o.setup); err != nil {
 					// Keep the record: the next session there to stop
@@ -615,7 +661,7 @@ func (h *handle) stderrLine(line string) {
 		return
 	}
 	h.mu.Lock()
-	if h.deniedSeen == nil {
+	if h.deniedSeen == nil || len(h.deniedSeen) >= maxDenied {
 		h.deniedSeen = map[string]bool{}
 	}
 	dup := h.deniedSeen[line]
@@ -658,6 +704,34 @@ func (l *lineWriter) Write(b []byte) (int, error) {
 		l.line(s)
 	}
 	return l.w.Write(b)
+}
+
+// maxLine caps one line of agy's stdout. A longer line is dropped, so a
+// runaway agy cannot make us buffer without bound.
+const maxLine = 64 << 20
+
+var errLineTooLong = errors.New("line too long")
+
+// readLine reads one line of at most limit bytes, like jsonrpc's. A longer
+// line is consumed and reported as errLineTooLong.
+func readLine(br *bufio.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	for {
+		frag, err := br.ReadSlice('\n')
+		if len(buf)+len(frag) > limit {
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = br.ReadSlice('\n')
+			}
+			if err != nil {
+				return nil, err
+			}
+			return nil, errLineTooLong
+		}
+		buf = append(buf, frag...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return buf, err
+		}
+	}
 }
 
 func truncate(s string, n int) string {
