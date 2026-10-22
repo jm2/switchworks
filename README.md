@@ -610,7 +610,9 @@ the node's `node.json` (in `~/.config/swk/node/` on Linux,
   in its `config.toml`. Codex only accepts providers that speak the OpenAI
   Responses API; DeepSeek and MiMo do. On Windows, `winget install
   OpenAI.Codex` may not create the `codex` command alias; add it if
-  `codex` is not found.
+  `codex` is not found. Codex's sandbox can't start the Microsoft Store
+  PowerShell, so install PowerShell 7 from the MSI (see
+  [docs/harnesses.md](docs/harnesses.md#codex-on-windows)).
 - **Goose**: `goose` on `PATH` with a provider configured (`goose
   configure`, or environment variables in `node.json`). DeepSeek, GLM and
   MiMo work directly. Goose does not run on Windows on ARM.

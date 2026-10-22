@@ -40,6 +40,12 @@ import (
 const envFlag = "SWK_FAKE_APPSERVER"
 const envState = "SWK_FAKE_STATE"
 
+// EnvSandbox, set in the fake's environment, is the sandbox policy type
+// (readOnly, ...) it reports for every thread, as a Codex that cannot give
+// a thread the sandbox it asked for does. Unset, it reports the requested
+// one (workspaceWrite for a permission profile or none).
+const EnvSandbox = "SWK_FAKE_SANDBOX"
+
 // Env returns environment overrides that make a re-executed test binary act
 // as the fake app-server, persisting thread ids under stateDir so that
 // thread/resume works across fake restarts.
@@ -199,10 +205,17 @@ func threadObj(id, cwd string, status string) map[string]any {
 	}
 }
 
-func startResp(id, cwd string) map[string]any {
+func startResp(id, cwd, sandbox string) map[string]any {
+	typ := map[string]string{"read-only": "readOnly", "danger-full-access": "dangerFullAccess"}[sandbox]
+	if typ == "" {
+		typ = "workspaceWrite"
+	}
+	if v := os.Getenv(EnvSandbox); v != "" {
+		typ = v
+	}
 	return map[string]any{
 		"thread": threadObj(id, cwd, "idle"), "model": "fake-model", "modelProvider": "fake", "cwd": cwd,
-		"approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": map[string]any{"type": "workspaceWrite"},
+		"approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": map[string]any{"type": typ},
 	}
 }
 
@@ -261,7 +274,7 @@ func (s *server) handle(line []byte) {
 		// Real app-server sends the response and thread/started back to back;
 		// emit the notification first to exercise early-notification buffering.
 		s.note("thread/started", map[string]any{"thread": threadObj(id, cwd, "idle")})
-		s.reply(m.ID, startResp(id, cwd))
+		s.reply(m.ID, startResp(id, cwd, str("sandbox")))
 	case "thread/resume":
 		id := str("threadId")
 		s.mu.Lock()
@@ -275,7 +288,7 @@ func (s *server) handle(line []byte) {
 			return
 		}
 		s.mcp.setConfig(id, parseMCPConfig(p))
-		s.reply(m.ID, startResp(id, "/resumed"))
+		s.reply(m.ID, startResp(id, "/resumed", str("sandbox")))
 	case "thread/name/set":
 		s.reply(m.ID, map[string]any{})
 	case "thread/unsubscribe":

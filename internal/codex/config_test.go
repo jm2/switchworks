@@ -102,6 +102,26 @@ func TestArgsParsing(t *testing.T) {
 	}
 }
 
+func TestConfigSetsWindowsSandbox(t *testing.T) {
+	for in, want := range map[string]bool{
+		"": false,
+		"model = \"x\"\n[windows]\n# sandbox = \"elevated\"\n":                        false,
+		"[windows]\nsandbox = \"elevated\"\n":                                         true,
+		"[ \"windows\" ]\n sandbox=\"unelevated\"":                                    true,
+		"windows.sandbox = \"unelevated\"\n":                                          true,
+		"windows = { sandbox = \"elevated\" }\n":                                      true,
+		"[profiles.x.windows]\nsandbox = \"elevated\"\n":                              false,
+		"[sandbox_workspace_write]\nnetwork_access = false\n":                         false,
+		"[model_providers.x]\nwindows.sandbox = \"no\"\n":                             false,
+		"[windows]\nother = 1\n[x]\nsandbox = 1\n":                                    false,
+		"experimental_bearer_token = \"sk\"\n[windows]\r\nsandbox = \"elevated\"\r\n": true,
+	} {
+		if got := ConfigSetsWindowsSandbox([]byte(in)); got != want {
+			t.Errorf("%q: got %v, want %v", in, got, want)
+		}
+	}
+}
+
 // A process that exits instead of answering initialize: its stderr comes
 // back with the error, not in its message.
 func TestStartErrorKeepsStderr(t *testing.T) {

@@ -246,3 +246,44 @@ func ConfigKeys(args []string) []string {
 	}
 	return keys
 }
+
+// ConfigSetsWindowsSandbox reports whether a config.toml sets a Windows
+// sandbox mode: sandbox in a [windows] table, or windows.sandbox at the top
+// level (as a dotted key or in an inline windows table). It looks only at
+// table headers and key names, never at values (config.toml holds provider
+// keys), and does not follow profiles.
+func ConfigSetsWindowsSandbox(toml []byte) bool {
+	table := ""
+	for _, line := range strings.Split(string(toml), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if line[0] == '[' {
+			name, _, _ := strings.Cut(strings.Trim(line, "[ \t"), "]")
+			table = normalizeKey(name)
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = normalizeKey(key)
+		switch {
+		case table == "windows" && key == "sandbox",
+			table == "" && key == "windows.sandbox",
+			table == "" && key == "windows" && strings.Contains(value, "sandbox"):
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeKey drops quotes and blanks around the parts of a TOML key.
+func normalizeKey(k string) string {
+	parts := strings.Split(k, ".")
+	for i, p := range parts {
+		parts[i] = strings.Trim(strings.TrimSpace(p), `"'`)
+	}
+	return strings.Join(parts, ".")
+}

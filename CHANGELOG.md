@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lean Codex sessions** — Opt-in `"codex": {"lean": true}` turns off Codex's apps (the GitHub
   connector among them), browser, computer use, image generation, plugins and web search, and
   compacts at 128K: a fresh thread's first call drops from 47.5K to 12.8K input tokens.
+- **Degraded sandbox detection** — After a Codex thread starts or resumes, the node compares the
+  sandbox Codex reports with the one asked for; a mismatch marks the session degraded (a warning
+  and a status detail), and `caps.read_only` in `fleet_list` now follows the reported sandbox.
+- **Store PowerShell warning** — On Windows the node warns at start when `pwsh` is the Microsoft
+  Store alias, which Codex's sandbox can't start, and says to install the PowerShell 7 MSI.
 
 ### Changed
 
@@ -28,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Codex args without a subcommand** — `codex.args` is Codex's whole argument list; one with only
   `-c` overrides dropped `app-server` and every session failed with "connection closed". The node
   now refuses it at start, and logs app-server's stderr when it fails to start.
+- **Read-only Codex sessions on Windows** — Codex ran `workspace-write` threads read-only on
+  Windows when `config.toml` set no Windows sandbox mode, rejecting every command. The node now
+  passes `-c windows.sandbox="unelevated"` unless `config.toml` or `node.json` sets one.
 
 ### Security
 

@@ -94,3 +94,57 @@ func TestCodexConfigRefuses(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestWindowsSandboxDefault(t *testing.T) {
+	over := map[string]string{}
+	if !windowsSandboxDefault(over, nil, nil) || over["windows.sandbox"] != `"unelevated"` {
+		t.Fatalf("no config: %v", over)
+	}
+	for name, c := range map[string]struct {
+		over map[string]string
+		args []string
+		toml string
+	}{
+		"config.toml table":  {toml: "[windows]\nsandbox = \"elevated\"\n"},
+		"config.toml dotted": {toml: "windows.sandbox = \"unelevated\"\n"},
+		"codex.config":       {over: map[string]string{"windows.sandbox": `"elevated"`}},
+		"codex.config table": {over: map[string]string{"windows": `{sandbox = "elevated"}`}},
+		"codex.args":         {args: []string{"-c", `windows.sandbox="elevated"`, "app-server"}},
+	} {
+		over := c.over
+		if over == nil {
+			over = map[string]string{}
+		}
+		before := len(over)
+		if windowsSandboxDefault(over, c.args, []byte(c.toml)) || len(over) != before {
+			t.Errorf("%s: default added: %v", name, over)
+		}
+	}
+}
+
+func TestIsAppExecAlias(t *testing.T) {
+	const lad = `C:\Users\me\AppData\Local`
+	for _, c := range []struct {
+		path string
+		size int64
+		want bool
+	}{
+		{`C:\Users\me\AppData\Local\Microsoft\WindowsApps\pwsh.exe`, 0, true},
+		{`c:\users\ME\appdata\local\microsoft\windowsapps\pwsh.exe`, -1, true},
+		{`C:\Users\me\AppData\Local/Microsoft/WindowsApps/pwsh.exe`, 1234, true},
+		{`C:\Program Files\PowerShell\7\pwsh.exe`, 288768, false},
+		{`C:\Program Files\PowerShell\7\pwsh.exe`, -1, false},
+		{`C:\tools\pwsh.exe`, 0, true},
+		{`C:\Users\me\AppData\Local\Microsoft\WindowsAppsX\pwsh.exe`, 100, false},
+	} {
+		if got := isAppExecAlias(c.path, c.size, lad); got != c.want {
+			t.Errorf("isAppExecAlias(%q, %d) = %v, want %v", c.path, c.size, got, c.want)
+		}
+	}
+	if isAppExecAlias(`C:\Program Files\PowerShell\7\pwsh.exe`, 5, "") {
+		t.Error("alias without LOCALAPPDATA")
+	}
+	if w := pwshWarning(`C:\x\pwsh.exe`); !strings.Contains(w, "MSI") || !strings.Contains(w, `C:\x\pwsh.exe`) {
+		t.Errorf("warning %q", w)
+	}
+}

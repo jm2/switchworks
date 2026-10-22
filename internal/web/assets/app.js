@@ -937,6 +937,8 @@ function sessionView(id, full) {
       h('dl', {},
         row('Session', s.path), row('Harness', s.harness), row('Model', s.model), row('Folder', s.cwd),
         row('Approvals', policyLabel[s.approval_policy] || s.approval_policy),
+        // caps.read_only is what the harness reports the session runs with.
+        row('Sandbox', s.sandbox && s.sandbox !== 'read-only' && s.caps && s.caps.read_only ? s.sandbox + ' (runs read-only)' : s.sandbox),
         row('Tokens', u ? `${human(u.input_tokens)} in (${human(u.cached_input_tokens)} cached), ${human(u.output_tokens)} out` : ''),
         row('Started by', parent ? h('a', {href: '#/s/' + parent.id, text: parent.path}) : ''),
         row('Started', kids.length ? kids.map((k, i) => [i ? ', ' : '', h('a', {href: '#/s/' + k.id, text: k.name})]) : ''),

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -183,6 +184,10 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err != nil {
 		return harness.Options{}, err
 	}
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	hostCodexConfig(cfg, codexConf, logf)
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
@@ -238,6 +243,9 @@ func mainRun(args []string, stderr io.Writer) int {
 		return 1
 	}
 	logger.Printf("%s %s node %s: harnesses %v, coordinator %s", version.Name, version.Version, cfg.Host, n.Adapters(), cfg.CoordinatorNode)
+	if slices.Contains(n.Adapters(), "codex") {
+		checkCodexHost(logger.Printf)
+	}
 	ctx, cancel := runstatus.StopContext(context.Background(), *dir)
 	defer cancel()
 	_ = n.Run(ctx)

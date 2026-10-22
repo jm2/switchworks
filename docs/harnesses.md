@@ -192,6 +192,39 @@ Codex doesn't know, also set its real window in `codex.config`
 (`"model_context_window": 128000`, say), since Codex can't compact
 correctly without it.
 
+### Codex on Windows
+
+Codex 0.163 can't give a thread `workspace-write` on Windows unless a
+Windows sandbox mode is set, and runs it read-only without saying so.
+Under approval `never`, every command then needs escalation and is
+rejected ("… rejected: blocked by policy"), even `git --version`. So on
+Windows the node passes `-c windows.sandbox="unelevated"` (no
+administrator setup needed) unless a mode is already set: `sandbox` in a
+`[windows]` table or a top-level `windows.sandbox` in `config.toml` (in
+`codex.home`, `CODEX_HOME` or `~/.codex`), or `windows.sandbox` in
+`codex.config` or `codex.args`. The node log says when it passes it. The
+node only checks whether `config.toml` sets the key and never logs the
+file, which holds provider keys. A permission profile with deny rules
+needs the elevated sandbox, so set `"windows": {"sandbox": "elevated"}`
+in `codex.config`, or `[windows] sandbox = "elevated"` in `config.toml`.
+
+After every thread start and resume, the node compares the sandbox the
+thread reports with the one the session asked for. When they differ, the
+session gets a warning event and a status detail starting "degraded:",
+and the node log names the thread. The web UI shows both in the session
+log. `caps.read_only` in `fleet_list` and `fleet_status` follows the
+sandbox the thread reports, and the session's details in the web UI say
+"(runs read-only)" when it does. Codex may not report every downgrade,
+so a session that can't write or run commands can still look healthy.
+
+Codex runs commands with `pwsh` when it's on `PATH`. If the only `pwsh`
+is the Microsoft Store version (an App Execution Alias in
+`%LOCALAPPDATA%\Microsoft\WindowsApps`), the sandbox's restricted token
+can't start it ("CreateProcessAsUserW failed: 5"), and every command
+fails. The node warns about this at start. Install PowerShell 7 from the
+MSI (`winget install --id Microsoft.PowerShell --source winget`, or the
+MSI from the PowerShell releases), then restart the node.
+
 ## Codex: network without exposing credentials
 
 Codex's `workspace-write` sandbox limits writes and, by default, the
@@ -277,8 +310,9 @@ Known limits:
   file descriptor"). `codex update` upgrades a standalone install.
 - **Windows: no sandbox network for now.** Deny rules need the elevated
   sandbox (`[windows] sandbox = "elevated"`, set up with
-  `codex sandbox setup --elevated`); the default sandbox refuses to run
-  commands under a profile that has them. As of Codex 0.161 the elevated
+  `codex sandbox setup --elevated`); the unelevated sandbox, which the node
+  picks when no mode is set ([Codex on Windows](#codex-on-windows)),
+  refuses to run commands under a profile that has them. As of Codex 0.161 the elevated
   sandbox has two open bugs: HTTPS through Windows' TLS stack fails
   inside it ([openai/codex#17459](https://github.com/openai/codex/issues/17459)),
   and a running `node_repl.exe` from the desktop app's plugins makes

@@ -56,6 +56,49 @@ var leanCodexConfig = map[string]string{
 	"model_auto_compact_token_limit": "128000",
 }
 
+// windowsSandboxKey is the Codex setting that picks the Windows sandbox.
+// Without it, Codex 0.163 cannot give a thread workspace-write on Windows
+// and runs it read-only without saying so; under approval "never" every
+// command is then rejected ("blocked by policy"). The unelevated sandbox
+// needs no administrator setup.
+const windowsSandboxKey = "windows.sandbox"
+
+// windowsSandboxDefault adds windows.sandbox="unelevated" to over unless
+// node.json (over, or a -c in args) or config.toml (configTOML, nil when
+// absent) sets a Windows sandbox mode. It reports whether it added it.
+func windowsSandboxDefault(over map[string]string, args []string, configTOML []byte) bool {
+	if codex.ConfigSetsWindowsSandbox(configTOML) {
+		return false
+	}
+	before := len(over)
+	addDefaults(over, codex.ConfigKeys(args), map[string]string{windowsSandboxKey: `"unelevated"`})
+	return len(over) > before
+}
+
+// isAppExecAlias reports whether path, as exec.LookPath found it, is a
+// Microsoft Store App Execution Alias: a 0-byte placeholder (size 0) or
+// anything in %LOCALAPPDATA%\Microsoft\WindowsApps. A process with a
+// restricted token, such as one in Codex's Windows sandbox, cannot launch
+// one ("CreateProcessAsUserW failed: 5"). size is -1 when unknown.
+func isAppExecAlias(path string, size int64, localAppData string) bool {
+	if size == 0 {
+		return true
+	}
+	if localAppData == "" {
+		return false
+	}
+	norm := func(p string) string { return strings.TrimRight(strings.ToLower(strings.ReplaceAll(p, "/", `\`)), `\`) }
+	return strings.HasPrefix(norm(path), norm(localAppData)+`\microsoft\windowsapps\`)
+}
+
+// pwshWarning is logged at node start on Windows when pwsh is an alias.
+func pwshWarning(path string) string {
+	return fmt.Sprintf("warning: pwsh on PATH is %s, a Microsoft Store App Execution Alias. Codex runs commands with pwsh, "+
+		"and its sandbox cannot start the Store version (\"CreateProcessAsUserW failed: 5\"), so every command fails. "+
+		"Install PowerShell 7 from the MSI (https://aka.ms/powershell-release?tag=stable, or "+
+		"winget install --id Microsoft.PowerShell --source winget) and restart the node", path)
+}
+
 // addDefaults adds each of defaults to over unless the user already set
 // that key, a table containing it, or a key inside it, in over or with a
 // -c in args (argKeys).

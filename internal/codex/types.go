@@ -128,6 +128,21 @@ type ThreadStartResponse struct {
 	ReasoningEffort *string         `json:"reasoningEffort"`
 }
 
+// SandboxPolicy is the part of the sandbox policy a thread/start or
+// thread/resume response reports (its Sandbox field) that we read: the
+// variant.
+type SandboxPolicy struct {
+	Type string `json:"type"`
+}
+
+// SandboxPolicy types.
+const (
+	SandboxReadOnly         = "readOnly"
+	SandboxWorkspaceWrite   = "workspaceWrite"
+	SandboxDangerFullAccess = "dangerFullAccess"
+	SandboxExternal         = "externalSandbox"
+)
+
 type ThreadResumeParams struct {
 	ThreadID       string         `json:"threadId"`
 	Cwd            string         `json:"cwd,omitempty"`
