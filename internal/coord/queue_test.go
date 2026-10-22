@@ -114,6 +114,13 @@ func TestQueueEndpoints(t *testing.T) {
 	if held.State != model.MsgPending {
 		t.Fatalf("held message %s", held.State)
 	}
+	offb, _ := s.store.Session(held.ToSession)
+	w = call(asOther, s.handleQueue, "GET", offb.ID, "")
+	q = apiclient.Queue{}
+	if err := json.Unmarshal(w.Body.Bytes(), &q); w.Code != 200 || err != nil || !q.Offline || len(q.Messages) != 1 ||
+		q.Messages[0].ID != held.ID || !q.Messages[0].Held || q.Messages[0].Text != "later" {
+		t.Fatalf("offline queue: %d %s", w.Code, w.Body)
+	}
 	if w := call(asToken, s.handleCancel, "POST", held.ID, ""); w.Code != 200 {
 		t.Fatalf("cancel pending: %d %s", w.Code, w.Body)
 	}
@@ -121,10 +128,13 @@ func TestQueueEndpoints(t *testing.T) {
 		t.Fatalf("held message %s after cancel", m.State)
 	}
 
-	// An older node answers "unknown op": 409, saying so.
+	// An older node answers "unknown op": the list says so, and promote
+	// gets a 409 that does.
 	fakeNode(t, s, "oldbox", func(cmd wire.Cmd) wire.Result { return wire.Result{Error: `unknown op "` + cmd.Op + `"`} })
 	old := addSession(t, s, "oldbox", "c", func(x *model.Session) { x.ID = ulid.New() })
-	if w := call(asOther, s.handleQueue, "GET", old.ID, ""); w.Code != 409 || !strings.Contains(w.Body.String(), "older swk") {
+	w = call(asOther, s.handleQueue, "GET", old.ID, "")
+	q = apiclient.Queue{}
+	if err := json.Unmarshal(w.Body.Bytes(), &q); w.Code != 200 || err != nil || !q.NodeTooOld || len(q.Messages) != 0 {
 		t.Fatalf("older node: %d %s", w.Code, w.Body)
 	}
 }

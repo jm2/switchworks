@@ -218,16 +218,16 @@ func (s *server) toolCall(t *turn, n int, tool string, args json.RawMessage) str
 
 // scriptedTools handles the MCP prompt directives; ok is false when the
 // prompt has none.
-func (s *server) scriptedTools(t *turn, text string) (reply string, ok bool) {
+func (s *server) scriptedTools(t *turn, text string, k int) (reply string, ok bool) {
 	if m := askRe.FindStringSubmatch(text); m != nil {
 		lines := strings.Split(strings.TrimSpace(text), "\n")
 		question := lines[len(lines)-1]
 		args, _ := json.Marshal(map[string]string{"message_id": m[1], "text": "answer: " + question})
-		res := s.toolCall(t, 1, "fleet_reply", args)
+		res := s.toolCall(t, k, "fleet_reply", args)
 		return "replied to " + m[2] + ": " + res, true
 	}
 	if m := callRe.FindStringSubmatch(text); m != nil {
-		res := s.toolCall(t, 1, m[1], json.RawMessage(strings.TrimSpace(m[2])))
+		res := s.toolCall(t, k, m[1], json.RawMessage(strings.TrimSpace(m[2])))
 		return "tool " + m[1] + ": " + res, true
 	}
 	return "", false

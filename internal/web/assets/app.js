@@ -244,6 +244,30 @@ const statusLabel = {
 };
 const liveSession = (s) => s.status !== 'stopped' && s.status !== 'gone';
 
+// The composer's delivery mode, per session: Now (steer) unless the person
+// picked another, which holds until the session ends.
+const modeKey = (id) => 'swk-mode:' + id;
+function savedMode(id) {
+  try { return localStorage.getItem(modeKey(id)) || 'auto'; } catch (e) { return 'auto'; }
+}
+function saveMode(id, m) {
+  try {
+    if (m === 'auto') localStorage.removeItem(modeKey(id));
+    else localStorage.setItem(modeKey(id), m);
+  } catch (e) { /* this page only */ }
+}
+// Forgets the picks of sessions that have ended or are gone.
+function pruneModes() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('swk-mode:')) continue;
+      const s = S.sessions.get(k.slice('swk-mode:'.length));
+      if (!s || !liveSession(s)) localStorage.removeItem(k);
+    }
+  } catch (e) { /* nothing kept */ }
+}
+
 // ---------- fleet state, kept current by GET /v1/stream ----------
 
 const S = {hosts: new Map(), sessions: new Map(), messages: new Map(), live: false, ready: false};
@@ -294,6 +318,7 @@ function connectFleet() {
     S.sessions = new Map(d.sessions.map((x) => [x.id, x]));
     S.messages = new Map(d.messages.map((x) => [x.id, x]));
     S.ready = true;
+    pruneModes();
     setConn(true);
     changed('all');
   });
@@ -301,6 +326,7 @@ function connectFleet() {
     fleetES.addEventListener(type, (e) => {
       const d = JSON.parse(e.data);
       ({session: S.sessions, host: S.hosts, message: S.messages})[type].set(d.id, d);
+      if (type === 'session' && !liveSession(d)) saveMode(d.id, 'auto'); // ended: forget its pick
       changed(type, d);
     });
   }
@@ -313,6 +339,7 @@ function connectFleet() {
   fleetES.addEventListener('session_removed', (e) => {
     const d = JSON.parse(e.data);
     S.sessions.delete(d.id);
+    saveMode(d.id, 'auto');
     changed('session', d);
   });
   fleetES.onerror = () => {
@@ -858,11 +885,17 @@ function sessionView(id, full) {
   // Now (steer) goes into the running turn if there is one, and starts a
   // turn otherwise; a harness that cannot steer, or a session that does
   // not accept it, gets it on the next turn.
-  const mode = h('select', {'aria-label': 'How to deliver'},
+  // autocomplete off: the browser must not restore an earlier pick over
+  // the one kept for this session.
+  const mode = h('select', {'aria-label': 'How to deliver', autocomplete: 'off'},
     h('option', {value: 'auto', text: 'Now (steer)'}),
     h('option', {value: 'queue', text: 'Next turn'}),
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
+  let chosenMode = savedMode(id);
+  mode.value = chosenMode;
+  if (mode.value !== chosenMode) mode.value = chosenMode = 'auto';
+  mode.addEventListener('change', () => { chosenMode = mode.value; saveMode(id, chosenMode); });
   const sendBtn = h('button', {type: 'submit', class: 'send', 'aria-label': 'Send', title: 'Send'}, icon('send'));
   // Approval policy, for sessions that can change it while running.
   const policy = h('select', {'aria-label': 'Approval policy'},
@@ -873,7 +906,9 @@ function sessionView(id, full) {
   const picker = imagePicker();
   const form = h('form', {class: 'composer', onsubmit: send}, picker.tray, input,
     h('div', {class: 'bar'}, picker.btn, h('label', {class: 'chip', title: 'How to deliver'}, mode, icon('chevron', 'chev')), policyChip, sendBtn));
-  const dock = h('div', {class: 'dock'}, approvals, form);
+  // Says so while the session's host is offline: messages wait for it.
+  const offlineNote = h('div', {class: 'offline-note', hidden: true});
+  const dock = h('div', {class: 'dock'}, approvals, offlineNote, form);
   input.addEventListener('paste', picker.onPaste);
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
   input.addEventListener('keydown', (e) => {
@@ -894,15 +929,18 @@ function sessionView(id, full) {
       let res;
       if (mode.value === 'ask') {
         res = await api('POST', '/v1/messages', {to: id, kind: 'ask', text, from: ME, wait_seconds: 0, attachments});
+        refreshQueue(); // an ask for an offline host is held: show it
         toast(res.status === 'failed' ? 'Ask failed: ' + res.error : 'Asked. The answer will appear in Inbox');
       } else {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
-        if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
-        else if (res.mode === 'queue') refreshQueue(); // a Queued bubble, while it waits
+        // A Queued bubble while it waits: in the node's queue, or held by
+        // the coordinator while the host is offline.
+        if (res.state === 'pending' || res.mode === 'queue') refreshQueue();
       }
       picker.clear();
       input.value = '';
       input.style.height = 'auto';
+      mode.value = chosenMode; // only the person changes it
       follow = true;
     } catch (err) {
       toast(err.message);
@@ -925,20 +963,27 @@ function sessionView(id, full) {
       q = null; // offline, or a node too old to say
     }
     if (mine !== queueAsked) return; // a newer answer is on its way
-    renderQueue((q && q.messages) || []);
+    renderQueue((q && q.messages) || [], s, q && q.node_too_old);
   }
   function queueSoon() {
     clearTimeout(queueTimer);
     queueTimer = setTimeout(refreshQueue, 300);
   }
 
-  function renderQueue(list) {
+  function renderQueue(list, s, tooOld) {
     const people = list.filter((m) => (m.from || '').startsWith('user:'));
     const agents = list.filter((m) => !(m.from || '').startsWith('user:'));
     fill(queuedBox,
-      people.map((m) => h('div', {class: 'queued', 'data-id': m.id},
+      people.map((m) => h('div', {class: 'queued' + (m.held ? ' held' : ''), 'data-id': m.id},
         h('div', {class: 'bubble', text: m.text || 'A message'}),
-        h('div', {class: 'queued-foot'},
+        // A held message waits at the coordinator for its host, so it can
+        // only be cancelled; it goes in its own mode when the host returns,
+        // unless it expires first.
+        m.held ? h('div', {class: 'queued-foot'},
+          h('span', {text: s.status === 'offline' ? `Waiting for ${s.host}, which is offline` : 'Sending…'}),
+          clock(m.expires_at) ? h('span', {title: 'Dropped undelivered if the host is still offline then', text: `expires ${clock(m.expires_at)}`}) : null,
+          h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)}))
+        : h('div', {class: 'queued-foot'},
           h('span', {text: m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
           // The node drops it undelivered at expires_at (a node from
           // 0.1.5); Send now still sends it.
@@ -949,7 +994,11 @@ function sessionView(id, full) {
         h('span', {text: `${agents.length} queued from agents`}),
         h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
           if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
-        }})) : null);
+        }})) : null,
+      // A node before 0.1.5 can't list its queue: say so rather than show
+      // nothing for a message sent for the next turn.
+      tooOld ? h('div', {class: 'queued-agents', title: 'Update swk on that host to see, send now or cancel queued messages'},
+        icon('alert'), h('span', {text: `The swk on ${s.host} is too old to list its queue`})) : null);
     scroll();
   }
 
@@ -1023,7 +1072,10 @@ function sessionView(id, full) {
       liveSession(s) ? iconBtn('stop', 'Stop session', () => {
         if (confirm(`Stop ${s.path}? Its history is kept.`)) api('POST', `/v1/sessions/${encodeURIComponent(id)}/stop`).catch((e) => toast(e.message));
       }) : null);
-    input.placeholder = `Message ${s.name}`;
+    const offline = s.status === 'offline';
+    input.placeholder = offline ? `Message ${s.name} (delivered when ${s.host} is back)` : `Message ${s.name}`;
+    offlineNote.hidden = !offline || !liveSession(s);
+    if (offline) fill(offlineNote, icon('alert'), h('span', {text: `${s.host} is offline. Messages wait for it to come back, and you can cancel them until then.`}));
     const parent = s.parent && S.sessions.get(s.parent);
     const kids = [...S.sessions.values()].filter((x) => x.parent === id);
     const u = s.usage;
@@ -1339,6 +1391,8 @@ function sessionView(id, full) {
     update: (t, d) => {
       if (t === 'all' || t === 'tick' || (t === 'session' && d && (d.id === id || d.parent === id)) || t === 'host' || t === 'message') renderHead();
       if (t === 'message' && d && d.to_session === id && queuedBox.childElementCount) queueSoon(); // expired, failed or cancelled elsewhere
+      // The host came back (its held messages go to its queue) or left.
+      if (t === 'host' && d && S.sessions.get(id) && d.id === S.sessions.get(id).host) queueSoon();
       if (t === 'message' && d && receipts.has(d.id)) drawReceipt(receipts.get(d.id));
       if (t === 'all') new Set(receipts.values()).forEach(drawReceipt);
       if (S.ready && !es) { connect(); queueSoon(); }

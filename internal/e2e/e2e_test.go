@@ -334,7 +334,9 @@ func TestFleetEndToEnd(t *testing.T) {
 		t.Fatalf("resolve name: %v", err)
 	}
 
-	// Two queued messages are delivered one turn at a time.
+	// Two queued messages are delivered in order: one turn each, or one
+	// turn for both when the second is queued before the first is
+	// delivered.
 	if _, err := c.Send(ctx, sess.ID, "second", "queue", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +344,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	i = w.waitFor(t, "second reply", i, agentSaid("echo: second"))
-	i = w.waitFor(t, "third reply", i, agentSaid("echo: third"))
+	i = w.waitFor(t, "third reply", i, agentSaid("third"))
 	i = w.waitFor(t, "third turn done", i, turnEnded("completed"))
 	waitStatus(t, c, sess.ID, model.StatusIdle)
 

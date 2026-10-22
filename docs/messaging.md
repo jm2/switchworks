@@ -381,8 +381,14 @@ it runs this version.
   which the node never delivers it. The node records `message.promoted`
   and `message.cancelled`; a cancelled message's state is `cancelled`, an
   agent that sent it gets a `system` notice, and a cancelled ask fails.
-  `GET /v1/sessions/{id}/queue` lists a session's queue in delivery order.
-  These need a node from 0.1.5 (an older one answers 409).
+  `GET /v1/sessions/{id}/queue` lists a session's queue in delivery order,
+  then the messages the coordinator still holds for it (`held`: its host is
+  offline), which can be cancelled the same way. With the host offline it
+  lists only those and sets `offline`; with a node before 0.1.5, which
+  cannot list its queue, it sets `node_too_old`. Promote and cancel of a
+  message in the node's queue need a node from 0.1.5 (an older one answers
+  409). The web UI shows each as a dimmed bubble under the transcript, and
+  says in the composer when the session's host is offline.
 - A queued message is delivered when its session goes idle. If the harness
   still says it is busy (Codex reports the thread idle a moment before the
   turn ends), the node tries again once the turn ends, or after 1, 5 and
@@ -612,7 +618,7 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
-| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it |
+| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, offline, node_too_old, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at, held}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it, or the coordinator's for `held` messages |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
