@@ -664,12 +664,13 @@ func TestCloseWhileStarting(t *testing.T) {
 	}
 }
 
-// A session an agent spawned must not start with fewer approvals than its
-// policy asks for: an unmappable policy fails the start instead of falling
-// back to the agent's default mode. A person's spawn only warns.
+// A session must not start with fewer approvals than its policy asks for:
+// an unmappable policy fails the start instead of falling back to the
+// agent's default mode, for a person's spawn too. Only never, which
+// nothing is looser than, merely warns.
 func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
 	a, _ := testAdapter(t, nil)
-	a.cfg.Modes = map[string]string{"untrusted": "no-such-mode"}
+	a.cfg.Modes = map[string]string{"untrusted": "no-such-mode", "never": "no-such-mode"}
 	cwd, err := filepath.EvalSymlinks(t.TempDir()) // as the node records it
 	if err != nil {
 		t.Fatal(err)
@@ -681,11 +682,99 @@ func TestAgentSpawnApprovalFailsClosed(t *testing.T) {
 	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ByAgent: true, ApprovalPolicy: "untrusted"}, newRec().sink); err == nil {
 		t.Fatal("an agent-spawned session without a root started without its approval policy")
 	}
-	h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ApprovalPolicy: "untrusted"}, newRec().sink)
-	if err != nil {
-		t.Fatalf("a person's spawn: %v", err)
+	if _, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ApprovalPolicy: "untrusted"}, newRec().sink); err == nil ||
+		!strings.Contains(err.Error(), `"modes"`) {
+		t.Fatalf("a person's spawn started without its approval policy: %v", err)
 	}
+	r := newRec()
+	h, err := a.Start(context.Background(), adapter.StartSpec{Cwd: cwd, ApprovalPolicy: "never"}, r.sink)
+	if err != nil {
+		t.Fatalf("a person's spawn under never: %v", err)
+	}
+	r.waitFor(t, "warning", kind(model.KindWarning))
 	_ = h.Stop(context.Background())
+}
+
+// An agent with no session modes at all: a person's spawn runs with the
+// agent's own configuration and a warning; an agent's spawn is refused.
+func TestApprovalPolicyWithoutModes(t *testing.T) {
+	setup := &acp.SessionSetup{SessionID: "s"}
+	for _, c := range []struct {
+		spec         adapter.StartSpec
+		fails, warns bool
+	}{
+		{adapter.StartSpec{ApprovalPolicy: "on-request"}, false, true},
+		{adapter.StartSpec{ApprovalPolicy: "on-request", ByAgent: true}, true, false},
+		{adapter.StartSpec{ApprovalPolicy: "untrusted", CwdRoot: "/w"}, true, false},
+		{adapter.StartSpec{ApprovalPolicy: "never", ByAgent: true}, false, false},
+		{adapter.StartSpec{}, false, false},
+	} {
+		r := newRec()
+		h := &handle{a: New(Config{}), spec: c.spec, sink: r.sink}
+		err := h.configure(context.Background(), nil, setup)
+		warned := len(r.all()) > 0
+		if (err != nil) != c.fails || warned != c.warns {
+			t.Errorf("%+v: err %v, warned %v", c.spec, err, warned)
+		}
+	}
+}
+
+// Options the vocabulary has no name for are offered under a prefix, so an
+// option id cannot pose as accept, decline or cancel.
+func TestDecisionsFor(t *testing.T) {
+	decisions, by := decisionsFor([]acp.PermissionOption{
+		{OptionID: "yes", Kind: acp.AllowOnce},
+		{OptionID: "accept", Kind: "allow_forever"},
+		{OptionID: "cancel", Kind: "weird"},
+		{OptionID: "again", Kind: acp.AllowOnce},
+		{OptionID: "accept", Kind: "allow_forever"},
+		{OptionID: "x\ny", Kind: "weird"},
+	})
+	want := []string{"accept", "option:accept", "option:cancel", "option:again", "option:accept#2", `option:"x\ny"`, "cancel"}
+	if strings.Join(decisions, "|") != strings.Join(want, "|") {
+		t.Fatalf("decisions %q, want %q", decisions, want)
+	}
+	if by["accept"] != "yes" || by["option:accept"] != "accept" || by["option:cancel"] != "cancel" || by[`option:"x\ny"`] != "x\ny" {
+		t.Fatalf("options %v", by)
+	}
+	if _, ok := by["cancel"]; ok {
+		t.Fatal("an option took cancel's name")
+	}
+}
+
+// A path the model chose cannot add lines to a diff's header.
+func TestUnifiedDiffQuotesPaths(t *testing.T) {
+	got := unifiedDiff("/x\n+++ b/evil", nil, "x\n")
+	if got != "--- /dev/null\n+++ \"b/x\\n+++ b/evil\"\n@@ -0,0 +1 @@\n+x\n" {
+		t.Fatalf("diff %q", got)
+	}
+	old := "a\n"
+	bidi := "dir/f" + string(rune(0x202e)) + "gnp.exe" // shows as dir/fexe.png
+	if got := unifiedDiff(bidi, &old, "b\n"); strings.ContainsRune(got, 0x202e) || !strings.HasPrefix(got, `--- "a/dir/f\u202egnp.exe"`) {
+		t.Fatalf("diff %q", got)
+	}
+}
+
+// An edit's diff is computed once, not again on each update that resends
+// the same edit, and again when the edit changes.
+func TestToolDiffComputedOnce(t *testing.T) {
+	old := "a\n"
+	edit := func(newText string) []acp.ToolCallContent {
+		o := old
+		return []acp.ToolCallContent{{Type: "diff", Path: "/w/f", OldText: &o, NewText: newText}}
+	}
+	ts := &toolState{kind: acp.KindEdit}
+	ts.merge(acp.ToolCallFields{}, edit("b\n"))
+	first := ts.diffText()
+	ts.diffs[0] = "cached" // what diffAt would return if it did not recompute
+	ts.merge(acp.ToolCallFields{}, edit("b\n"))
+	if ts.diffText() != "cached" || !strings.Contains(string(ts.item().Raw), "cached") {
+		t.Fatal("an unchanged edit's diff was recomputed")
+	}
+	ts.merge(acp.ToolCallFields{}, edit("c\n"))
+	if d := ts.diffText(); d == "cached" || d == first || !strings.Contains(d, "+c") {
+		t.Fatalf("a changed edit kept its old diff: %q", d)
+	}
 }
 
 // usageSeq feeds reports to a bare handle's usage and returns its events.

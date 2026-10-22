@@ -105,3 +105,66 @@ func TestGroupAliveIgnoresZombies(t *testing.T) {
 		t.Fatal("a zombie-only group counted as alive")
 	}
 }
+
+// Once the leader may have been reaped, Stop and Kill leave the group id
+// alone: it can belong to an unrelated group by then.
+func TestKillSparesGroupAfterReap(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := &platformState{reaped: true}
+	if err := reaped.kill(cmd); err != nil {
+		t.Fatal(err)
+	}
+	reaped.terminate(cmd)
+	time.Sleep(50 * time.Millisecond)
+	if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
+		t.Fatalf("group signalled after the reap: %v", err)
+	}
+	if err := (&platformState{}).kill(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("sleep was not killed")
+	}
+
+	p, err := Start("true", nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-p.Done()
+	p.plat.mu.Lock()
+	ok := p.plat.reaped
+	p.plat.mu.Unlock()
+	if !ok {
+		t.Fatal("not marked reaped after exit")
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// On Linux the leader's exit is seen without reaping it, so the group is
+// ended while the leader's pid, the group id, is still taken.
+func TestWaitExitedLeavesZombie(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("waitid with WNOWAIT is Linux only here")
+	}
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitExited(cmd.Process.Pid) {
+		_ = cmd.Wait()
+		t.Fatal("waitExited failed")
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/stat")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), ") Z ") {
+		t.Fatalf("not an unreaped zombie: %s %v", b, err)
+	}
+}

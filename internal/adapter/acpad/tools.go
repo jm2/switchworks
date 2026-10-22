@@ -18,8 +18,13 @@ type toolState struct {
 	title, name, kind, status string
 	rawInput, rawOutput       json.RawMessage
 	content                   []acp.ToolCallContent
-	locations                 []string
-	liveOutput                strings.Builder
+	// diffs holds the unified diff of each diff entry of content, once
+	// rendered. Every update re-renders the item (under the handle's
+	// lock), and an agent resends the same edit with each status change,
+	// so an edit's diff is computed once, not per update.
+	diffs      []string
+	locations  []string
+	liveOutput strings.Builder
 
 	// Goose names the tool and its extension in _meta.
 	metaTool, metaExt string
@@ -47,7 +52,14 @@ func (t *toolState) merge(f acp.ToolCallFields, content []acp.ToolCallContent) {
 		t.rawOutput = f.RawOutput
 	}
 	if content != nil {
-		t.content = content // updates replace the content list
+		// Updates replace the content list; diffs of unchanged edits stay.
+		diffs := make([]string, len(content))
+		for i, c := range content {
+			if i < len(t.content) && i < len(t.diffs) && sameEdit(t.content[i], c) {
+				diffs[i] = t.diffs[i]
+			}
+		}
+		t.content, t.diffs = content, diffs
 	}
 	if f.Locations != nil {
 		t.locations = t.locations[:0]
@@ -277,19 +289,19 @@ func (t *toolState) item() model.Item {
 		}
 	case "fileChange":
 		changes := make([]map[string]string, 0, len(cl.paths))
-		byPath := map[string]acp.ToolCallContent{}
-		for _, c := range t.content {
+		byPath := map[string]int{}
+		for i, c := range t.content {
 			if c.Type == "diff" {
-				byPath[c.Path] = c
+				byPath[c.Path] = i
 			}
 		}
 		for _, p := range cl.paths {
 			ch := map[string]string{"path": p, "kind": "update"}
-			if c, ok := byPath[p]; ok {
-				if c.OldText == nil {
+			if i, ok := byPath[p]; ok {
+				if t.content[i].OldText == nil {
 					ch["kind"] = "add"
 				}
-				ch["diff"] = unifiedDiff(p, c.OldText, c.NewText)
+				ch["diff"] = t.diffAt(i)
 			}
 			if t.kind == acp.KindDelete {
 				ch["kind"] = "delete"
@@ -316,10 +328,30 @@ func (t *toolState) item() model.Item {
 // diffText is the unified diff of the call's file edits.
 func (t *toolState) diffText() string {
 	var b strings.Builder
-	for _, c := range t.content {
+	for i, c := range t.content {
 		if c.Type == "diff" {
-			b.WriteString(unifiedDiff(c.Path, c.OldText, c.NewText))
+			b.WriteString(t.diffAt(i))
 		}
 	}
 	return b.String()
+}
+
+// diffAt renders content[i], a diff entry, once.
+func (t *toolState) diffAt(i int) string {
+	if len(t.diffs) != len(t.content) {
+		t.diffs = make([]string, len(t.content))
+	}
+	if t.diffs[i] == "" {
+		c := t.content[i]
+		t.diffs[i] = unifiedDiff(c.Path, c.OldText, c.NewText)
+	}
+	return t.diffs[i]
+}
+
+// sameEdit reports whether two diff entries describe the same edit.
+func sameEdit(a, b acp.ToolCallContent) bool {
+	if a.Type != "diff" || b.Type != "diff" || a.Path != b.Path || a.NewText != b.NewText || (a.OldText == nil) != (b.OldText == nil) {
+		return false
+	}
+	return a.OldText == nil || *a.OldText == *b.OldText
 }

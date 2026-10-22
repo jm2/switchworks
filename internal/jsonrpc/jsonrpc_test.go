@@ -170,3 +170,98 @@ func TestPendingCallsFailOnClose(t *testing.T) {
 		t.Fatal("call hung after close")
 	}
 }
+
+// A peer that stops reading does not hang callers for good: the write
+// times out and closes the connection, releasing every caller, so its
+// owner can restart the peer.
+func TestWriteTimeoutClosesConn(t *testing.T) {
+	in, _ := io.Pipe()
+	_, out := io.Pipe() // nobody reads: every write blocks
+	c := NewConnWith(in, out, nil, nil, Options{WriteTimeout: 100 * time.Millisecond})
+	errc := make(chan error, 2)
+	go func() { errc <- c.Call(context.Background(), "first", nil, nil) }()
+	go func() { _, err := c.Send("second", nil); errc <- err }()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errc:
+			if !errors.Is(err, ErrClosed) {
+				t.Fatalf("want ErrClosed, got %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("call still blocked on a peer that does not read")
+		}
+	}
+	<-c.Done()
+	if !errors.Is(c.Err(), ErrWriteTimeout) {
+		t.Fatalf("Err %v, want ErrWriteTimeout", c.Err())
+	}
+	if err := c.Notify("late", nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("notify after close: %v", err)
+	}
+}
+
+// A call's context bounds its wait for the write too.
+func TestCallContextBoundsWrite(t *testing.T) {
+	in, _ := io.Pipe()
+	_, out := io.Pipe()
+	c := NewConnWith(in, out, nil, nil, Options{WriteTimeout: -1})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.Call(ctx, "x", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+}
+
+// replier answers every request from inside HandleRequest, as the read
+// loop's own handlers do.
+type replier struct {
+	recorder
+	conn *Conn
+}
+
+func (r *replier) HandleRequest(id json.RawMessage, method string, params json.RawMessage) {
+	r.recorder.HandleRequest(id, method, params)
+	_ = r.conn.Reply(id, map[string]string{"ok": method})
+}
+
+// Replies sent from the read loop do not stop it reading while the peer
+// is slow to read them; and what was queued before the input ended is
+// still written.
+func TestReadLoopRepliesDoNotBlockReading(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	h := &replier{}
+	c := NewConnWith(inR, outW, h, nil, Options{WriteTimeout: -1})
+	h.conn = c // before any input arrives
+	feed := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(inW, `{"id":1,"method":"a"}`+"\n"+`{"id":2,"method":"b"}`+"\n"+`{"method":"note"}`+"\n")
+		feed <- err
+	}()
+	// Nothing reads the replies yet, but the read loop gets to the
+	// notification behind them.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.mu.Lock()
+		n := len(h.notes)
+		h.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("read loop blocked on its own replies")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := <-feed; err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(outR); got <- string(b) }()
+	inW.Close()
+	<-c.Done()
+	outW.Close()
+	if s := <-got; s != `{"id":1,"result":{"ok":"a"}}`+"\n"+`{"id":2,"result":{"ok":"b"}}`+"\n" {
+		t.Fatalf("replies %q", s)
+	}
+}
