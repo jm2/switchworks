@@ -86,6 +86,18 @@ Observed with Codex 0.160.0 on Linux; the raw traffic is in
 - Every notification carries a top-level `emittedAtMs`.
 - `thread/queue/*` methods exist (a server-side message queue); Switchworks
   keeps its own queue on the node.
+- **The sandbox a thread gets can differ from the one asked for.** The
+  `thread/start` and `thread/resume` responses carry `sandbox`, the
+  effective legacy `SandboxPolicy` (`type`: `readOnly`, `workspaceWrite`,
+  `dangerFullAccess`, `externalSandbox`). Switchworks compares it with the
+  requested mode, reports a mismatch as a degraded session, and sets
+  `caps.read_only` from it. Under a permission profile it is only a legacy
+  view of the profile, so only `readOnly` counts as a mismatch there.
+- **Codex 0.163 on Windows** runs a `workspace-write` thread read-only when
+  `config.toml` sets no `[windows] sandbox` mode, without an error; under
+  approval `never` every command is then rejected ("blocked by policy").
+  `-c windows.sandbox="unelevated"` fixes it; the node passes that unless
+  a Windows sandbox mode is configured.
 
 ## Codex's shared app-server daemon
 

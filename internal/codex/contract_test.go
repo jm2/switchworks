@@ -4,6 +4,7 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,6 +295,15 @@ func TestContractAgainstSchema(t *testing.T) {
 	for _, v := range []string{"read-only", "workspace-write", "danger-full-access"} {
 		if !contains(enumStrings(s.defs["SandboxMode"]), v) {
 			t.Errorf("SandboxMode lacks %q", v)
+		}
+	}
+	// The effective sandbox a thread reports (ThreadStartResponse.sandbox).
+	if ref := s.props(t, "ThreadStartResponse")["sandbox"]; !strings.Contains(fmt.Sprint(ref), "#/definitions/SandboxPolicy") {
+		t.Errorf("ThreadStartResponse.sandbox is not a SandboxPolicy: %v", ref)
+	}
+	for _, v := range []string{SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess, SandboxExternal} {
+		if !contains(enumStrings(s.defs["SandboxPolicy"]), v) {
+			t.Errorf("SandboxPolicy lacks %q", v)
 		}
 	}
 }

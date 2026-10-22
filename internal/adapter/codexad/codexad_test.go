@@ -484,3 +484,96 @@ func TestPermissionProfile(t *testing.T) {
 	}
 	sandboxOf(h3, col3, "sandbox=workspace-write permissions=")
 }
+
+// TestEffectiveSandbox checks that a thread Codex runs with another sandbox
+// than requested is reported degraded, with read_only from what it runs.
+func TestEffectiveSandbox(t *testing.T) {
+	ctx := context.Background()
+	reg := func(col *collector) model.SessionRegistered {
+		t.Helper()
+		i := col.waitFor(t, 0, "registered", kind(model.KindSessionRegistered))
+		return col.snapshot()[i].Payload.(model.SessionRegistered)
+	}
+	degraded := func(e adapter.Event) bool {
+		p, ok := e.Payload.(model.SessionStatus)
+		return ok && strings.HasPrefix(p.Detail, "degraded: ")
+	}
+
+	// As asked: no warning, and read_only only for read-only.
+	a := newFake(t, t.TempDir())
+	for mode, ro := range map[string]bool{"read-only": true, "workspace-write": false, "danger-full-access": false} {
+		col := &collector{}
+		h, err := a.Start(ctx, adapter.StartSpec{Cwd: "/work", Sandbox: mode}, col.sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		col.waitFor(t, 0, "idle", status(model.StatusIdle))
+		if reg(col).Caps.ReadOnly != ro || h.Caps().ReadOnly != ro {
+			t.Errorf("%s: read_only %v, want %v", mode, reg(col).Caps.ReadOnly, ro)
+		}
+		for _, e := range col.snapshot() {
+			if e.Kind == model.KindWarning || degraded(e) {
+				t.Errorf("%s: %s", mode, dump([]adapter.Event{e}))
+			}
+		}
+	}
+
+	// Codex on Windows without a Windows sandbox mode: workspace-write
+	// runs read-only. On start and on resume.
+	env := codextest.Env(t.TempDir())
+	env[codextest.EnvSandbox] = "readOnly"
+	b := newFakeWith(t, Config{Env: env})
+	for _, resume := range []bool{false, true} {
+		col := &collector{}
+		spec := adapter.StartSpec{Cwd: "/work", Sandbox: "workspace-write"}
+		var h adapter.Handle
+		var err error
+		if resume {
+			h, err = b.Start(ctx, spec, (&collector{}).sink)
+			if err == nil {
+				ref := h.Ref()
+				_ = h.Stop(ctx)
+				h, err = b.Resume(ctx, ref, spec, col.sink)
+			}
+		} else {
+			h, err = b.Start(ctx, spec, col.sink)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		col.waitFor(t, 0, "warning", func(e adapter.Event) bool {
+			p, ok := e.Payload.(model.ErrorEvent)
+			return e.Kind == model.KindWarning && ok && strings.Contains(p.Message, "sandbox read-only, not the workspace-write")
+		})
+		col.waitFor(t, 0, "degraded idle", func(e adapter.Event) bool {
+			return degraded(e) && e.Payload.(model.SessionStatus).Status == model.StatusIdle
+		})
+		if !reg(col).Caps.ReadOnly || !h.Caps().ReadOnly {
+			t.Errorf("resume=%v: read_only false for a read-only thread", resume)
+		}
+	}
+
+	// Under a permission profile only a read-only thread is a mismatch.
+	for _, c := range []struct {
+		requested, reported string
+		profile, ro         bool
+		mismatch            bool
+	}{
+		{"workspace-write", "workspaceWrite", true, false, false},
+		{"workspace-write", "externalSandbox", true, false, false},
+		{"workspace-write", "readOnly", true, true, true},
+		{"workspace-write", "dangerFullAccess", false, false, true},
+		{"read-only", "workspaceWrite", false, false, true},
+		{"read-only", "", false, true, false},
+		{"", "readOnly", false, true, false},
+	} {
+		raw := json.RawMessage(`{"type":"` + c.reported + `","networkAccess":false}`)
+		if c.reported == "" {
+			raw = nil
+		}
+		ro, mm := effectiveSandbox(c.requested, c.profile, raw)
+		if ro != c.ro || (mm != "") != c.mismatch {
+			t.Errorf("%+v: read_only %v, mismatch %q", c, ro, mm)
+		}
+	}
+}

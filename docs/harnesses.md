@@ -104,6 +104,127 @@ Anthropic endpoints have been exercised only through the mock provider's
 Anthropic Messages emulation (`swk dev mock-provider`), not with real keys.
 Keys in `node.json` are plain text (0600).
 
+## Codex: node.json settings
+
+The `codex` object in `node.json` configures how the node runs
+`codex app-server`. Every key is optional:
+
+| Key | What it does |
+| --- | --- |
+| `bin` | The `codex` binary (default `codex` on `PATH`). |
+| `home` | `CODEX_HOME` for app-server (default: Codex's own, `~/.codex`). |
+| `args` | Codex's **whole** argument list, subcommand included. Default `["app-server"]`. |
+| `config` | Config overrides, passed as `-c key=value` ahead of `args`. |
+| `lean` | `true` adds the [lean defaults](#codex-lean-sessions) to `config`. Default `false`. |
+| `permissions` | A permission profile for `workspace-write` sessions ([below](#codex-network-without-exposing-credentials)). |
+
+`args` replaces the argument list rather than adding to it, so it must
+still name the subcommand: `["-c", "x=1"]` alone runs Codex without
+`app-server`, and every session fails with "app-server initialize:
+jsonrpc: connection closed". The node refuses to start with such an
+`args`. Put overrides in `config` instead:
+
+```json
+"codex": {
+  "config": {
+    "model_auto_compact_token_limit": 128000,
+    "web_search": "disabled",
+    "features": {"apps": false}
+  }
+}
+```
+
+The node passes these as `-c features.apps=false -c
+model_auto_compact_token_limit=128000 -c web_search="disabled"
+app-server`. Values are written in TOML: strings quoted and escaped,
+numbers and booleans as they are, arrays as arrays. A nested object
+becomes dotted keys, so `"features": {"apps": false}` and
+`"features.apps": false` are the same. Each part of a key must be
+letters, digits, `_` or `-`, since Codex splits keys on dots. A key set
+both in `config` and by a `-c` in `args` stops the node at start, as
+does a `null` value. Overrides apply to every Codex session on the node
+and take precedence over `config.toml`; restart the node after changing
+them.
+
+When app-server fails to start, the node log has the end of what it
+wrote to stderr, which usually says why (an unknown argument, a
+`config.toml` error). The full output is in `logs/harness.log` in the
+node directory.
+
+### Codex: lean sessions
+
+A managed Codex session pays for every tool Codex offers on every model
+call. On 2026-10-21, the first call of a fresh thread sent 47.5K input
+tokens with Codex's defaults, and 12.8K with apps (the ChatGPT GitHub
+connector, about 30 tools), the browser, computer use, image generation,
+plugins and web search turned off: about 35K tokens less on each of
+thousands of calls a day. For a model Codex doesn't know, such as
+`deepseek-flash`, Codex uses fallback metadata, a 258,400-token window
+that compacts at about 245K, so average calls carried 140K to 170K
+tokens.
+
+`"codex": {"lean": true}` is recommended for managed sessions. It adds
+these overrides:
+
+```json
+{
+  "features": {
+    "apps": false, "browser_use": false, "browser_use_external": false,
+    "computer_use": false, "image_generation": false, "plugins": false,
+    "in_app_browser": false
+  },
+  "web_search": "disabled",
+  "tool_output_token_limit": 1500,
+  "model_auto_compact_token_limit": 128000
+}
+```
+
+Turning apps off also matters for security. The GitHub connector lets
+an agent act on GitHub as the owner, around any agent-specific token you
+give it.
+
+Each override is added only where `codex.config`, or a `-c` in
+`codex.args`, doesn't set the same key. To keep web search, for example,
+set `"web_search": "live"` in `codex.config`. The overrides take
+precedence over `config.toml`, so set a key in `codex.config` to keep the
+`config.toml` value. `lean` never sets the reasoning effort. For a model
+Codex doesn't know, also set its real window in `codex.config`
+(`"model_context_window": 128000`, say), since Codex can't compact
+correctly without it.
+
+### Codex on Windows
+
+Codex 0.163 can't give a thread `workspace-write` on Windows unless a
+Windows sandbox mode is set, and runs it read-only without saying so.
+Under approval `never`, every command then needs escalation and is
+rejected ("… rejected: blocked by policy"), even `git --version`. So on
+Windows the node passes `-c windows.sandbox="unelevated"` (no
+administrator setup needed) unless a mode is already set: `sandbox` in a
+`[windows]` table or a top-level `windows.sandbox` in `config.toml` (in
+`codex.home`, `CODEX_HOME` or `~/.codex`), or `windows.sandbox` in
+`codex.config` or `codex.args`. The node log says when it passes it. The
+node only checks whether `config.toml` sets the key and never logs the
+file, which holds provider keys. A permission profile with deny rules
+needs the elevated sandbox, so set `"windows": {"sandbox": "elevated"}`
+in `codex.config`, or `[windows] sandbox = "elevated"` in `config.toml`.
+
+After every thread start and resume, the node compares the sandbox the
+thread reports with the one the session asked for. When they differ, the
+session gets a warning event and a status detail starting "degraded:",
+and the node log names the thread. The web UI shows both in the session
+log. `caps.read_only` in `fleet_list` and `fleet_status` follows the
+sandbox the thread reports, and the session's details in the web UI say
+"(runs read-only)" when it does. Codex may not report every downgrade,
+so a session that can't write or run commands can still look healthy.
+
+Codex runs commands with `pwsh` when it's on `PATH`. If the only `pwsh`
+is the Microsoft Store version (an App Execution Alias in
+`%LOCALAPPDATA%\Microsoft\WindowsApps`), the sandbox's restricted token
+can't start it ("CreateProcessAsUserW failed: 5"), and every command
+fails. The node warns about this at start. Install PowerShell 7 from the
+MSI (`winget install --id Microsoft.PowerShell --source winget`, or the
+MSI from the PowerShell releases), then restart the node.
+
 ## Codex: network without exposing credentials
 
 Codex's `workspace-write` sandbox limits writes and, by default, the
@@ -189,8 +310,9 @@ Known limits:
   file descriptor"). `codex update` upgrades a standalone install.
 - **Windows: no sandbox network for now.** Deny rules need the elevated
   sandbox (`[windows] sandbox = "elevated"`, set up with
-  `codex sandbox setup --elevated`); the default sandbox refuses to run
-  commands under a profile that has them. As of Codex 0.161 the elevated
+  `codex sandbox setup --elevated`); the unelevated sandbox, which the node
+  picks when no mode is set ([Codex on Windows](#codex-on-windows)),
+  refuses to run commands under a profile that has them. As of Codex 0.161 the elevated
   sandbox has two open bugs: HTTPS through Windows' TLS stack fails
   inside it ([openai/codex#17459](https://github.com/openai/codex/issues/17459)),
   and a running `node_repl.exe` from the desktop app's plugins makes

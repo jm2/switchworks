@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jm2/switchworks/internal/jsonrpc"
@@ -72,7 +74,10 @@ func Start(ctx context.Context, opts Options, h Handler) (*Client, error) {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	p, err := proc.Start(bin, args, proc.Options{Dir: opts.Dir, Env: proc.Environ(opts.Env), Stderr: stderr})
+	// The end of app-server's stderr says why a start failed: a bad
+	// argument or config.toml makes it exit before it answers initialize.
+	tail := &tailBuffer{max: 2048}
+	p, err := proc.Start(bin, args, proc.Options{Dir: opts.Dir, Env: proc.Environ(opts.Env), Stderr: io.MultiWriter(stderr, tail)})
 	if err != nil {
 		return nil, fmt.Errorf("start %s app-server: %w", bin, err)
 	}
@@ -89,14 +94,48 @@ func Start(ctx context.Context, opts Options, h Handler) (*Client, error) {
 		},
 	}
 	if err := c.conn.Call(initCtx, MethodInitialize, params, &c.Info); err != nil {
-		_ = p.Kill()
-		return nil, fmt.Errorf("app-server initialize: %w", err)
+		_ = p.Kill() // waits for the exit, and so for the last of stderr
+		return nil, &StartError{Err: fmt.Errorf("app-server initialize: %w", err), Stderr: tail.String()}
 	}
 	if err := c.conn.Notify(NotifyInitialized, nil); err != nil {
 		_ = p.Kill()
 		return nil, fmt.Errorf("app-server initialized: %w", err)
 	}
 	return c, nil
+}
+
+// StartError is a failed app-server start, with the end of what the
+// process wrote to stderr. Its message leaves stderr out (it may quote
+// config.toml, and errors travel to the coordinator): log Stderr locally.
+type StartError struct {
+	Err    error
+	Stderr string
+}
+
+func (e *StartError) Error() string { return e.Err.Error() }
+func (e *StartError) Unwrap() error { return e.Err }
+
+// tailBuffer keeps the last max bytes written to it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	b   []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if over := len(t.b) - t.max; over > 0 {
+		t.b = append(t.b[:0], t.b[over:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(strings.ToValidUTF8(string(t.b), "�"))
 }
 
 // Done is closed when the app-server process exits or its stdout closes.

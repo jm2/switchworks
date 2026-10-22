@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -179,6 +180,14 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 // HarnessOptions builds adapter options from node config, writing harness
 // logs under dir/logs.
 func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.Options, error) {
+	codexConf, err := codexConfig(cfg)
+	if err != nil {
+		return harness.Options{}, err
+	}
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	hostCodexConfig(cfg, codexConf, logf)
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
@@ -186,7 +195,7 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err != nil {
 		return harness.Options{}, err
 	}
-	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexPermissions: cfg.Codex.Permissions,
+	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexConfig: codexConf, CodexPermissions: cfg.Codex.Permissions,
 		AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args, Agy: cfg.Agy.Options, ACP: cfg.ACP, Stderr: logFile, Logf: logf}
 	if cfg.Codex.Home != "" {
 		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}
@@ -234,6 +243,9 @@ func mainRun(args []string, stderr io.Writer) int {
 		return 1
 	}
 	logger.Printf("%s %s node %s: harnesses %v, coordinator %s", version.Name, version.Version, cfg.Host, n.Adapters(), cfg.CoordinatorNode)
+	if slices.Contains(n.Adapters(), "codex") {
+		checkCodexHost(logger.Printf)
+	}
 	ctx, cancel := runstatus.StopContext(context.Background(), *dir)
 	defer cancel()
 	_ = n.Run(ctx)

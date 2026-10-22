@@ -124,6 +124,12 @@ func (a *Adapter) getClient(ctx context.Context) (*codex.Client, error) {
 		Bin: a.cfg.Bin, Args: a.cfg.Args, Dir: a.cfg.Dir, Env: a.cfg.Env, Stderr: a.cfg.Stderr, Tap: a.cfg.Tap,
 	}, a)
 	if err != nil {
+		// "connection closed" alone does not say why; app-server's last
+		// words usually do. They stay in the node log, not in events.
+		var se *codex.StartError
+		if errors.As(err, &se) && se.Stderr != "" {
+			a.cfg.Logf("codex app-server failed to start: %v; its stderr ends:\n%s", err, se.Stderr)
+		}
 		return nil, err
 	}
 	a.mu.Lock()
@@ -389,6 +395,9 @@ type handle struct {
 	provider   string
 	home       string
 	closed     bool
+	// readOnly: the thread's effective sandbox, as app-server last
+	// reported it, is read-only (Caps.ReadOnly).
+	readOnly bool
 
 	// commandItems are the commandExecution item ids of each running
 	// turn, so an interrupt can stop the commands that turn left running;
@@ -420,7 +429,51 @@ func (h *handle) emit(kind string, payload any) {
 }
 
 func (h *handle) caps() model.Caps {
-	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true, Policy: true}
+	h.mu.Lock()
+	ro := h.readOnly
+	h.mu.Unlock()
+	return model.Caps{Message: true, Steer: true, Interrupt: true, Stop: true, Approve: true, Images: true, Policy: true, ReadOnly: ro}
+}
+
+// sandboxTypes maps the sandbox modes a session asks for to the policy
+// type app-server reports for a thread that has it.
+var sandboxTypes = map[string]string{
+	"read-only": codex.SandboxReadOnly, "workspace-write": codex.SandboxWorkspaceWrite,
+	"danger-full-access": codex.SandboxDangerFullAccess,
+}
+
+// effectiveSandbox reads the sandbox policy a thread/start or
+// thread/resume response reports, and says how it differs from the
+// requested mode ("" when it does not, or cannot be told). Under a
+// permission profile (profile) the reported policy is only a legacy view
+// of the profile, so only a read-only one is a mismatch.
+func effectiveSandbox(requested string, profile bool, reported json.RawMessage) (readOnly bool, mismatch string) {
+	var p codex.SandboxPolicy
+	if len(reported) == 0 || json.Unmarshal(reported, &p) != nil || p.Type == "" {
+		return requested == "read-only", ""
+	}
+	readOnly = p.Type == codex.SandboxReadOnly
+	want, known := sandboxTypes[requested]
+	switch {
+	case !known || p.Type == want:
+		return readOnly, ""
+	case profile && !readOnly:
+		return readOnly, ""
+	}
+	return readOnly, fmt.Sprintf("codex runs this thread with sandbox %s, not the %s it was started with", sandboxName(p.Type), requested)
+}
+
+// sandboxName names a sandbox policy type the way sessions name modes.
+func sandboxName(typ string) string {
+	for mode, t := range sandboxTypes {
+		if t == typ {
+			return mode
+		}
+	}
+	if typ == codex.SandboxExternal {
+		return "external"
+	}
+	return typ
 }
 
 // attached finishes registration after thread/start or thread/resume. It
@@ -437,6 +490,12 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	h.provider = resp.ModelProvider
 	h.home = c.Info.CodexHome
 	h.activeTurn = ""
+	// What the thread really runs with: Codex may not give it the sandbox
+	// asked for (on Windows, workspace-write without a Windows sandbox
+	// mode runs read-only), and says so only here.
+	_, perms := h.a.sandboxFor(h.spec.Sandbox)
+	ro, mismatch := effectiveSandbox(h.spec.Sandbox, perms != "", resp.Sandbox)
+	h.readOnly = ro
 	h.mu.Unlock()
 	early := h.a.register(h)
 	// Stop marks the handle closed before it unregisters, so a Stop that
@@ -453,7 +512,15 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	if resp.Thread.Status != nil {
 		st = mapThreadStatus(*resp.Thread.Status)
 	}
-	h.setStatus(st, "")
+	detail := ""
+	if mismatch != "" {
+		// Degraded, not failed: the session still runs, with less (or
+		// more) than it was given.
+		h.a.cfg.Logf("codex: thread %s: sandbox degraded: %s", h.threadID, mismatch)
+		h.emit(model.KindWarning, model.ErrorEvent{Message: "sandbox degraded: " + mismatch})
+		detail = "degraded: " + mismatch
+	}
+	h.setStatus(st, detail)
 	for _, n := range early {
 		h.onNote(n.method, n.params)
 	}
