@@ -896,6 +896,7 @@ function sessionView(id, full) {
       let res;
       if (mode.value === 'ask') {
         res = await api('POST', '/v1/messages', {to: id, kind: 'ask', text, from: ME, wait_seconds: 0, attachments});
+        refreshQueue(); // an ask for an offline host is held: show it
         toast(res.status === 'failed' ? 'Ask failed: ' + res.error : 'Asked. The answer will appear in Inbox');
       } else {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
