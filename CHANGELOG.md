@@ -20,13 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a status detail), and `caps.read_only` in `fleet_list` now follows the reported sandbox.
 - **Store PowerShell warning** — On Windows the node warns at start when `pwsh` is the Microsoft
   Store alias, which Codex's sandbox can't start, and says to install the PowerShell 7 MSI.
+- **Queue length** — Nodes report how many messages wait in each session's queue; `fleet_list`,
+  `fleet_status`, the API and the web UI's session lists and details show it.
+- **Queued messages in the web UI** — A message that waits for a session's next turn shows as a
+  dimmed "Queued, N ahead" bubble with Send now and Cancel; agents' queued messages show as one
+  row with Clear. `GET /v1/sessions/{id}/queue`, `POST /v1/messages/{id}/promote` and
+  `POST /v1/messages/{id}/cancel` (the sender or an owner) do the same through the API.
 
 ### Changed
 
-- **Web messages steer by default** — The session composer now delivers into the running turn
-  ("Steer now") unless you pick another mode. "Next turn" queued your message behind every message
-  already waiting, which on a busy session meant hours. A session that can't take input mid-turn
-  still queues it, and says so.
+- **Messages go into the running turn by default** — The new default mode, `auto`, for
+  `fleet_send`, `swk send`/`msg`, the web UI ("Now (steer)") and the API, steers a message into
+  the target's running turn when its harness can, and starts a turn otherwise. Agents may steer
+  any session; interrupting still needs a session they spawned or `allow_steer_any`. Messages
+  arriving during a steer go in as one. `swk spawn --no-steer` (`accept_steer: false`) opts out.
+- **Queued messages go in as one turn** — A session's backlog is delivered as one turn, each
+  message with its own header, instead of one turn (and one full-context model call) per message.
+- **People's messages first** — The owner's messages, then other people's, wait ahead of agents'
+  in a session's queue, so a backlog of agent traffic no longer holds them back for hours.
 
 ### Fixed
 
@@ -36,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Read-only Codex sessions on Windows** — Codex ran `workspace-write` threads read-only on
   Windows when `config.toml` set no Windows sandbox mode, rejecting every command. The node now
   passes `-c windows.sandbox="unelevated"` unless `config.toml` or `node.json` sets one.
+- **Stalled message queues** — A session could sit idle with hundreds of queued messages: when
+  Codex reported the thread idle just before the turn ended, the node's delivery got "busy" and
+  waited for an idle status that had already come. It now retries at once or with backoff, a
+  sweep retries any session left idle with a queue (and logs a warning), and the Codex adapter
+  drops a turn id that never completed once the thread has been idle for 10 s.
 
 ### Security
 

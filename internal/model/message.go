@@ -23,6 +23,7 @@ const (
 	MsgAnswered  = "answered"  // an ask that has been replied to
 	MsgExpired   = "expired"
 	MsgFailed    = "failed"
+	MsgCancelled = "cancelled" // taken out of the queue before delivery
 )
 
 // Delivery modes.
@@ -30,6 +31,10 @@ const (
 	ModeQueue     = "queue"
 	ModeSteer     = "steer"
 	ModeInterrupt = "interrupt"
+	// ModeAuto steers when the target has a running turn its harness can
+	// steer (and the session accepts steering), and queues otherwise. Nodes
+	// before 0.1.5 take it as queue.
+	ModeAuto = "auto"
 )
 
 // SystemSender is the From of Switchworks's own notices.
@@ -77,7 +82,7 @@ type Message struct {
 // can still move from delivered to answered).
 func (m Message) Terminal() bool {
 	switch m.State {
-	case MsgExpired, MsgFailed, MsgAnswered:
+	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled:
 		return true
 	case MsgDelivered:
 		return m.Kind != MsgAsk
@@ -118,4 +123,13 @@ type Settled struct {
 	TurnID      string `json:"turn_id,omitempty"`
 	TurnStatus  string `json:"turn_status,omitempty"`
 	LastMessage string `json:"last_message,omitempty"`
+}
+
+// KindSessionQueue is emitted by a node when the number of messages queued
+// for a session changes.
+const KindSessionQueue = "session.queue"
+
+// SessionQueue is the payload of session.queue.
+type SessionQueue struct {
+	Queued int `json:"queued"`
 }

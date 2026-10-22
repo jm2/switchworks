@@ -23,20 +23,27 @@ system; the choice is kept per browser.
 ## Views
 
 - **Home**: every host and its sessions, live, newest first, with each
-  session's last reply. Sessions waiting for approval and questions agents
+  session's last reply, and how many messages wait for its next turn.
+  Sessions waiting for approval and questions agents
   asked you are listed at the top. The composer at the bottom starts a
   session: describe the task, pick the host, harness and folder, and send.
   "More options" opens the full form.
 - **Session**: the live transcript. Agent replies, your messages, messages
-  routed from other sessions, and tool calls as cards (commands with their
+  routed from other sessions (several in one turn when they waited in its
+  queue), and tool calls as cards (commands with their
   output, file changes with a diff, MCP tools, plans, thinking). Pending
   approvals sit above the composer with the decisions the harness offers.
-  The composer **steers** the running turn (the default; an idle session
-  starts a turn, and one that can't take input mid-turn gets it on the next
-  turn), delivers on the **next turn**, **interrupts and sends**, or
-  **asks** with the answer going to your
-  inbox. Next to that menu, **Approvals** changes the session's approval
-  policy (Ask first, Ask if needed, Never ask) for sessions whose harness
+  The composer delivers **now** (into the running turn, or as a new turn
+  when none is running; the default; a session that can't take input
+  mid-turn gets it on the next turn), on the **next turn**, **interrupts
+  and sends**, or **asks** with the answer going to your inbox. A message
+  that waits for the next turn shows below the transcript as a dimmed
+  **Queued** bubble with its place ("Queued, 3 ahead"), **Send now**
+  (steers it into the running turn, or interrupts a session that cannot
+  take one mid-turn) and **Cancel**; it becomes the usual message when its
+  turn starts. Messages queued by agents show as one row, "N queued from
+  agents", with **Clear** (an owner's browser only). Next to that menu,
+  **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser
   signed in with the admin token or an owner token. Interrupt and Stop are in the top bar; session details are at the

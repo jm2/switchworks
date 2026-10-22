@@ -48,6 +48,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"GET /v1/sessions/{id}", scopeRead, s.handleSession},
 		{"GET /v1/sessions/{id}/events", scopeRead, s.handleEvents},
 		{"GET /v1/sessions/{id}/stream", scopeRead, s.handleStream},
+		{"GET /v1/sessions/{id}/queue", scopeRead, s.handleQueue},
 		{"GET /v1/messages", scopeRead, s.handleListMessages},
 		{"GET /v1/messages/{id}", scopeRead, s.handleGetMessage},
 		{"GET /v1/usage", scopeRead, s.handleUsage},
@@ -65,6 +66,8 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
+		{"POST /v1/messages/{id}/promote", scopeOperate, s.handlePromote},
+		{"POST /v1/messages/{id}/cancel", scopeOperate, s.handleCancel},
 
 		// admin: change who is in the fleet and who may use it, and erase
 		// history.
@@ -355,9 +358,11 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Mode {
-	case "", model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
+	case "":
+		body.Mode = model.ModeAuto
+	case model.ModeAuto, model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
 	default:
-		writeErr(w, 400, fmt.Errorf("unknown mode %q (queue, steer, interrupt)", body.Mode))
+		writeErr(w, 400, fmt.Errorf("unknown mode %q (auto, queue, steer, interrupt)", body.Mode))
 		return
 	}
 	from, err := s.userSender(r.Context(), body.From)
@@ -432,6 +437,9 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		kind := model.MsgNotify
 		if body.Kind == model.MsgBroadcast {
 			kind = model.MsgBroadcast
+		}
+		if body.Mode == "" {
+			body.Mode = model.ModeAuto
 		}
 		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode,
 			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments})

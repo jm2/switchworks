@@ -149,6 +149,24 @@ type session struct {
 	delivering bool
 	imgMu      sync.Mutex // orders storing queued images against gcImages
 
+	// Stall recovery (see tryDeliver and sweepQueues): redeliver is set
+	// when a trigger to deliver arrives during a delivery, busyTries counts
+	// ErrBusy answers in a row while the session is idle, and stuckSince is
+	// when a sweep first saw the session idle with a queue.
+	redeliver  bool
+	busyTries  int
+	stuckSince time.Time
+
+	reportedQueue int // queue length last reported in session.queue
+
+	// Steers in flight: steering is set while one is being delivered, and
+	// steerBuf holds the messages that arrived meanwhile, to go in together.
+	steering bool
+	steerBuf []*steerReq
+	// sending holds the ids of the queued messages tryDeliver is handing
+	// to the harness, which can no longer be promoted or cancelled.
+	sending map[string]bool
+
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
 	// emitted with the last turn's outcome.
@@ -495,17 +513,23 @@ func (n *Node) wakeSender() {
 	}
 }
 
-// ticker flushes coalesced deltas and fsyncs spools.
+// ticker flushes coalesced deltas, fsyncs spools and sweeps for stalled
+// queues.
 func (n *Node) ticker() {
 	defer n.wg.Done()
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	syncEvery := 0
+	lastSweep := time.Now()
 	for {
 		select {
 		case <-t.C:
 		case <-n.closing:
 			return
+		}
+		if now := time.Now(); now.Sub(lastSweep) >= sweepEvery {
+			lastSweep = now
+			n.sweepQueues(now)
 		}
 		syncEvery++
 		flushed := false
@@ -560,7 +584,9 @@ func (n *Node) resume(s *session) {
 	}
 	s.mu.Lock()
 	s.h = h
+	s.reportQueueLocked() // a backlog kept across a restart
 	s.mu.Unlock()
+	n.wakeSender()
 	n.logf("session %s resumed (%s %s)", rec.Path, rec.Harness, rec.NativeRef.ID)
 	go n.tryDeliver(s)
 }
@@ -769,6 +795,12 @@ func quoteHeaders(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// headerless reports whether m reaches the agent as it is: a plain message
+// sent with the owner's credential.
+func headerless(m queuedMsg) bool {
+	return strings.HasPrefix(m.From, "user:") && (m.Kind == "" || m.Kind == model.MsgNotify) && m.Owner
+}
+
 // formatMessage renders a queued message for the agent. Plain messages
 // sent with the owner's credential are passed through; everything else,
 // including a person's message sent with any other token (which an agent
@@ -779,7 +811,7 @@ func formatMessage(m queuedMsg) string {
 	if kind == "" {
 		kind = model.MsgNotify
 	}
-	if strings.HasPrefix(m.From, "user:") && kind == model.MsgNotify && m.Owner {
+	if headerless(m) {
 		return m.Text
 	}
 	var b strings.Builder
@@ -820,8 +852,9 @@ func containsID(list []string, id string) bool {
 
 // deliver accepts a message into a session. Redeliveries of a message it
 // has already accepted are acknowledged without effect. Steering falls back
-// to queueing when there is no steerable turn; interrupt puts the message at
-// the head of the queue and cancels the running turn.
+// to queueing when there is no steerable turn, and auto steers only when a
+// turn is running; interrupt puts the message at the head of its part of
+// the queue and cancels the running turn.
 func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (json.RawMessage, error) {
 	if m == nil || strings.TrimSpace(m.Text) == "" {
 		return nil, errors.New("deliver: empty message")
@@ -870,8 +903,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		s.mu.Unlock()
 	}
 	caps := h.Caps()
-	if m.Mode == model.ModeSteer && caps.Steer {
-		err := h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverSteer)
+	if caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h))) {
+		err := n.steer(s, h, msg, images)
 		if err == nil {
 			_ = n.saveState()
 			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
@@ -881,7 +914,9 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 			unseen()
 			return nil, err
 		}
-		n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+		if m.Mode == model.ModeSteer || !errors.Is(err, adapter.ErrNotActive) {
+			n.logf("session %s: steer failed (%v); queueing instead", s.rec.Path, err)
+		}
 	}
 	// imgMu keeps gcImages from removing these files before the message
 	// is in the queue.
@@ -894,7 +929,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	switch {
 	case m.Mode == model.ModeInterrupt && caps.Interrupt:
 		s.mu.Lock()
-		s.rec.Queue = append([]queuedMsg{msg}, s.rec.Queue...)
+		s.rec.Queue = enqueue(s.rec.Queue, msg, true)
+		s.reportQueueLocked()
 		s.mu.Unlock()
 		s.imgMu.Unlock()
 		_ = n.saveState()
@@ -906,7 +942,8 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		return model.Marshal(wire.DeliverResult{Mode: model.ModeInterrupt}), nil
 	}
 	s.mu.Lock()
-	s.rec.Queue = append(s.rec.Queue, msg)
+	s.rec.Queue = enqueue(s.rec.Queue, msg, false)
+	s.reportQueueLocked()
 	s.mu.Unlock()
 	s.imgMu.Unlock()
 	_ = n.saveState()
@@ -915,11 +952,134 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	return model.Marshal(wire.DeliverResult{Mode: model.ModeQueue}), nil
 }
 
+// Queue stall recovery. A harness can answer ErrBusy while the session
+// reports idle: Codex reports the thread idle a moment before the turn's
+// turn/completed, and a turn that never completes leaves it holding a turn
+// id. The idle status that would trigger delivery has then come and gone,
+// so such a delivery is retried with backoff, and sweepQueues retries any
+// session found idle with a queue twice in a row. Variables so tests can
+// shorten them.
+var (
+	busyBackoff = []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}
+	sweepEvery  = 15 * time.Second // how often the ticker sweeps
+	stallAfter  = 30 * time.Second // idle with a queue this long counts as stalled
+)
+
+// retryBusy schedules another delivery attempt for a session whose harness
+// answered ErrBusy while idle.
+func (n *Node) retryBusy(s *session, wait time.Duration) {
+	time.AfterFunc(wait, func() {
+		select {
+		case <-n.closing:
+			return
+		default:
+		}
+		n.tryDeliver(s)
+	})
+}
+
+// sweepQueues retries delivery for sessions that have stayed idle with
+// queued messages since the last sweep, and logs a warning for each: with
+// a working harness that never lasts more than a moment.
+func (n *Node) sweepQueues(now time.Time) {
+	for _, s := range n.sessionList() {
+		s.mu.Lock()
+		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && len(s.rec.Queue) > 0 && s.h.Status() == model.StatusIdle
+		kick := false
+		switch {
+		case !stuck:
+			s.stuckSince = time.Time{}
+		case s.stuckSince.IsZero():
+			s.stuckSince = now
+		case now.Sub(s.stuckSince) >= stallAfter:
+			kick, s.stuckSince = true, now
+		}
+		path, depth := s.rec.Path, len(s.rec.Queue)
+		s.mu.Unlock()
+		if kick {
+			n.logf("warning: session %s is idle with %d queued message(s) and no turn starting; retrying delivery", path, depth)
+			go n.tryDeliver(s)
+		}
+	}
+}
+
+// turnRunning reports whether the session has a turn in progress.
+func (s *session) turnRunning(h adapter.Handle) bool {
+	s.mu.Lock()
+	active := s.activeTurn != ""
+	s.mu.Unlock()
+	st := h.Status()
+	return active || st == model.StatusActive || st == model.StatusWaitingApproval
+}
+
+// steerReq is a message waiting to be steered into a running turn.
+type steerReq struct {
+	msg    queuedMsg
+	images []model.Attachment
+	done   chan error
+}
+
+// steer delivers msg into the session's running turn and returns the
+// harness's answer. Messages that arrive while a steer is in flight wait
+// for it, then go in together as one input, each with its own header (as
+// in a coalesced turn), rather than one steer each.
+func (n *Node) steer(s *session, h adapter.Handle, msg queuedMsg, images []model.Attachment) error {
+	req := &steerReq{msg: msg, images: images, done: make(chan error, 1)}
+	s.mu.Lock()
+	s.steerBuf = append(s.steerBuf, req)
+	lead := !s.steering
+	s.steering = true
+	s.mu.Unlock()
+	if lead {
+		go n.flushSteers(s, h)
+	}
+	return <-req.done
+}
+
+// flushSteers delivers the waiting steers, a batch at a time, until none
+// are left.
+func (n *Node) flushSteers(s *session, h adapter.Handle) {
+	for {
+		s.mu.Lock()
+		msgs := make([]queuedMsg, len(s.steerBuf))
+		for i, r := range s.steerBuf {
+			msgs[i] = r.msg
+		}
+		k := batchLen(msgs)
+		if k == 0 {
+			s.steering = false
+			s.mu.Unlock()
+			return
+		}
+		batch := s.steerBuf[:k:k]
+		s.steerBuf = s.steerBuf[k:]
+		s.mu.Unlock()
+		var images []model.Attachment
+		for _, r := range batch {
+			images = append(images, r.images...)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := h.Deliver(ctx, batchInput(msgs[:k], images), adapter.DeliverSteer)
+		cancel()
+		for _, r := range batch {
+			r.done <- err
+		}
+	}
+}
+
 // tryDeliver starts a turn with the next queued message if the session is idle.
 func (n *Node) tryDeliver(s *session) {
 	for {
 		s.mu.Lock()
-		if s.delivering || s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
+		if s.delivering {
+			// Delivering already: if that attempt finds the harness busy,
+			// this trigger (often the turn.completed it was waiting for)
+			// means it should try again at once.
+			s.redeliver = true
+			s.mu.Unlock()
+			return
+		}
+		if s.h == nil || s.rec.Stopped || s.h.Status() != model.StatusIdle {
 			s.mu.Unlock()
 			return
 		}
@@ -940,48 +1100,304 @@ func (n *Node) tryDeliver(s *session) {
 			s.mu.Unlock()
 			return
 		}
-		s.delivering = true
-		msg := s.rec.Queue[0]
+		s.delivering, s.redeliver = true, false
+		batch := append([]queuedMsg(nil), s.rec.Queue[:batchLen(s.rec.Queue)]...)
+		s.sending = map[string]bool{}
+		for _, m := range batch {
+			s.sending[m.ID] = true
+		}
 		h := s.h
 		// Record delivery before the turn's own events, so the log reads in
 		// order; a failure is recorded right after.
 		s.flushDeltaLocked()
-		s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Attachments: msg.Attachments})
+		for _, m := range batch {
+			s.appendLocked(model.KindMessageDelivered, model.MessageEvent{MessageID: m.ID, From: m.From, Mode: "queue", Attachments: m.Attachments})
+		}
 		id := s.rec.ID
 		s.mu.Unlock()
 		n.wakeSender()
 
-		images, err := n.loadImages(id, msg.Attachments)
+		var images []model.Attachment
+		var err error
+		for _, m := range batch {
+			var im []model.Attachment
+			if im, err = n.loadImages(id, m.Attachments); err != nil {
+				break
+			}
+			images = append(images, im...)
+		}
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			err = h.Deliver(ctx, adapter.Input{Text: formatMessage(msg), ClientMessageID: msg.ID, Images: images}, adapter.DeliverQueue)
+			err = h.Deliver(ctx, batchInput(batch, images), adapter.DeliverQueue)
 			cancel()
 		}
 
 		s.mu.Lock()
-		s.delivering = false
+		s.delivering, s.sending = false, nil
 		if errors.Is(err, adapter.ErrBusy) {
-			// Not delivered after all: it stays at the head of the queue and
-			// is retried on the next idle status.
-			s.appendLocked(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: "queue", Error: "session busy; requeued"})
+			// Not delivered after all: they stay at the head of the queue and
+			// are retried on the next idle status, at once if one came in
+			// meanwhile, or after a backoff if the session says it is idle
+			// already (no such status may come).
+			again := s.redeliver
+			s.redeliver = false
+			var wait time.Duration
+			if !again && s.rec.Status == model.StatusIdle {
+				wait = busyBackoff[min(s.busyTries, len(busyBackoff)-1)]
+				s.busyTries++
+			}
+			for _, m := range batch {
+				s.appendLocked(model.KindMessageQueued, model.MessageEvent{MessageID: m.ID, From: m.From, Mode: "queue", Error: "session busy; requeued"})
+			}
+			path, tries := s.rec.Path, s.busyTries
 			s.mu.Unlock()
 			n.wakeSender()
+			switch {
+			case again:
+				continue
+			case wait > 0:
+				n.logf("session %s: harness busy although idle (attempt %d); retrying delivery in %s", path, tries, wait)
+				n.retryBusy(s, wait)
+			}
 			return
 		}
-		if len(s.rec.Queue) > 0 && s.rec.Queue[0].ID == msg.ID {
-			s.rec.Queue = s.rec.Queue[1:]
-		}
+		s.busyTries = 0
+		s.rec.Queue = without(s.rec.Queue, batch)
+		s.reportQueueLocked()
 		s.mu.Unlock()
-		if err != nil {
-			s.emit(model.KindMessageFailed, model.MessageEvent{MessageID: msg.ID, From: msg.From, Error: err.Error()})
+		hasImages := false
+		for _, m := range batch {
+			if err != nil {
+				s.emit(model.KindMessageFailed, model.MessageEvent{MessageID: m.ID, From: m.From, Error: err.Error()})
+			}
+			hasImages = hasImages || len(m.Attachments) > 0
 		}
+		n.wakeSender()
 		_ = n.saveState()
-		if len(msg.Attachments) > 0 {
+		if hasImages {
 			n.gcImages(s)
 		}
 		// Loop: if the turn already finished (or failed to start), the next
-		// queued message goes now; otherwise the idle status triggers it.
+		// queued messages go now; otherwise the idle status triggers it.
 	}
+}
+
+// Coalescing: an idle session's queued messages go in together, as one
+// turn, rather than one turn each (every turn resends the session's whole
+// context to the model). A batch stays within these bounds, and within one
+// message's image limits; the first message always goes.
+const (
+	maxBatchMessages = 50
+	maxBatchText     = 256 << 10
+)
+
+// batchLen is how many of the queue's first messages go in one input.
+func batchLen(q []queuedMsg) int {
+	text, imgs := 0, 0
+	var imgBytes int64
+	for i, m := range q {
+		text += len(m.Text)
+		imgs += len(m.Attachments)
+		for _, a := range m.Attachments {
+			imgBytes += a.Size
+		}
+		if i > 0 && (i >= maxBatchMessages || text > maxBatchText || imgs > attach.MaxImages || imgBytes > attach.MaxTotalBytes) {
+			return i
+		}
+	}
+	return len(q)
+}
+
+// batchInput joins messages into one input, each with its own header, and
+// their images in the same order. The owner's plain messages, which have no
+// header, go first, so no text without a header follows another sender's.
+func batchInput(batch []queuedMsg, images []model.Attachment) adapter.Input {
+	if len(batch) == 1 {
+		return adapter.Input{Text: formatMessage(batch[0]), ClientMessageID: batch[0].ID, Images: images}
+	}
+	byID := map[string][]model.Attachment{}
+	off := 0
+	for _, m := range batch {
+		k := min(off+len(m.Attachments), len(images))
+		byID[m.ID] = images[off:k]
+		off = k
+	}
+	ordered := append([]queuedMsg(nil), batch...)
+	sort.SliceStable(ordered, func(i, j int) bool { return headerless(ordered[i]) && !headerless(ordered[j]) })
+	parts := make([]string, len(ordered))
+	var imgs []model.Attachment
+	for i, m := range ordered {
+		parts[i] = formatMessage(m)
+		imgs = append(imgs, byID[m.ID]...)
+	}
+	return adapter.Input{Text: strings.Join(parts, "\n\n"), ClientMessageID: ordered[0].ID, Images: imgs}
+}
+
+// without returns q without the messages of batch.
+func without(q, batch []queuedMsg) []queuedMsg {
+	drop := map[string]bool{}
+	for _, m := range batch {
+		drop[m.ID] = true
+	}
+	out := q[:0:0]
+	for _, m := range q {
+		if !drop[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Queue order: the owner's plain messages first, then other people's, then
+// agents' and Switchworks's own, each in the order they came. A backlog of
+// agent messages then never holds back a person's.
+func queueRank(m queuedMsg) int {
+	switch {
+	case headerless(m):
+		return 0
+	case strings.HasPrefix(m.From, "user:"):
+		return 1
+	}
+	return 2
+}
+
+// enqueue adds m behind the messages that rank with or above it; with
+// head (an interrupt), ahead of those that rank with it.
+func enqueue(q []queuedMsg, m queuedMsg, head bool) []queuedMsg {
+	r := queueRank(m)
+	i := 0
+	for i < len(q) && (queueRank(q[i]) < r || (!head && queueRank(q[i]) == r)) {
+		i++
+	}
+	return append(q[:i:i], append([]queuedMsg{m}, q[i:]...)...)
+}
+
+// reportQueueLocked emits session.queue when the queue's length differs
+// from the one last reported, so the coordinator can show it.
+func (s *session) reportQueueLocked() {
+	if d := len(s.rec.Queue); d != s.reportedQueue {
+		s.reportedQueue = d
+		s.flushDeltaLocked()
+		s.appendLocked(model.KindSessionQueue, model.SessionQueue{Queued: d})
+	}
+}
+
+// queueList lists a session's queue (OpQueue).
+func (n *Node) queueList(s *session) json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
+	for i, m := range s.rec.Queue {
+		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
+			Images: len(m.Attachments), Position: i})
+	}
+	return model.Marshal(res)
+}
+
+// takeQueued removes a queued message for promote or cancel. It refuses one
+// that is not queued, or that tryDeliver is handing to the harness.
+func (s *session) takeQueued(id string) (queuedMsg, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sending[id] {
+		return queuedMsg{}, fmt.Errorf("message %s is being delivered now", id)
+	}
+	for i, m := range s.rec.Queue {
+		if m.ID == id {
+			s.rec.Queue = append(s.rec.Queue[:i:i], s.rec.Queue[i+1:]...)
+			return m, nil
+		}
+	}
+	return queuedMsg{}, fmt.Errorf("message %s is not queued in %s (delivered already?)", id, s.rec.Path)
+}
+
+// putFirst puts a message back at the very head of the queue: a promoted
+// message that could not go in now goes next.
+func (s *session) putFirst(m queuedMsg) {
+	s.mu.Lock()
+	s.rec.Queue = append([]queuedMsg{m}, s.rec.Queue...)
+	s.reportQueueLocked()
+	s.mu.Unlock()
+}
+
+// promote delivers a queued message now (OpPromote): steered into the
+// running turn, or with interrupt, first in the queue with the running turn
+// cancelled. A steer that finds no running turn leaves it first in the
+// queue, so it goes next.
+func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json.RawMessage, error) {
+	if c == nil || c.MessageID == "" {
+		return nil, errors.New("promote: missing message id")
+	}
+	if c.Mode != model.ModeSteer && c.Mode != model.ModeInterrupt {
+		return nil, fmt.Errorf("promote: mode %q (steer or interrupt)", c.Mode)
+	}
+	h, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	caps := h.Caps()
+	if c.Mode == model.ModeInterrupt && !caps.Interrupt {
+		return nil, fmt.Errorf("%s sessions cannot be interrupted", s.rec.Harness)
+	}
+	msg, err := s.takeQueued(c.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Mode == model.ModeSteer && caps.Steer && s.turnRunning(h) {
+		images, err := n.loadImages(s.rec.ID, msg.Attachments)
+		if err == nil {
+			err = n.steer(s, h, msg, images)
+		}
+		if err == nil {
+			s.mu.Lock()
+			s.reportQueueLocked()
+			s.mu.Unlock()
+			_ = n.saveState()
+			s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: model.ModeSteer})
+			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
+			if len(msg.Attachments) > 0 {
+				n.gcImages(s)
+			}
+			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer}), nil
+		}
+		n.logf("session %s: steer of promoted message %s failed (%v); it goes next", s.rec.Path, msg.ID, err)
+	}
+	s.putFirst(msg)
+	_ = n.saveState()
+	mode := model.ModeQueue
+	if c.Mode == model.ModeInterrupt {
+		mode = model.ModeInterrupt
+	}
+	s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: mode})
+	if mode == model.ModeInterrupt {
+		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
+		}
+	}
+	go n.tryDeliver(s)
+	return model.Marshal(wire.DeliverResult{Mode: mode}), nil
+}
+
+// cancelQueued drops a queued message (OpCancel). Its id stays among the
+// seen ones, so a redelivery from the coordinator does not bring it back.
+func (n *Node) cancelQueued(s *session, c *wire.QueuedCmd) error {
+	if c == nil || c.MessageID == "" {
+		return errors.New("cancel: missing message id")
+	}
+	msg, err := s.takeQueued(c.MessageID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.reportQueueLocked()
+	s.mu.Unlock()
+	_ = n.saveState()
+	s.emit(model.KindMessageCancelled, model.MessageEvent{MessageID: msg.ID, From: msg.From})
+	if len(msg.Attachments) > 0 {
+		n.gcImages(s)
+	}
+	go n.tryDeliver(s) // the session may have settled
+	return nil
 }
 
 func (n *Node) stop(ctx context.Context, s *session) error {
@@ -1077,6 +1493,15 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 				return errors.New("policy: missing body")
 			}
 			return n.setPolicy(ctx, s, cmd.Policy.ApprovalPolicy)
+		case wire.OpQueue:
+			data = n.queueList(s)
+			return nil
+		case wire.OpPromote:
+			var err error
+			data, err = n.promote(ctx, s, cmd.Queued)
+			return err
+		case wire.OpCancel:
+			return n.cancelQueued(s, cmd.Queued)
 		}
 		return fmt.Errorf("unknown op %q", cmd.Op)
 	}()

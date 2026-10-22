@@ -11,8 +11,9 @@ shows what each host offers. Spawn with `--harness <name>`.
 | other ACP agents | ACP over stdio | yes | no (queued) | per session | if advertised | `session/load` or `session/resume` | experimental; tested with a fake ACP agent |
 | `agy` | headless `stream-json` | no (agy never asks) | no (queued) | opt-in, via workspace config | no | `--conversation` | experimental; run against agy 1.4.0 |
 
-Steering is a Codex feature. For the others, a message sent with `--steer`
-is queued for the next turn.
+Steering is a Codex feature. For the others, a message sent to a running
+turn (the default mode, `auto`, or `--steer`) is queued for the next turn,
+together with any other waiting messages.
 
 ## Models without a translation proxy
 

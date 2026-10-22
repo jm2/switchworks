@@ -719,6 +719,11 @@ func (s *Server) project(ev model.Event) {
 			if json.Unmarshal(ev.Payload, &p) == nil {
 				sess.Status = p.Status
 			}
+		case model.KindSessionQueue:
+			var p model.SessionQueue
+			if json.Unmarshal(ev.Payload, &p) == nil && p.Queued >= 0 {
+				sess.Queued = p.Queued
+			}
 		case model.KindSessionPolicy:
 			// handlePolicy records the value it sent; this event keeps a
 			// change the record missed (a coordinator that stopped before
@@ -991,7 +996,7 @@ func (s *Server) Spawn(ctx context.Context, spec model.SpawnSpec) (model.Session
 	sess := model.Session{
 		ID: ulid.New(), Path: model.JoinPath(spec.Host, spec.Name), Host: spec.Host, Name: spec.Name,
 		Harness: spec.Harness, Mode: model.ModeManaged, Cwd: spec.Cwd, Labels: spec.Labels,
-		Status: model.StatusStarting, Parent: spec.Parent, CreatedAt: now, UpdatedAt: now,
+		Status: model.StatusStarting, Parent: spec.Parent, AcceptSteer: spec.AcceptSteer, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateSession(sess); err != nil {
 		return model.Session{}, err

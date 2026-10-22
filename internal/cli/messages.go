@@ -75,7 +75,7 @@ func printSent(stdout io.Writer, res fleet.SendResult) {
 func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("msg", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "queue", "queue, steer or interrupt")
+	mode := fs.String("mode", "", "auto (default: into the running turn if there is one), queue, steer or interrupt")
 	bcast := fs.Bool("broadcast", false, "send to every session matching an @selector")
 	from := fs.String("from", "", "sender (default user:cli)")
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")

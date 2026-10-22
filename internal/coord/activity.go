@@ -77,7 +77,7 @@ func (s *Server) track(ev model.Event) bool {
 		// A finished turn (or a restarted harness) has no open prompts.
 		a.approvals = map[string]model.ApprovalRequested{}
 		a.order = nil
-	case model.KindSessionStatus, model.KindUsage, model.KindTurnStarted, model.KindSessionSettled:
+	case model.KindSessionStatus, model.KindUsage, model.KindTurnStarted, model.KindSessionSettled, model.KindSessionQueue:
 	default:
 		return false
 	}

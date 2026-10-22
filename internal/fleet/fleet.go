@@ -37,6 +37,8 @@ type SessionInfo struct {
 	Cwd     string            `json:"cwd,omitempty"`
 	Usage   *model.Usage      `json:"usage,omitempty"`
 	Caps    model.Caps        `json:"caps"`
+	// Queued is how many messages wait for the session's next turn.
+	Queued int `json:"queued,omitempty"`
 }
 
 type ListResult struct {
@@ -55,7 +57,7 @@ type HostInfo struct {
 type SendArgs struct {
 	To         string `json:"to"`
 	Text       string `json:"text"`
-	Mode       string `json:"mode,omitempty"` // queue (default) | steer | interrupt
+	Mode       string `json:"mode,omitempty"` // auto (default) | queue | steer | interrupt
 	Broadcast  bool   `json:"broadcast,omitempty"`
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 	// Images are image files on the sender's host, as an agent names them

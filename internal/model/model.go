@@ -102,13 +102,19 @@ type Session struct {
 	// reported at spawn; sessions it spawns inherit them.
 	ApprovalPolicy string `json:"approval_policy,omitempty"`
 	Sandbox        string `json:"sandbox,omitempty"`
+	// AcceptSteer false: messages in mode auto wait for the next turn
+	// instead of going into the running one (nil means true).
+	AcceptSteer *bool `json:"accept_steer,omitempty"`
 	// PoliciesReported: the node, not the coordinator, chose them (its
 	// defaults), so they are not trusted beyond that node's own host.
 	PoliciesReported bool   `json:"policies_reported,omitempty"`
 	Model            string `json:"model,omitempty"`
 	Provider         string `json:"provider,omitempty"`
 	Usage            *Usage `json:"usage,omitempty"`
-	LastSeq          int64  `json:"last_seq"`
+	// Queued is how many messages wait in the session's queue on its
+	// node, as it last reported (session.queue; older nodes do not).
+	Queued  int   `json:"queued,omitempty"`
+	LastSeq int64 `json:"last_seq"`
 	// ProjectedSeq is the last event whose effects (status, usage, native
 	// ref) this record holds. Events are durable before the record is, so a
 	// coordinator that starts with LastSeq above it projects the rest again.
@@ -119,6 +125,10 @@ type Session struct {
 	// seen to stop or go (zero while it runs). Retention counts from it.
 	EndedAt time.Time `json:"ended_at,omitzero"`
 }
+
+// Steerable reports whether messages in mode auto may go into the
+// session's running turn.
+func (s Session) Steerable() bool { return s.AcceptSteer == nil || *s.AcceptSteer }
 
 // SpawnSpec is what a client asks for when starting a managed session.
 type SpawnSpec struct {
@@ -134,6 +144,9 @@ type SpawnSpec struct {
 	Sandbox        string            `json:"sandbox,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	Parent         string            `json:"parent,omitempty"`
+	// AcceptSteer false keeps other sessions' messages out of the running
+	// turn (mode auto queues them); default true.
+	AcceptSteer *bool `json:"accept_steer,omitempty"`
 	// CwdRoot, set by the coordinator for spawns by agents, is the
 	// directory Cwd must be inside; the node checks it with symlinks
 	// resolved.
@@ -175,6 +188,8 @@ const (
 	KindMessageQueued     = "message.queued"
 	KindMessageDelivered  = "message.delivered"
 	KindMessageFailed     = "message.failed"
+	KindMessagePromoted   = "message.promoted"  // a queued message sent now (its mode says how)
+	KindMessageCancelled  = "message.cancelled" // a queued message taken out of the queue
 	KindUsage             = "usage"
 	KindError             = "error"
 	KindWarning           = "warning"

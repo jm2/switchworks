@@ -237,6 +237,7 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	approval := fs.String("approval", "", "codex approval policy: never, on-request, untrusted (default: node's)")
 	sandbox := fs.String("sandbox", "", "read-only, workspace-write, danger-full-access (default: node's)")
 	doAttach := fs.Bool("attach", false, "attach after spawning")
+	noSteer := fs.Bool("no-steer", false, "keep other sessions' messages out of its running turns (they wait for the next turn)")
 	images := addImageFlag(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: swk spawn <host> --cwd DIR [--image FILE]... [flags] [prompt]")
@@ -268,8 +269,12 @@ func cmdSpawn(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	sess, err := c.Spawn(ctx, model.SpawnSpec{Host: host, Name: *name, Harness: *h, Cwd: *cwd, Prompt: prompt, Attachments: atts,
-		Model: *modelName, Provider: *provider, ApprovalPolicy: *approval, Sandbox: *sandbox})
+	spec := model.SpawnSpec{Host: host, Name: *name, Harness: *h, Cwd: *cwd, Prompt: prompt, Attachments: atts,
+		Model: *modelName, Provider: *provider, ApprovalPolicy: *approval, Sandbox: *sandbox}
+	if *noSteer {
+		spec.AcceptSteer = new(false)
+	}
+	sess, err := c.Spawn(ctx, spec)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -357,13 +362,14 @@ func resolve(c *apiclient.Client, ref string, stderr io.Writer) (apiclient.Sessi
 func cmdSend(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	steer := fs.Bool("steer", false, "inject into the running turn instead of queueing a new one")
+	queue := fs.Bool("queue", false, "wait for the running turn to end instead of going into it")
+	steer := fs.Bool("steer", false, "go into the running turn even if the session does not accept steering")
 	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
 	from := fs.String("from", "", "sender (default user:cli)")
 	images := addImageFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swk send [--steer|--interrupt] [--image FILE]... <session> <text>")
+		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--image FILE]... <session> <text>")
 		return 2
 	}
 	atts, err := readImages(*images)
@@ -378,11 +384,13 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 1
 	}
-	mode := model.ModeQueue
+	mode := model.ModeAuto
 	switch {
-	case *steer && *intr:
-		fmt.Fprintln(stderr, "swk send: --steer and --interrupt are exclusive")
+	case btoi(*queue)+btoi(*steer)+btoi(*intr) > 1:
+		fmt.Fprintln(stderr, "swk send: --queue, --steer and --interrupt are exclusive")
 		return 2
+	case *queue:
+		mode = model.ModeQueue
 	case *steer:
 		mode = model.ModeSteer
 	case *intr:
@@ -402,6 +410,13 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 		how = "holding (host offline)"
 	}
 	fmt.Fprintf(stdout, "%s message %s to %s\n", how, res.MessageID, s.Path)
+	return 0
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
 	return 0
 }
 

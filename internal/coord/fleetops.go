@@ -88,6 +88,9 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 		if a.Broadcast {
 			kind = model.MsgBroadcast
 		}
+		if a.Mode == "" {
+			a.Mode = model.ModeAuto
+		}
 		msgs, err := s.router.send(ctx, from, kind, a)
 		if err != nil {
 			return nil, err
@@ -148,7 +151,8 @@ func infos(msgs []model.Message) []fleet.MessageInfo {
 func (s *Server) info(sess model.Session) fleet.SessionInfo {
 	v := s.view(sess)
 	return fleet.SessionInfo{ID: sess.ID, Path: sess.Path, Harness: sess.Harness, Status: v.Status, Online: v.Online,
-		Labels: sess.Labels, Parent: sess.Parent, Model: sess.Model, Cwd: sess.Cwd, Usage: sess.Usage, Caps: sess.Caps}
+		Labels: sess.Labels, Parent: sess.Parent, Model: sess.Model, Cwd: sess.Cwd, Usage: sess.Usage, Caps: sess.Caps,
+		Queued: sess.Queued}
 }
 
 func (s *Server) fleetList(from sender, a fleet.ListArgs) fleet.ListResult {

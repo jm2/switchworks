@@ -436,6 +436,7 @@ function renderSide() {
       list.length ? list.map((s) => h('a', {class: 'sess-row' + (s.id === current.session ? ' on' : ''), href: '#/s/' + s.id},
         h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
         h('span', {class: 'name', text: s.name, title: s.name}),
+        s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
         h('span', {class: 'age', text: ago(s.updated_at)})))
         : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
   }) : h('div', {class: 'none', text: 'No hosts enrolled yet'}));
@@ -632,6 +633,7 @@ function fleetView() {
         list.length ? list.map((s) => h('a', {class: 'sess-row' + (liveSession(s) ? '' : ' stopped'), href: '#/s/' + s.id},
           h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
           h('span', {class: 'name', text: s.name, title: s.name}),
+          s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
           h('span', {class: 'age', text: ago(s.updated_at)}),
           s.preview ? h('span', {class: 'preview', text: s.preview}) : null))
           : h('div', {class: 'none', text: host.connected ? 'No sessions running' : 'Offline'}));
@@ -736,6 +738,15 @@ function parseRouted(text) {
   return {from: f.from, kind: f.kind, msg: f.msg, re: f.re, body};
 }
 
+// splitRouted splits a turn's input into its messages: the node delivers a
+// session's queued messages as one turn, each starting with its own header
+// (the owner's plain messages, which have none, first). Lines that look
+// like a header inside a message are quoted by the node, so they never
+// split one.
+function splitRouted(text) {
+  return text.split(/\n\n(?=\[switchworks [^\]\n]*\](?:\n|$))/);
+}
+
 const defaultDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'];
 // Approval policies a running session can switch between, mildest last.
 const policyLabel = {untrusted: 'Ask first', 'on-request': 'Ask if needed', never: 'Never ask'};
@@ -812,6 +823,11 @@ function sessionView(id, full) {
   const info = h('details', {class: 'details'});
   const approvals = h('div', {});
   const log = h('div', {class: 'log'});
+  // Messages waiting in the session's queue: people's as dimmed bubbles,
+  // agents' as one row. Kept below the transcript, rebuilt from the queue.
+  const queuedBox = h('div', {class: 'queued-box'});
+  let queueTimer = null;
+  let queueAsked = 0;
   const placeholder = h('p', {class: 'empty'});
   const items = new Map(); // item id -> {el, ...}
   let es = null;
@@ -825,11 +841,11 @@ function sessionView(id, full) {
 
   // Composer
   const input = h('textarea', {rows: 1, placeholder: 'Message this session', 'aria-label': 'Message'});
+  // Now (steer) goes into the running turn if there is one, and starts a
+  // turn otherwise; a harness that cannot steer, or a session that does
+  // not accept it, gets it on the next turn.
   const mode = h('select', {'aria-label': 'How to deliver'},
-    // Steer first, so it is the default: a message queued behind a long turn
-    // can wait for hours behind agent traffic. Steering an idle session
-    // starts a turn, the same as Next turn.
-    h('option', {value: 'steer', text: 'Steer now'}),
+    h('option', {value: 'auto', text: 'Now (steer)'}),
     h('option', {value: 'queue', text: 'Next turn'}),
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
@@ -851,11 +867,6 @@ function sessionView(id, full) {
     if (e.metaKey || e.ctrlKey || (!e.shiftKey && !narrow.matches)) { e.preventDefault(); form.requestSubmit(); }
   });
 
-  const running = () => {
-    const s = S.sessions.get(id);
-    return !!s && (s.status === 'active' || s.status === 'waiting_approval');
-  };
-
   async function send(e) {
     e.preventDefault();
     const text = input.value.trim();
@@ -864,9 +875,6 @@ function sessionView(id, full) {
       return;
     }
     const attachments = picker.attachments();
-    // Whether a turn was running when it was sent: the turn may end before
-    // the answer comes back.
-    const wasRunning = running();
     sendBtn.disabled = true;
     try {
       let res;
@@ -876,7 +884,7 @@ function sessionView(id, full) {
       } else {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
-        else if (mode.value === 'steer' && res.mode === 'queue' && wasRunning) toast('This session can’t take messages mid-turn, so it waits for the next turn');
+        else if (res.mode === 'queue') refreshQueue(); // a Queued bubble, while it waits
       }
       picker.clear();
       input.value = '';
@@ -887,6 +895,78 @@ function sessionView(id, full) {
     } finally {
       sendBtn.disabled = false;
     }
+  }
+
+  // ---- the queue ----
+
+  async function refreshQueue() {
+    clearTimeout(queueTimer);
+    const s = S.sessions.get(id);
+    if (!s || !liveSession(s)) { fill(queuedBox); return; }
+    const mine = ++queueAsked;
+    let q;
+    try {
+      q = await api('GET', `/v1/sessions/${encodeURIComponent(id)}/queue`);
+    } catch (err) {
+      q = null; // offline, or a node too old to say
+    }
+    if (mine !== queueAsked) return; // a newer answer is on its way
+    renderQueue((q && q.messages) || []);
+  }
+  function queueSoon() {
+    clearTimeout(queueTimer);
+    queueTimer = setTimeout(refreshQueue, 300);
+  }
+
+  function renderQueue(list) {
+    const people = list.filter((m) => (m.from || '').startsWith('user:'));
+    const agents = list.filter((m) => !(m.from || '').startsWith('user:'));
+    fill(queuedBox,
+      people.map((m) => h('div', {class: 'queued', 'data-id': m.id},
+        h('div', {class: 'bubble', text: m.text || 'A message'}),
+        h('div', {class: 'queued-foot'},
+          h('span', {text: m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
+          h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
+          h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)})))),
+      agents.length ? h('div', {class: 'queued-agents'}, icon('list'),
+        h('span', {text: `${agents.length} queued from agents`}),
+        h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
+          if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
+        }})) : null);
+    scroll();
+  }
+
+  // promote sends a queued message now: into the running turn, or, for a
+  // session that cannot take one mid-turn, by interrupting the turn.
+  async function promote(m, btn) {
+    const s = S.sessions.get(id);
+    const steer = !!(s && s.caps && s.caps.steer);
+    if (!steer && !confirm('This session cannot take a message mid-turn. Interrupt its turn to send it now?')) return;
+    btn.disabled = true;
+    try {
+      const res = await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/promote`, {mode: steer ? 'steer' : 'interrupt'});
+      if (res.mode === 'queue') toast('Nothing is running to steer into, so it goes next');
+    } catch (err) {
+      toast(err.message);
+    }
+    refreshQueue();
+  }
+
+  async function cancelQueued(list, btn) {
+    btn.disabled = true;
+    let failed = 0;
+    let why = '';
+    for (const m of list) {
+      try {
+        await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/cancel`);
+      } catch (err) {
+        failed++;
+        why = err.message;
+      }
+    }
+    if (failed) toast(list.length === 1 ? why : `${failed} of ${list.length} could not be cancelled: ${why}`);
+    else toast(list.length === 1 ? 'Cancelled' : `Cancelled ${list.length} messages`);
+    refreshQueue();
   }
 
   async function setPolicy() {
@@ -939,6 +1019,7 @@ function sessionView(id, full) {
         row('Approvals', policyLabel[s.approval_policy] || s.approval_policy),
         // caps.read_only is what the harness reports the session runs with.
         row('Sandbox', s.sandbox && s.sandbox !== 'read-only' && s.caps && s.caps.read_only ? s.sandbox + ' (runs read-only)' : s.sandbox),
+        row('Queued', s.queued ? `${s.queued} message${s.queued === 1 ? '' : 's'} for the next turn` : ''),
         row('Tokens', u ? `${human(u.input_tokens)} in (${human(u.cached_input_tokens)} cached), ${human(u.output_tokens)} out` : ''),
         row('Started by', parent ? h('a', {href: '#/s/' + parent.id, text: parent.path}) : ''),
         row('Started', kids.length ? kids.map((k, i) => [i ? ', ' : '', h('a', {href: '#/s/' + k.id, text: k.name})]) : ''),
@@ -990,6 +1071,7 @@ function sessionView(id, full) {
         if (p.decision !== 'cleared') add(h('div', {class: 'sys', text: `Approval: ${decisionLabel[p.decision] || p.decision}`}));
         break;
       case 'message.delivered':
+        queueSoon(); // its queued bubble, if any, goes
         // Images arrive with the message that starts (or steers) a turn;
         // the event carries their metadata, the bytes come from the store.
         if ((p.attachments || []).length) {
@@ -998,6 +1080,16 @@ function sessionView(id, full) {
         break;
       case 'message.failed':
         add(h('div', {class: 'sys bad', text: `A message from ${p.from} failed: ${p.error}`}));
+        queueSoon();
+        break;
+      case 'message.cancelled':
+        add(h('div', {class: 'sys', text: `A queued message from ${p.from} was cancelled`}));
+        queueSoon();
+        break;
+      case 'message.queued':
+      case 'message.promoted':
+      case 'session.queue':
+        queueSoon();
         break;
       case 'error':
       case 'warning':
@@ -1038,11 +1130,14 @@ function sessionView(id, full) {
       case 'userMessage': {
         if (done || known) return;
         const text = (raw.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        const r = parseRouted(text);
-        const el = r
-          ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
-            h('div', {class: 'body'}, md(r.body)))
-          : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text}));
+        const parts = splitRouted(text).map((part) => {
+          const r = parseRouted(part);
+          return r
+            ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
+              h('div', {class: 'body'}, md(r.body)))
+            : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text: part}));
+        });
+        const el = parts.length === 1 ? parts[0] : h('div', {class: 'batch'}, parts);
         items.set(p.item_id, {el});
         add(h('div', {class: 'ev'}, el));
         break;
@@ -1131,7 +1226,8 @@ function sessionView(id, full) {
     es = new EventSource(`/v1/sessions/${encodeURIComponent(id)}/stream?after=${after}`);
     const kinds = ['session.registered', 'session.status', 'turn.started', 'turn.completed', 'item.started', 'item.delta',
       'item.completed', 'turn.diff', 'approval.requested', 'approval.resolved', 'message.queued', 'message.delivered',
-      'message.failed', 'usage', 'error', 'warning', 'session.settled', 'session.policy'];
+      'message.failed', 'message.promoted', 'message.cancelled', 'session.queue', 'usage', 'error', 'warning', 'session.settled',
+      'session.policy'];
     for (const k of kinds) {
       es.addEventListener(k, (e) => {
         // EventSource's own connection errors share the name "error" but
@@ -1146,17 +1242,18 @@ function sessionView(id, full) {
   }
 
   function render() {
-    fill(main, info, log, dock);
+    fill(main, info, log, queuedBox, dock);
     renderHead();
-    if (S.ready && !es) connect();
+    if (S.ready && !es) { connect(); queueSoon(); }
   }
   return {
     tab: 'fleet', session: id, render,
     update: (t, d) => {
       if (t === 'all' || t === 'tick' || (t === 'session' && d && (d.id === id || d.parent === id)) || t === 'host' || t === 'message') renderHead();
-      if (S.ready && !es) connect();
+      if (t === 'message' && d && d.to_session === id && queuedBox.childElementCount) queueSoon(); // expired, failed or cancelled elsewhere
+      if (S.ready && !es) { connect(); queueSoon(); }
     },
-    close: () => { if (es) es.close(); window.removeEventListener('scroll', onScroll); },
+    close: () => { if (es) es.close(); clearTimeout(queueTimer); window.removeEventListener('scroll', onScroll); },
   };
 }
 

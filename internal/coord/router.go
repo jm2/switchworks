@@ -39,7 +39,7 @@ type Guards struct {
 
 	// What agents may do to sessions they did not spawn.
 	AllowStopAny  bool `json:"allow_stop_any,omitempty"`  // stop them
-	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // steer or interrupt their running turn
+	AllowSteerAny bool `json:"allow_steer_any,omitempty"` // interrupt their running turn, and steer one that does not accept steering
 	AllowReadAny  bool `json:"allow_read_any,omitempty"`  // read their last message with fleet_status
 	MaxBroadcast  int  `json:"max_broadcast,omitempty"`   // recipients of one broadcast from an agent (default 8)
 	// AllowUnsandboxedSpawn lets a sandboxed agent spawn a harness that
@@ -527,9 +527,9 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		return nil, fmt.Errorf("text is %d bytes; the limit is %d", len(args.Text), fleet.MaxTextBytes)
 	}
 	switch args.Mode {
-	case "", model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
+	case "", model.ModeAuto, model.ModeQueue, model.ModeSteer, model.ModeInterrupt:
 	default:
-		return nil, fmt.Errorf("unknown mode %q (queue, steer, interrupt)", args.Mode)
+		return nil, fmt.Errorf("unknown mode %q (auto, queue, steer, interrupt)", args.Mode)
 	}
 	if kind == model.MsgBroadcast {
 		args.Broadcast = true
@@ -560,10 +560,12 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if len(targets) > r.guards.MaxBroadcast {
 			return nil, fmt.Errorf("%s matches %d sessions; agents may broadcast to at most %d", args.To, len(targets), r.guards.MaxBroadcast)
 		}
-		if args.Mode == model.ModeSteer || args.Mode == model.ModeInterrupt {
+		// Steering only adds input to a turn, so agents may steer any
+		// session; interrupting cancels its work.
+		if args.Mode == model.ModeInterrupt {
 			for _, t := range targets {
 				if t.sess != nil && t.sess.Parent != from.sess.ID && !r.guards.AllowSteerAny {
-					return nil, fmt.Errorf("agents may %s only sessions they spawned; send it queued instead", args.Mode)
+					return nil, errors.New("agents may interrupt only sessions they spawned; send it without a mode (auto) instead")
 				}
 			}
 		}
@@ -634,6 +636,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
+			m.Mode = r.steerMode(from, *t.sess, m.Mode)
 		} else {
 			m.ToUser, m.ToPath = t.user, t.user
 		}
@@ -646,6 +649,22 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		out = append(out, r.deliver(ctx, m))
 	}
 	return out, nil
+}
+
+// steerMode is the mode a message to sess goes with: a session that does
+// not accept steering gets messages in mode auto, and an agent's steers
+// unless the agent spawned it (or allow_steer_any is set), queued.
+func (r *router) steerMode(from sender, sess model.Session, mode string) string {
+	if sess.Steerable() {
+		return mode
+	}
+	switch {
+	case mode == model.ModeAuto:
+		return model.ModeQueue
+	case mode == model.ModeSteer && from.sess != nil && sess.Parent != from.sess.ID && !r.guards.AllowSteerAny:
+		return model.ModeQueue
+	}
+	return mode
 }
 
 // errRejected marks errors the node itself returned (the command reached
@@ -729,6 +748,55 @@ func (r *router) settle(id string, fn func(*model.Message)) (model.Message, bool
 	fn(&cur)
 	_ = r.put(cur)
 	return cur, true
+}
+
+// promoted records the mode a promoted message went with.
+func (r *router) promoted(id, mode string) model.Message {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(id)
+	if ok && mode != "" && cur.Mode != mode {
+		cur.Mode = mode
+		_ = r.put(cur)
+	}
+	return cur
+}
+
+// cancelPending cancels a message the coordinator still holds, unless a
+// delivery of it is under way (the node may be taking it).
+func (r *router) cancelPending(id, by string) error {
+	r.mu.Lock()
+	if r.inflight[id] {
+		r.mu.Unlock()
+		return errors.New("the message is being delivered now; try again")
+	}
+	r.mu.Unlock()
+	if !r.cancelled(id, by) {
+		return errors.New("the message is no longer pending")
+	}
+	return nil
+}
+
+// cancelled marks a pending or queued message cancelled, wakes a fleet_ask
+// waiting on it (it will not be answered) and tells an agent that sent it.
+// It reports whether it changed the message.
+func (r *router) cancelled(id, by string) bool {
+	r.mu.Lock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || (cur.State != model.MsgPending && cur.State != model.MsgDelivered) || r.inflight[id] && cur.State == model.MsgPending {
+		r.mu.Unlock()
+		return false
+	}
+	cur.State, cur.Error = model.MsgCancelled, "cancelled by "+by
+	_ = r.put(cur)
+	ws := r.waiters[id]
+	delete(r.waiters, id)
+	for _, w := range ws {
+		w <- cur
+	}
+	r.mu.Unlock()
+	r.notifySender(cur, fmt.Sprintf("Your %s message %s to %s was cancelled by %s before it was delivered.", cur.Kind, cur.ID, cur.To, by))
+	return true
 }
 
 func (r *router) fail(m model.Message, why string) model.Message {
@@ -886,7 +954,7 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 // returns the reply, or the ask itself if it failed.
 func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *model.Message {
 	r.mu.Lock()
-	if ask, ok := r.s.store.Message(askID); ok && ask.State == model.MsgFailed {
+	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled) {
 		r.mu.Unlock()
 		return &ask
 	}
@@ -1021,7 +1089,7 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 		}
 		t := &fleet.AskResult{Status: fleet.AskPending, MessageID: ask.ID, Target: ask.ToPath}
 		switch ask.State {
-		case model.MsgFailed, model.MsgExpired:
+		case model.MsgFailed, model.MsgExpired, model.MsgCancelled:
 			t.Status, t.Error = fleet.AskFailed, ask.Error
 		default:
 			wait := time.Duration(args.WaitSeconds) * time.Second
