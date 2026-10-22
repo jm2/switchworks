@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/fleet"
@@ -116,6 +117,7 @@ func (s sender) sessionID() string {
 type target struct {
 	sess *model.Session
 	user string
+	addr string // the address it was named by
 }
 
 // trigger is what started a session's current work.
@@ -266,6 +268,9 @@ func (r *router) tidy(now time.Time) {
 			for _, a := range m.Attachments {
 				pinned[a.SHA256] = true
 			}
+			for _, f := range m.Files {
+				pinned[f.SHA256] = true
+			}
 		}
 		r.s.blobs.prune(now, pinned)
 	}
@@ -293,7 +298,50 @@ func (s *Server) storeAttachments(atts []model.Attachment) ([]model.Attachment, 
 	return out, nil
 }
 
-// loadAttachments reads a stored message's images back for delivery.
+// storeFiles keeps normalized files' bytes in the attachment store, which
+// images and files share (by digest, under the same retention and limits).
+func (s *Server) storeFiles(files []model.Attachment) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if s.blobs == nil {
+		return errors.New("this coordinator has no attachment store")
+	}
+	for _, f := range files {
+		if _, err := s.blobs.put(f.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// filesRefusal says why files cannot go to a session on host, or returns
+// nil.
+func (s *Server) filesRefusal(host string) error {
+	ok := false
+	if n, online := s.node(host); online {
+		ok = contains(n.hello.Features, wire.FeatureFiles)
+	} else if h, found := s.store.Host(host); found {
+		ok = h.Files
+	}
+	if !ok {
+		return fmt.Errorf("sessions on %s cannot take files (its node does not offer them; an older swk node never does)", host)
+	}
+	return nil
+}
+
+// filesTo says why files cannot go to t, or returns nil. People cannot
+// take them: they read messages in the web UI and the CLI, which show no
+// files.
+func (s *Server) filesTo(t target) error {
+	if t.sess == nil {
+		return fmt.Errorf("files go to agent sessions only, not to %s", t.user)
+	}
+	return s.filesRefusal(t.sess.Host)
+}
+
+// loadAttachments reads a stored message's images (or files) back for
+// delivery.
 func (s *Server) loadAttachments(metas []model.Attachment) ([]model.Attachment, error) {
 	if s.blobs == nil {
 		return nil, errors.New("this coordinator has no attachment store")
@@ -302,7 +350,7 @@ func (s *Server) loadAttachments(metas []model.Attachment) ([]model.Attachment, 
 	for _, m := range metas {
 		data, err := s.blobs.get(m.SHA256)
 		if err != nil {
-			return nil, fmt.Errorf("image %s: %w", m.Name, err)
+			return nil, fmt.Errorf("attachment %s: %w", m.Name, err)
 		}
 		m.Data = data
 		out = append(out, m)
@@ -494,6 +542,9 @@ func (r *router) allow(key string, perMinute int) bool { return r.allowN(key, pe
 // agent cannot crowd everyone's images out of the coordinator's store.
 const agentImageBytesPerMinute = 20 << 20
 
+// agentFileBytesPerMinute does the same for files.
+const agentFileBytesPerMinute = 8 << 20
+
 // allowN takes n tokens from key's bucket, which refills to perMinute a
 // minute.
 func (r *router) allowN(key string, perMinute int, n float64) bool {
@@ -538,7 +589,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if kind == model.MsgAsk && args.Broadcast {
 		return nil, errors.New("an ask goes to exactly one recipient")
 	}
-	targets, err := r.resolve(from, args.To, args.Broadcast)
+	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
 	}
@@ -546,6 +597,16 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		// Paths are read by the sender's node, which replaces them with
 		// attachments; an older node passes them on unread.
 		return nil, errors.New("image paths cannot be read: the sending host runs an older swk node; upgrade it")
+	}
+	if len(args.Files) > 0 {
+		return nil, errors.New("file paths cannot be read: the sending host runs an older swk node; upgrade it")
+	}
+	if len(args.FileAttachments) > 0 {
+		for _, t := range targets {
+			if err := r.s.filesTo(t); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if len(args.Attachments) > 0 {
 		for _, t := range targets {
@@ -597,6 +658,10 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			return nil, err
 		}
 	}
+	files, err := attach.NormalizeFiles(args.FileAttachments)
+	if err != nil {
+		return nil, err
+	}
 	if from.sess != nil {
 		for _, t := range targets {
 			limit, class := r.guards.SendPerMinute, "send"
@@ -622,18 +687,25 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if n := attach.TotalBytes(images); n > 0 && !r.allowN("img|"+from.sess.ID, agentImageBytesPerMinute, float64(n)) {
 			return nil, fmt.Errorf("%w: agents may send at most %d MiB of images a minute", ErrRateLimit, agentImageBytesPerMinute>>20)
 		}
+		if n := attach.TotalBytes(files); n > 0 && !r.allowN("file|"+from.sess.ID, agentFileBytesPerMinute, float64(n)) {
+			return nil, fmt.Errorf("%w: agents may send at most %d MiB of files a minute", ErrRateLimit, agentFileBytesPerMinute>>20)
+		}
 	}
 	if len(images) > 0 {
 		if images, err = r.s.storeAttachments(images); err != nil {
 			return nil, err
 		}
 	}
+	if err := r.s.storeFiles(files); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	var out []model.Message
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
-			To: args.To, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
+			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
 			m.Mode = r.steerMode(from, *t.sess, m.Mode)
@@ -665,6 +737,103 @@ func (r *router) steerMode(from sender, sess model.Session, mode string) string 
 		return model.ModeQueue
 	}
 	return mode
+}
+
+// resolveTo resolves a send's recipients: To, or each address in ToList.
+// A session (or person) named by two addresses gets one message.
+func (r *router) resolveTo(from sender, args fleet.SendArgs) ([]target, error) {
+	var out []target
+	seen := map[string]bool{}
+	for _, to := range args.Recipients() {
+		ts, err := r.resolve(from, to, args.Broadcast)
+		if err != nil {
+			if len(args.ToList) > 0 {
+				return nil, fmt.Errorf("%s: %w", to, err)
+			}
+			return nil, err
+		}
+		for _, t := range ts {
+			key := t.user
+			if t.sess != nil {
+				key = t.sess.ID
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			t.addr = to
+			out = append(out, t)
+		}
+	}
+	if from.sess != nil && len(args.ToList) > 0 && len(out) > r.guards.MaxBroadcast {
+		return nil, fmt.Errorf("these %d addresses reach %d recipients; agents may send to at most %d at once", len(args.ToList), len(out), r.guards.MaxBroadcast)
+	}
+	return out, nil
+}
+
+// sendEach is send for a request whose "to" may list several addresses.
+// An address that cannot take the message (unknown, the sender itself, a
+// harness that takes no images) is refused on its own and the rest still
+// go, as one group; the result lists each. Limits that count the whole
+// send (rate limits, max_broadcast, hops) still refuse all of it.
+func (r *router) sendEach(ctx context.Context, from sender, kind string, args fleet.SendArgs) (fleet.SendResult, error) {
+	var refused []fleet.MessageInfo
+	if len(args.ToList) > 0 {
+		var ok []string
+		var why []string
+		for _, to := range args.ToList {
+			if err := r.precheck(from, kind, args, to); err != nil {
+				refused = append(refused, fleet.MessageInfo{To: to, State: fleet.Refused, Error: err.Error()})
+				why = append(why, to+": "+err.Error())
+				continue
+			}
+			ok = append(ok, to)
+		}
+		switch len(ok) {
+		case 0:
+			return fleet.SendResult{}, fmt.Errorf("no recipient can take it (%s)", strings.Join(why, "; "))
+		case 1:
+			args.To, args.ToList = ok[0], nil
+		default:
+			args.To, args.ToList = "", ok
+		}
+	}
+	msgs, err := r.send(ctx, from, kind, args)
+	if err != nil {
+		return fleet.SendResult{}, err
+	}
+	res := fleet.SendResult{Messages: append(infos(msgs), refused...)}
+	if len(msgs) > 0 {
+		res.Group = msgs[0].Group
+	}
+	return res, nil
+}
+
+// precheck reports why one address of a send to several cannot take it.
+func (r *router) precheck(from sender, kind string, args fleet.SendArgs, to string) error {
+	ts, err := r.resolve(from, to, args.Broadcast || kind == model.MsgBroadcast)
+	if err != nil {
+		return err
+	}
+	for _, t := range ts {
+		if len(args.FileAttachments) > 0 {
+			if err := r.s.filesTo(t); err != nil {
+				return err
+			}
+		}
+		if t.sess == nil {
+			continue
+		}
+		if t.sess.ID == from.sessionID() {
+			return errors.New("a session cannot message itself")
+		}
+		if len(args.Attachments) > 0 {
+			if err := r.s.imagesRefusal(t.sess.Host, t.sess.Harness, t.sess); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // errRejected marks errors the node itself returned (the command reached
@@ -713,9 +882,20 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 			return r.fail(m, err.Error())
 		}
 	}
+	var files []model.Attachment
+	if len(m.Files) > 0 {
+		// Checked again: an older node would drop them unseen.
+		err := r.s.filesRefusal(sess.Host)
+		if err == nil {
+			files, err = r.s.loadAttachments(m.Files)
+		}
+		if err != nil {
+			return r.fail(m, err.Error())
+		}
+	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		Attachments: images}}, 30*time.Second)
+		Attachments: images, Files: files}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -926,7 +1106,7 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 		opts = append(opts, func(m *model.Message) { m.HoldUntil = m.CreatedAt.Add(hold) })
 	}
 	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds,
-		Images: args.Images, Attachments: args.Attachments}, opts...)
+		Images: args.Images, Attachments: args.Attachments, Files: args.Files, FileAttachments: args.FileAttachments}, opts...)
 	if err != nil {
 		return fleet.AskResult{Status: fleet.AskFailed, Error: err.Error()}
 	}
@@ -1108,26 +1288,97 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 			}
 		}
 		res.Ticket = t
+		// Checking an ask reads nothing else: swk mcp polls a ticket while
+		// fleet_ask waits, and would mark messages read unseen.
+		res.Messages = []fleet.InboxMessage{}
+		return res, nil
 	}
 	limit := args.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 20
+	if limit <= 0 || limit > fleet.MaxInboxLimit {
+		limit = fleet.DefaultInboxLimit
 	}
-	filter := store.MessageFilter{Session: from.sessionID(), Limit: limit}
-	if from.sess == nil {
-		filter = store.MessageFilter{ToUser: true, Limit: limit}
+	var msgs []model.Message
+	switch {
+	case from.sess == nil:
+		msgs = r.s.store.Messages(store.MessageFilter{ToUser: true, Limit: limit})
+	case args.All:
+		msgs = r.s.store.Messages(store.MessageFilter{Session: from.sess.ID, Limit: limit})
+	default:
+		msgs, res.More = r.unread(from.sess.ID, limit)
 	}
-	msgs := r.s.store.Messages(filter)
 	for i := range msgs {
-		if len(msgs[i].Text) > 2000 {
-			msgs[i].Text = msgs[i].Text[:2000] + "…"
+		msgs[i].Text = clipInbox(msgs[i].Text)
+	}
+	if args.Verbose {
+		if msgs == nil {
+			msgs = []model.Message{}
+		}
+		res.Messages = msgs
+		return res, nil
+	}
+	out := make([]fleet.InboxMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo}
+		if from.sess != nil && m.FromSession == from.sess.ID {
+			out[i].To = m.To
 		}
 	}
-	res.Messages = msgs
-	if res.Messages == nil {
-		res.Messages = []model.Message{}
-	}
+	res.Messages = out
 	return res, nil
+}
+
+// unread returns the oldest limit messages to a session after its inbox
+// cursor, oldest first, with how many more there are, and moves the cursor
+// past those it returns. Messages still pending (in flight, or a reply held
+// for its asker) and replies handed straight to a waiting fleet_ask are not
+// unread: the session sees them otherwise.
+func (r *router) unread(sessionID string, limit int) ([]model.Message, int) {
+	sess, ok := r.s.store.Session(sessionID)
+	if !ok {
+		return nil, 0
+	}
+	var out []model.Message
+	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sessionID}) {
+		if m.ID <= sess.InboxRead {
+			break // newest first
+		}
+		if m.ToSession != sessionID || m.State == model.MsgPending || m.Inline {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	more := 0
+	if len(out) > limit {
+		more = len(out) - limit
+		out = out[:limit]
+	}
+	if len(out) > 0 {
+		r.markRead(sessionID, out[len(out)-1].ID)
+	}
+	return out, more
+}
+
+// markRead moves a session's inbox cursor forward to id.
+func (r *router) markRead(sessionID, id string) {
+	_, _ = r.s.store.UpdateSession(sessionID, func(s *model.Session) {
+		if id > s.InboxRead {
+			s.InboxRead = id
+		}
+	})
+}
+
+// clipInbox cuts a message's text for fleet_inbox, saying how much it left
+// out.
+func clipInbox(text string) string {
+	if len(text) <= fleet.InboxTextBytes {
+		return text
+	}
+	cut := fleet.InboxTextBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… [%d more bytes cut]", text[:cut], len(text)-cut)
 }
 
 // onDelivered records the hops of the message that started a session's
@@ -1144,6 +1395,8 @@ func (r *router) onDelivered(sessionID, messageID string) {
 	r.mu.Lock()
 	r.inbound[sessionID] = trigger{hops: m.Hops, msg: m.ID}
 	r.mu.Unlock()
+	// The session has seen it: fleet_inbox need not list it as unread.
+	r.markRead(sessionID, m.ID)
 }
 
 // onSettled sends a completion notice to a spawned session's parent.

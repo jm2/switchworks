@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package attach validates image attachments: the allowed types (sniffed
-// from the bytes, never taken from the sender), the size limits, and safe
-// display names. It also reads attachment files for the CLI and, under a
-// directory an agent may use, for the node (ReadWithin).
+// Package attach validates image and text-file attachments: the allowed
+// types (sniffed from the bytes, never taken from the sender), the size
+// limits, and safe display names. It also reads attachment files for the
+// CLI and, under a directory an agent may use, for the node (ReadWithin,
+// ReadFileWithin).
 package attach
 
 import (
@@ -70,12 +71,24 @@ func Ext(mime string) string {
 		return ".webp"
 	case "image/gif":
 		return ".gif"
+	case "text/plain":
+		return ".txt"
+	case "text/x-patch":
+		return ".patch"
+	case "text/x-diff":
+		return ".diff"
+	case "text/markdown":
+		return ".md"
+	case "application/json":
+		return ".json"
 	}
 	return ".bin"
 }
 
 // SafeName turns a sender's file name into a display name: the base name
-// only, printable characters, at most 100 bytes. It is never used as a path.
+// only, printable characters, at most 100 bytes. It is never used as a
+// path; a received file is written under DiskNames' form of it, in a
+// directory of the node's choosing.
 func SafeName(name string, i int, mime string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	if j := strings.LastIndex(name, "/"); j >= 0 {
@@ -97,7 +110,11 @@ func SafeName(name string, i int, mime string) string {
 		out = out[:len(out)-size]
 	}
 	if out == "" {
-		out = fmt.Sprintf("image-%d%s", i+1, Ext(mime))
+		noun := "image"
+		if !strings.HasPrefix(mime, "image/") && mime != "" {
+			noun = "file"
+		}
+		out = fmt.Sprintf("%s-%d%s", noun, i+1, Ext(mime))
 	}
 	return out
 }

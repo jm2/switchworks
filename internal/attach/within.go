@@ -5,6 +5,7 @@ package attach
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,11 +29,34 @@ import (
 //
 // name may be relative to dir or absolute.
 func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
+	return readWithin(dir, name, deny, imageKind)
+}
+
+// ReadFileWithin reads a text file an agent attaches to a message, with
+// the same path checks as ReadWithin: at most MaxFileBytes, and text by its
+// bytes (see SniffText).
+func ReadFileWithin(dir, name string, deny []string) (model.Attachment, error) {
+	return readWithin(dir, name, deny, fileKind)
+}
+
+// kind is what readWithin reads: images or text files.
+type kind struct {
+	noun  string // "image" or "file", for messages
+	limit int64
+	read  func(r io.Reader, name string) (model.Attachment, error)
+}
+
+var (
+	imageKind = kind{"image", MaxImageBytes, readImage}
+	fileKind  = kind{"file", MaxFileBytes, readText}
+)
+
+func readWithin(dir, name string, deny []string, k kind) (model.Attachment, error) {
 	if name == "" || strings.ContainsRune(name, 0) {
-		return model.Attachment{}, errors.New("empty or invalid image path")
+		return model.Attachment{}, fmt.Errorf("empty or invalid %s path", k.noun)
 	}
 	if dir == "" || !filepath.IsAbs(dir) {
-		return model.Attachment{}, errors.New("this session has no working directory to read images from")
+		return model.Attachment{}, fmt.Errorf("this session has no working directory to read %ss from", k.noun)
 	}
 	realDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -40,7 +64,7 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 	}
 	rel, ok := relInside(name, dir, realDir)
 	if !ok {
-		return model.Attachment{}, fmt.Errorf("%s is outside this session's working directory (%s); images must be files under it", name, dir)
+		return model.Attachment{}, fmt.Errorf("%s is outside this session's working directory (%s); %ss must be files under it", name, dir, k.noun)
 	}
 	real, err := filepath.EvalSymlinks(filepath.Join(realDir, rel))
 	if err != nil {
@@ -61,7 +85,7 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 			return model.Attachment{}, fmt.Errorf("%s is inside Switchworks's own directory and cannot be attached", name)
 		}
 	}
-	return openConfined(realDir, rel, name, deny)
+	return openConfined(realDir, rel, name, deny, k)
 }
 
 // openConfined opens realDir/rel one component at a time, each through the
@@ -70,7 +94,7 @@ func ReadWithin(dir, name string, deny []string) (model.Attachment, error) {
 // swapping a component for a symlink mid-read is caught. Directories are
 // compared with deny by identity, not by name, which also covers names
 // that differ only in case on macOS and Windows.
-func openConfined(realDir, rel, name string, deny []string) (model.Attachment, error) {
+func openConfined(realDir, rel, name string, deny []string, k kind) (model.Attachment, error) {
 	var denied []os.FileInfo
 	for _, d := range deny {
 		if d == "" {
@@ -138,8 +162,8 @@ func openConfined(realDir, rel, name string, deny []string) (model.Attachment, e
 		return model.Attachment{}, fmt.Errorf("%s is a symlink; attach the file itself", name)
 	case !fi.Mode().IsRegular():
 		return model.Attachment{}, fmt.Errorf("%s is not a regular file", name)
-	case fi.Size() > MaxImageBytes:
-		return model.Attachment{}, fmt.Errorf("%s is %d bytes; the limit is %d (5 MiB)", name, fi.Size(), MaxImageBytes)
+	case fi.Size() > k.limit:
+		return model.Attachment{}, fmt.Errorf("%s is %d bytes; the limit is %d (%d MiB)", name, fi.Size(), k.limit, k.limit>>20)
 	case hardLinked(fi):
 		// Another name for it may be anywhere, Switchworks's directories
 		// included.
@@ -154,7 +178,7 @@ func openConfined(realDir, rel, name string, deny []string) (model.Attachment, e
 	if err != nil || !os.SameFile(fi, st) || !st.Mode().IsRegular() || hardLinked(st) {
 		return model.Attachment{}, fmt.Errorf("%s changed while it was being read", name)
 	}
-	return readImage(f, filepath.Base(rel))
+	return k.read(f, filepath.Base(rel))
 }
 
 // relInside returns name relative to dir (or to realDir, its resolved

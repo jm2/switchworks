@@ -95,8 +95,8 @@ func decodeBody(r *http.Request, v any) error { return decodeBodyLimit(r, v, 4<<
 
 // maxImageBody bounds the bodies of the endpoints that take image
 // attachments: up to attach.MaxTotalBytes of images (about 13.4 MiB as
-// base64) plus the text.
-const maxImageBody = 16 << 20
+// base64), attach.MaxFileTotalBytes of files (about 2.7 MiB) and the text.
+const maxImageBody = 20 << 20
 
 // decodeBodyLimit is decodeBody with its own size limit: small for the
 // endpoints anyone can reach, larger for those that take images.
@@ -348,6 +348,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		Mode        string             `json:"mode"`
 		From        string             `json:"from"`
 		Attachments []model.Attachment `json:"attachments"`
+		Files       []model.Attachment `json:"files"`
 	}
 	if err := decodeBodyLimit(r, &body, maxImageBody); err != nil {
 		writeErr(w, 400, err)
@@ -380,7 +381,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode,
-		Attachments: body.Attachments})
+		Attachments: body.Attachments, FileAttachments: body.Files})
 	if err != nil {
 		writeErr(w, routeStatus(err), err)
 		return
@@ -441,20 +442,24 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		if body.Mode == "" {
 			body.Mode = model.ModeAuto
 		}
-		msgs, err := s.router.send(r.Context(), from, kind, fleet.SendArgs{To: body.To, Text: body.Text, Mode: body.Mode,
-			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments})
+		res, err := s.router.sendEach(r.Context(), from, kind, fleet.SendArgs{To: body.To, ToList: body.ToList, Text: body.Text, Mode: body.Mode,
+			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments, FileAttachments: body.Files})
 		if err != nil {
 			writeErr(w, routeStatus(err), err)
 			return
 		}
-		writeJSON(w, 202, fleet.SendResult{Messages: infos(msgs)})
+		writeJSON(w, 202, res)
 	case model.MsgAsk:
+		if len(body.ToList) > 0 {
+			writeErr(w, 400, errors.New("an ask goes to exactly one recipient"))
+			return
+		}
 		wait := 0
 		if body.WaitSeconds != nil {
 			wait = *body.WaitSeconds
 		}
 		res := s.router.ask(r.Context(), from, fleet.AskArgs{To: body.To, Text: body.Text, WaitSeconds: &wait, TTLSeconds: body.TTLSeconds,
-			Attachments: body.Attachments})
+			Attachments: body.Attachments, FileAttachments: body.Files})
 		if res.Status == fleet.AskFailed && res.MessageID == "" {
 			writeErr(w, 400, errors.New(res.Error))
 			return

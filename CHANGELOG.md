@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dimmed "Queued, N ahead" bubble with Send now and Cancel; agents' queued messages show as one
   row with Clear. `GET /v1/sessions/{id}/queue`, `POST /v1/messages/{id}/promote` and
   `POST /v1/messages/{id}/cancel` (the sender or an owner) do the same through the API.
+- **Messages to several recipients** — `fleet_send`'s `to` (and the API's, and `swk msg --to`
+  repeated) takes a list of addresses: one message per recipient, sharing a group id, and a
+  result that lists each one's id or why it could not go. Limits count every recipient.
+- **File attachments** — Messages carry up to 4 text files (patches, logs; 1 MiB each): `files`
+  in `fleet_send`/`fleet_ask`, checked like images, and `--file` on `swk send`, `msg` and `ask`.
+  The receiving node writes them under `~/.cache/switchworks/files` and the message gives the paths.
 
 ### Changed
 
@@ -38,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message with its own header, instead of one turn (and one full-context model call) per message.
 - **People's messages first** — The owner's messages, then other people's, wait ahead of agents'
   in a session's queue, so a backlog of agent traffic no longer holds them back for hours.
+- **fleet_inbox lists unread messages** — By default it returns only messages the session has
+  not seen (in an earlier call or as a turn), in a compact form, instead of the last 20 full
+  records each time. `all: true` lists recent traffic and `verbose: true` gives full records.
 
 ### Fixed
 

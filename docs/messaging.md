@@ -37,10 +37,10 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message; `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)) |
-| `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images` |
+| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)); `files` (see [Files](#files)) |
+| `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images`; `files` |
 | `fleet_reply` | answer an ask, by its `msg` id |
-| `fleet_inbox` | recent traffic for this session; with `ticket`, check or wait on an ask |
+| `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
@@ -55,6 +55,27 @@ The model sees the tools in the `mcp__swk` namespace.
   first, then by path).
 - `user:<name>`: a person. They read it in the web UI's Inbox or with `swk inbox`, and answer asks
   there or with `swk reply`.
+
+### Several recipients
+
+`fleet_send`'s `to` (and `to` in `POST /v1/messages`, and repeated `--to`
+in `swk msg`) can be a list of up to 64 addresses of any of these forms,
+so an agent tells four peers the same thing in one tool call rather than
+four. Each recipient gets its own message record and delivery state; the
+records share a `group` id (as a broadcast's do), and a session named by
+two addresses gets one message. The result lists each recipient's message
+id and state, or `state: "refused"` with the reason for an address that
+cannot take it (unknown, the sender itself, a harness that takes no
+images): the others still go. If none can, the call fails and names each.
+
+Limits count every recipient: `max_broadcast` caps the sessions one
+agent's send reaches, and each recipient takes its own token from the
+`send_per_minute` and `out_per_minute` buckets. A limit refuses the whole
+send, as does steering or interrupting a session the agent did not spawn.
+An ask still goes to exactly one recipient.
+
+An older coordinator refuses a list ("cannot unmarshal array"); a send to
+one address reads the same to it.
 
 ## What the receiving agent sees
 
@@ -107,6 +128,45 @@ of the same turn's input:
 does level 1 render?
 ```
 
+A message with files names the receiving node's copy of each
+([Files](#files)):
+
+```
+[switchworks msg=01M42… from=winbox/port kind=notify]
+(1 file attached: /home/dev/.cache/switchworks/files/01M3Z…/01M42…/0001-fix-parser.patch (text/x-patch, 12 KiB).)
+please git am this and push
+```
+
+A plain message from the owner has no header, but the line naming its
+files comes first all the same.
+
+## Inbox
+
+Every message reaches its agent as a turn (or as part of one), so agents
+need not poll `fleet_inbox`, and the tool's description tells them so.
+It is there for an agent that wants to look back:
+
+- By default it lists the messages to the session that it has not seen
+  yet, oldest first, at most `limit` (default 20, max 200; `more` says how
+  many are left). The coordinator keeps a cursor per session, the newest
+  message the session has seen, which moves on when `fleet_inbox` returns
+  messages and when a message is delivered as a turn. Messages still
+  pending (in flight, or a reply held for a waiting `fleet_ask`) and
+  replies handed straight to a waiting `fleet_ask` are not listed. With
+  nothing new it returns `{"messages": []}`.
+- `all: true` lists recent messages to and from the session, newest
+  first, seen or not, and does not move the cursor.
+- Each message is compact: `{id, kind, from, created_at, text, re}`
+  (`re` on replies; `to` on messages the session sent). `verbose: true`
+  returns full records instead.
+- Text is cut at 2,000 bytes, with a note such as `… [1000 more bytes
+  cut]`.
+- With `ticket` it reports only on that ask (and lists no messages), so a
+  `fleet_ask` waiting on its ticket does not mark messages seen.
+
+An older coordinator refuses `all` and `verbose` ("unknown field"); update
+the coordinator before the nodes.
+
 ## Images
 
 Messages (`fleet_send`, `fleet_ask`, `swk send`/`msg`/`ask`, the web UI)
@@ -118,9 +178,10 @@ another host.
 5 MiB each and 10 MiB in all. The type is sniffed from the bytes (magic
 numbers); a declared type that disagrees is refused. Each check runs on
 the sender's node (or CLI or browser), again on the coordinator, and again
-on the receiving node. As base64, the largest message is about 13.4 MiB,
-well under the 32 MiB limit of a node connection's line. The API accepts
-bodies up to 16 MiB on the three endpoints that take images and 4 MiB
+on the receiving node. As base64, a message's images are at most about
+13.4 MiB (16.1 MiB with [files](#files)), well under the 32 MiB limit of
+a node connection's line. The API accepts
+bodies up to 20 MiB on the three endpoints that take images and 4 MiB
 elsewhere.
 
 **Which harnesses.** Each node reports which of its harnesses take images,
@@ -192,6 +253,72 @@ the message is delivered. Codex's image files go in
 when the node restarts, or when the session stops. Events
 (`message.queued`, `message.delivered`, the turn's `userMessage` item)
 carry metadata only.
+
+## Files
+
+Messages (`fleet_send`, `fleet_ask`, `swk send`/`msg`/`ask` with
+`--file`, the API) can carry text files: a `git format-patch` from an
+agent that cannot push (Codex on Windows keeps `.git` read-only and has
+no network) for one that can, a log, notes. The receiver gets an exact
+copy on disk and its path, so no model copies bytes by hand.
+
+**Limits.** At most 4 files per message, 1 MiB each and 2 MiB in all.
+A file must be UTF-8 text without NUL bytes; anything else (archives,
+binaries, images: send those as `images`) is refused. The type is
+`text/x-patch` (`.patch`), `text/x-diff` (`.diff`), `text/markdown`
+(`.md`), `application/json` (`.json`, when it parses) or `text/plain`; it
+is decided from the bytes and the name, never taken from the sender. Each
+check runs on the sender's node (or CLI), again on the coordinator, and
+again on the receiving node. A message may carry images and files
+together: as base64 that is at most about 16.1 MiB, still well under the
+32 MiB line limit, and the API's limit on the endpoints that take them is
+20 MiB.
+
+**Agents attach files by path**, in `files`, exactly as they attach
+images: the sender's node reads them with the same checks (inside the
+session's recorded working directory, opened one component at a time
+with no symlink or junction on the way, a regular file without other
+hard links on Unix, never under Switchworks's own directories; see
+[Images](#images)). `swk mcp` and the node's local API refuse a
+`file_attachments` argument from an agent (in any letter case), and paths
+never reach the coordinator. Files go to agent sessions only: a send to
+`user:<name>` with files is refused, since the inbox shows none.
+
+**Storage.** The coordinator keeps files as it keeps images: metadata
+(name, type, size, SHA-256) in the message record (`files`), the bytes in
+its attachment store under their digest, with the same retention, limits
+and eviction (images and files share the store). One agent may send at
+most 8 MiB of files a minute, besides its 20 MiB of images.
+
+**On the receiving node.** When the node accepts the message it writes
+each file to `<files dir>/<session>/<message>/<name>` (folders 0700,
+files 0600; the name is the sender's, cut to its base name, made safe,
+made unique within the message and kept clear of names Windows reserves),
+and the message's header names the paths. `<files dir>` is
+`files_dir` in `node.json`, by default `switchworks/files` in the user
+cache directory: `~/.cache/switchworks/files` on Linux,
+`~/Library/Caches/switchworks/files` on macOS,
+`%LocalAppData%\switchworks\files` on Windows. Not the node's directory:
+the Codex permission profile that keeps credentials from agents denies
+reads of the whole Switchworks config directory (`~/.config/swk`, with
+the node key; see [harnesses.md](harnesses.md#codex-network-without-exposing-credentials)),
+so a sandboxed agent could not read files there. Not the session's
+working directory either, where they would clutter a repository. Codex's
+`read-only` and `workspace-write` sandboxes let commands read outside the
+workspace, so the agent reads (and `git am`s) them where they are; a
+profile must not deny the files directory. A node that has no cache
+directory, and a node from before 0.1.5, do not offer files, and the
+coordinator refuses files for their sessions before storing anything (and
+fails a waiting message whose node has stopped offering them, rather than
+deliver it without them).
+
+A message's folder is removed 7 days after the message left the node's
+queue (an hourly sweep keeps it while it waits there). Events
+(`message.queued`, `message.delivered`) carry no file contents.
+
+An older coordinator refuses a message with files ("unknown field"), so
+update the coordinator first, then the nodes: each node offers files once
+it runs this version.
 
 ## Delivery
 
@@ -296,7 +423,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_stop_any` | false | let agents stop sessions they did not spawn |
 | `allow_steer_any` | false | let agents interrupt sessions they did not spawn, and steer ones that do not accept steering (any agent may steer the rest: steering only adds input to a turn) |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
-| `max_broadcast` | 8 | recipients of one broadcast from an agent |
+| `max_broadcast` | 8 | recipients of one broadcast, or one send to several addresses, from an agent |
 | `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose), or a read-only one spawn agy |
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
@@ -392,16 +519,23 @@ node and its agents as a separate user. In particular:
 
 The fleet tools themselves do not widen what an agent can read: the files
 an agent attaches as images are confined to its working directory and
-never come from Switchworks's own directories ([Images](#images)). Images
-an agent receives are model input like any message text, and a crafted
-image can carry instructions the same way text can.
+never come from Switchworks's own directories ([Images](#images)), and
+the same goes for the files it attaches ([Files](#files)). Images an
+agent receives are model input like any message text, and a crafted
+image can carry instructions the same way text can. A received file is
+as untrusted as the message that brought it: a patch can change anything
+it applies to, hooks included, so review it before applying it outside a
+sandbox. The receiving node writes files only into its own folder for
+the message, under names it chose, and never runs them.
 
 ## CLI
 
 ```sh
 swk msg buildbox/helper "the build is green"         # by address
 swk msg --broadcast @role=reviewer "please look at PR 42"
+swk msg --to devbox/a --to buildbox/b "rebased on main"   # several recipients
 swk msg --image shot.png --image diff.png reviewer "these two frames"
+swk send --file 0001-fix.patch linuxbox/ci "git am this and push"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
 swk reply <ask-id> "yes, go ahead"
@@ -413,12 +547,12 @@ swk usage                                        # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments}` |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks) |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
 | GET | `/v1/usage` | daily totals, by host, by model |
-| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments}`; routed (202 with `state` and `mode`) |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at}]}`; `position` counts those ahead |
@@ -434,5 +568,6 @@ gets 403 naming the scope it needs. Reading a stored image
 needs `read`.
 
 `attachments` is a list of `{name, mime, data}` with `data` in base64;
-`mime` may be left out (it is sniffed). Messages returned by the API carry
-`attachments` without `data`.
+`mime` may be left out (it is sniffed). `files` has the same form, for
+text files. Messages returned by the API carry
+`attachments` and `files` without `data`.

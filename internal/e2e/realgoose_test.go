@@ -58,6 +58,7 @@ func startGooseNode(t *testing.T, c *apiclient.Client, host, bin string, mock *c
 			t.Logf("%s harness log:\n%s", host, b)
 		}
 	})
+	cfg.FilesDir = filepath.Join(dir, "received-files")
 	g := &gooseNode{dir: dir, cfg: cfg}
 	g.run(t)
 	return g

@@ -91,11 +91,7 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 		if a.Mode == "" {
 			a.Mode = model.ModeAuto
 		}
-		msgs, err := s.router.send(ctx, from, kind, a)
-		if err != nil {
-			return nil, err
-		}
-		return fleet.SendResult{Messages: infos(msgs)}, nil
+		return s.router.sendEach(ctx, from, kind, a)
 	case wire.ReqAsk:
 		a, err := decodeArgs[fleet.AskArgs](raw)
 		if err != nil {

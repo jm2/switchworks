@@ -30,6 +30,9 @@ type Host struct {
 	// Only that certificate may connect: enrolling again replaces it, and
 	// removing the host revokes it.
 	CertSHA256 string `json:"cert_sha256,omitempty"`
+	// Files: the host's node takes file attachments (wire.FeatureFiles), as
+	// it last reported.
+	Files bool `json:"files,omitempty"`
 }
 
 // Session modes.
@@ -124,6 +127,10 @@ type Session struct {
 	// EndedAt is when, by the coordinator's clock, the session was last
 	// seen to stop or go (zero while it runs). Retention counts from it.
 	EndedAt time.Time `json:"ended_at,omitzero"`
+	// InboxRead is the id of the newest message to the session that it has
+	// seen, in fleet_inbox or as a turn (coordinator only): fleet_inbox
+	// lists the messages after it as unread.
+	InboxRead string `json:"inbox_read,omitempty"`
 }
 
 // Steerable reports whether messages in mode auto may go into the

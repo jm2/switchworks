@@ -283,6 +283,16 @@ Those are the Linux paths. On macOS, deny
 apps' folders under `~/Library/Application Support` (Claude, Antigravity,
 Code, browsers) plus `~/Library/Cookies`.
 
+Leave the directory of received files readable: `~/.cache/switchworks`
+(`~/Library/Caches/switchworks` on macOS, `~/AppData/Local/switchworks`
+on Windows), where the node writes the files messages carry and from
+where agents read them ([messaging.md](messaging.md#files)). It holds
+nothing but those files, and is outside `~/.config/swk` for that reason.
+Under Windows' elevated sandbox the sandbox accounts may not be able to
+read your profile's `AppData\Local`; this has not been tried, so set
+`files_dir` in `node.json` to a folder they can read if a sandboxed
+agent there cannot open its files.
+
 Then name the profile in `node.json`:
 
 ```json

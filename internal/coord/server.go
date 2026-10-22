@@ -247,6 +247,7 @@ func (s *Server) handleNode(c net.Conn) {
 	}
 	rec.OS, rec.Arch, rec.Version, rec.Adapters = hello.OS, hello.Arch, hello.Version, hello.Adapters
 	rec.Images = hello.Images
+	rec.Files = contains(hello.Features, wire.FeatureFiles)
 	rec.Connected, rec.LastSeen = true, time.Now()
 	_ = s.store.UpsertHost(rec)
 	s.mu.Lock()

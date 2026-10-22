@@ -126,65 +126,99 @@ func (n *Node) dropImages(id string) {
 	_ = os.RemoveAll(n.scratchDir(id))
 }
 
+// pathArg is a fleet argument that lists files an agent attaches by path,
+// and the argument the node replaces it with, holding their contents.
+type pathArg struct {
+	paths, data string // e.g. "images" -> "attachments"
+	max         int
+	read        func(dir, name string, deny []string) (model.Attachment, error)
+	normalize   func([]model.Attachment) ([]model.Attachment, error)
+}
+
+var (
+	imagesArg = pathArg{"images", "attachments", attach.MaxImages, attach.ReadWithin, attach.Normalize}
+	filesArg  = pathArg{"files", "file_attachments", attach.MaxFiles, attach.ReadFileWithin, attach.NormalizeFiles}
+)
+
 // resolveImages replaces the "images" (file paths) of an agent's fleet
-// request with the files' contents as "attachments". Agents cannot pass
-// attachments directly: everything goes through the path checks.
-func (n *Node) resolveImages(s *session, body []byte) ([]byte, error) {
+// request with the files' contents as "attachments", and likewise each
+// other pathArg given ("files" with "file_attachments"). Agents cannot
+// pass the contents directly: everything goes through the path checks.
+func (n *Node) resolveImages(s *session, body []byte, extra ...pathArg) ([]byte, error) {
 	var raw map[string]json.RawMessage
 	if json.Unmarshal(body, &raw) != nil {
 		return body, nil // the coordinator reports bad arguments
 	}
+	args := append([]pathArg{imagesArg}, extra...)
 	// The coordinator matches field names without regard to case, so
 	// "Attachments" counts too.
 	for k := range raw {
-		if strings.EqualFold(k, "attachments") {
-			return nil, errors.New(`attach images by file path, in "images"`)
-		}
-		if strings.EqualFold(k, "images") && k != "images" {
-			return nil, errors.New(`spell it "images"`)
+		for _, a := range args {
+			if strings.EqualFold(k, a.data) {
+				return nil, fmt.Errorf("attach %s by file path, in %q", a.paths, a.paths)
+			}
+			if strings.EqualFold(k, a.paths) && k != a.paths {
+				return nil, fmt.Errorf("spell it %q", a.paths)
+			}
 		}
 	}
-	imgRaw, ok := raw["images"]
-	if !ok {
+	changed := false
+	for _, a := range args {
+		listRaw, ok := raw[a.paths]
+		if !ok {
+			continue
+		}
+		delete(raw, a.paths)
+		changed = true
+		b, err := n.readPaths(s, a, listRaw)
+		if err != nil {
+			return nil, err
+		}
+		if b != nil {
+			raw[a.data] = b
+		}
+	}
+	if !changed {
 		return body, nil
 	}
-	delete(raw, "images")
-	var files []string
-	if err := json.Unmarshal(imgRaw, &files); err != nil {
-		return nil, errors.New(`"images" must be a list of file paths`)
-	}
-	if len(files) > attach.MaxImages {
-		return nil, fmt.Errorf("%d images; at most %d per message", len(files), attach.MaxImages)
-	}
-	if len(files) > 0 {
-		s.mu.Lock()
-		cwd, root := s.rec.Spec.Cwd, s.rec.Spec.CwdRoot
-		s.mu.Unlock()
-		if abs, err := filepath.Abs(cwd); err == nil {
-			cwd = abs
-		}
-		if err := proc.CheckPinned(root, cwd); err != nil {
-			return nil, err
-		}
-		atts := make([]model.Attachment, 0, len(files))
-		for _, p := range files {
-			// Never Switchworks's own files (node key, session secrets,
-			// cli.json), even when they sit under the working directory.
-			a, err := attach.ReadWithin(cwd, p, []string{n.dir, paths.Base(), filepath.Dir(paths.CLIConfig())})
-			if err != nil {
-				return nil, err
-			}
-			atts = append(atts, a)
-		}
-		atts, err := attach.Normalize(atts)
-		if err != nil {
-			return nil, err
-		}
-		b, err := json.Marshal(atts)
-		if err != nil {
-			return nil, err
-		}
-		raw["attachments"] = b
-	}
 	return json.Marshal(raw)
+}
+
+// readPaths reads the files of one pathArg under the session's working
+// directory and returns their contents, as JSON, or nil for none.
+func (n *Node) readPaths(s *session, a pathArg, listRaw json.RawMessage) (json.RawMessage, error) {
+	var files []string
+	if err := json.Unmarshal(listRaw, &files); err != nil {
+		return nil, fmt.Errorf("%q must be a list of file paths", a.paths)
+	}
+	if len(files) > a.max {
+		return nil, fmt.Errorf("%d %s; at most %d per message", len(files), a.paths, a.max)
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	cwd, root := s.rec.Spec.Cwd, s.rec.Spec.CwdRoot
+	s.mu.Unlock()
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
+	}
+	if err := proc.CheckPinned(root, cwd); err != nil {
+		return nil, err
+	}
+	atts := make([]model.Attachment, 0, len(files))
+	for _, p := range files {
+		// Never Switchworks's own files (node key, session secrets,
+		// cli.json), even when they sit under the working directory.
+		at, err := a.read(cwd, p, []string{n.dir, paths.Base(), filepath.Dir(paths.CLIConfig())})
+		if err != nil {
+			return nil, err
+		}
+		atts = append(atts, at)
+	}
+	atts, err := a.normalize(atts)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(atts)
 }

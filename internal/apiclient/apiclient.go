@@ -241,14 +241,22 @@ type SendResult struct {
 
 // Send delivers a message into a session, with optional images.
 func (c *Client) Send(ctx context.Context, id, text, mode, from string, images ...model.Attachment) (SendResult, error) {
+	return c.SendMessage(ctx, id, SessionMessage{Text: text, Mode: mode, From: from, Attachments: images})
+}
+
+// SessionMessage is the body of POST /v1/sessions/{id}/messages.
+type SessionMessage struct {
+	Text        string             `json:"text"`
+	Mode        string             `json:"mode"`
+	From        string             `json:"from"`
+	Attachments []model.Attachment `json:"attachments,omitempty"` // images
+	Files       []model.Attachment `json:"files,omitempty"`       // text files
+}
+
+// SendMessage delivers a message into a session.
+func (c *Client) SendMessage(ctx context.Context, id string, m SessionMessage) (SendResult, error) {
 	var out SendResult
-	body := struct {
-		Text        string             `json:"text"`
-		Mode        string             `json:"mode"`
-		From        string             `json:"from"`
-		Attachments []model.Attachment `json:"attachments,omitempty"`
-	}{text, mode, from, images}
-	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages", body, &out)
+	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages", m, &out)
 }
 
 // Attachment fetches a stored image by its SHA-256.
@@ -260,15 +268,50 @@ func (c *Client) Attachment(ctx context.Context, sha256 string) (model.Attachmen
 // PostMessage is the body of POST /v1/messages: a message from a person
 // to any address.
 type PostMessage struct {
-	From        string `json:"from,omitempty"` // "user:<name>" (default user:cli)
-	To          string `json:"to"`
-	Kind        string `json:"kind,omitempty"` // notify (default) | ask | broadcast
-	Text        string `json:"text"`
-	Mode        string `json:"mode,omitempty"`
-	TTLSeconds  int    `json:"ttl_seconds,omitempty"`
-	WaitSeconds *int   `json:"wait_seconds,omitempty"` // ask only
+	From string `json:"from,omitempty"` // "user:<name>" (default user:cli)
+	// To is the address. In JSON "to" may also be a list of addresses
+	// (notify and broadcast only), which fills ToList instead.
+	To          string   `json:"to"`
+	ToList      []string `json:"-"`
+	Kind        string   `json:"kind,omitempty"` // notify (default) | ask | broadcast
+	Text        string   `json:"text"`
+	Mode        string   `json:"mode,omitempty"`
+	TTLSeconds  int      `json:"ttl_seconds,omitempty"`
+	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files are text files (data, base64 in JSON), for agent sessions.
+	Files []model.Attachment `json:"files,omitempty"`
+}
+
+type postMessageJSON PostMessage
+
+// UnmarshalJSON takes "to" as one address or a list (fleet.DecodeTo),
+// refusing unknown fields.
+func (m *PostMessage) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		postMessageJSON
+		To json.RawMessage `json:"to"`
+	}
+	if err := fleet.StrictUnmarshal(b, &aux); err != nil {
+		return err
+	}
+	*m = PostMessage(aux.postMessageJSON)
+	var err error
+	m.To, m.ToList, err = fleet.DecodeTo(aux.To)
+	return err
+}
+
+// MarshalJSON writes "to" as a string unless ToList is set.
+func (m PostMessage) MarshalJSON() ([]byte, error) {
+	aux := struct {
+		postMessageJSON
+		To any `json:"to"`
+	}{postMessageJSON(m), m.To}
+	if len(m.ToList) > 0 {
+		aux.To = m.ToList
+	}
+	return json.Marshal(aux)
 }
 
 // PostMessage sends a notify or broadcast; the result is a fleet.SendResult.
