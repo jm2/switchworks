@@ -163,6 +163,9 @@ type session struct {
 	// steerBuf holds the messages that arrived meanwhile, to go in together.
 	steering bool
 	steerBuf []*steerReq
+	// sending holds the ids of the queued messages tryDeliver is handing
+	// to the harness, which can no longer be promoted or cancelled.
+	sending map[string]bool
 
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
@@ -1099,6 +1102,10 @@ func (n *Node) tryDeliver(s *session) {
 		}
 		s.delivering, s.redeliver = true, false
 		batch := append([]queuedMsg(nil), s.rec.Queue[:batchLen(s.rec.Queue)]...)
+		s.sending = map[string]bool{}
+		for _, m := range batch {
+			s.sending[m.ID] = true
+		}
 		h := s.h
 		// Record delivery before the turn's own events, so the log reads in
 		// order; a failure is recorded right after.
@@ -1126,7 +1133,7 @@ func (n *Node) tryDeliver(s *session) {
 		}
 
 		s.mu.Lock()
-		s.delivering = false
+		s.delivering, s.sending = false, nil
 		if errors.Is(err, adapter.ErrBusy) {
 			// Not delivered after all: they stay at the head of the queue and
 			// are retried on the next idle status, at once if one came in
@@ -1275,6 +1282,124 @@ func (s *session) reportQueueLocked() {
 	}
 }
 
+// queueList lists a session's queue (OpQueue).
+func (n *Node) queueList(s *session) json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
+	for i, m := range s.rec.Queue {
+		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
+			Images: len(m.Attachments), Position: i})
+	}
+	return model.Marshal(res)
+}
+
+// takeQueued removes a queued message for promote or cancel. It refuses one
+// that is not queued, or that tryDeliver is handing to the harness.
+func (s *session) takeQueued(id string) (queuedMsg, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sending[id] {
+		return queuedMsg{}, fmt.Errorf("message %s is being delivered now", id)
+	}
+	for i, m := range s.rec.Queue {
+		if m.ID == id {
+			s.rec.Queue = append(s.rec.Queue[:i:i], s.rec.Queue[i+1:]...)
+			return m, nil
+		}
+	}
+	return queuedMsg{}, fmt.Errorf("message %s is not queued in %s (delivered already?)", id, s.rec.Path)
+}
+
+// putFirst puts a message back at the very head of the queue: a promoted
+// message that could not go in now goes next.
+func (s *session) putFirst(m queuedMsg) {
+	s.mu.Lock()
+	s.rec.Queue = append([]queuedMsg{m}, s.rec.Queue...)
+	s.reportQueueLocked()
+	s.mu.Unlock()
+}
+
+// promote delivers a queued message now (OpPromote): steered into the
+// running turn, or with interrupt, first in the queue with the running turn
+// cancelled. A steer that finds no running turn leaves it first in the
+// queue, so it goes next.
+func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json.RawMessage, error) {
+	if c == nil || c.MessageID == "" {
+		return nil, errors.New("promote: missing message id")
+	}
+	if c.Mode != model.ModeSteer && c.Mode != model.ModeInterrupt {
+		return nil, fmt.Errorf("promote: mode %q (steer or interrupt)", c.Mode)
+	}
+	h, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	caps := h.Caps()
+	if c.Mode == model.ModeInterrupt && !caps.Interrupt {
+		return nil, fmt.Errorf("%s sessions cannot be interrupted", s.rec.Harness)
+	}
+	msg, err := s.takeQueued(c.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Mode == model.ModeSteer && caps.Steer && s.turnRunning(h) {
+		images, err := n.loadImages(s.rec.ID, msg.Attachments)
+		if err == nil {
+			err = n.steer(s, h, msg, images)
+		}
+		if err == nil {
+			s.mu.Lock()
+			s.reportQueueLocked()
+			s.mu.Unlock()
+			_ = n.saveState()
+			s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: model.ModeSteer})
+			s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeSteer, Attachments: msg.Attachments})
+			if len(msg.Attachments) > 0 {
+				n.gcImages(s)
+			}
+			return model.Marshal(wire.DeliverResult{Mode: model.ModeSteer}), nil
+		}
+		n.logf("session %s: steer of promoted message %s failed (%v); it goes next", s.rec.Path, msg.ID, err)
+	}
+	s.putFirst(msg)
+	_ = n.saveState()
+	mode := model.ModeQueue
+	if c.Mode == model.ModeInterrupt {
+		mode = model.ModeInterrupt
+	}
+	s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: mode})
+	if mode == model.ModeInterrupt {
+		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
+		}
+	}
+	go n.tryDeliver(s)
+	return model.Marshal(wire.DeliverResult{Mode: mode}), nil
+}
+
+// cancelQueued drops a queued message (OpCancel). Its id stays among the
+// seen ones, so a redelivery from the coordinator does not bring it back.
+func (n *Node) cancelQueued(s *session, c *wire.QueuedCmd) error {
+	if c == nil || c.MessageID == "" {
+		return errors.New("cancel: missing message id")
+	}
+	msg, err := s.takeQueued(c.MessageID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.reportQueueLocked()
+	s.mu.Unlock()
+	_ = n.saveState()
+	s.emit(model.KindMessageCancelled, model.MessageEvent{MessageID: msg.ID, From: msg.From})
+	if len(msg.Attachments) > 0 {
+		n.gcImages(s)
+	}
+	go n.tryDeliver(s) // the session may have settled
+	return nil
+}
+
 func (n *Node) stop(ctx context.Context, s *session) error {
 	s.mu.Lock()
 	if s.rec.Stopped {
@@ -1368,6 +1493,15 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 				return errors.New("policy: missing body")
 			}
 			return n.setPolicy(ctx, s, cmd.Policy.ApprovalPolicy)
+		case wire.OpQueue:
+			data = n.queueList(s)
+			return nil
+		case wire.OpPromote:
+			var err error
+			data, err = n.promote(ctx, s, cmd.Queued)
+			return err
+		case wire.OpCancel:
+			return n.cancelQueued(s, cmd.Queued)
 		}
 		return fmt.Errorf("unknown op %q", cmd.Op)
 	}()

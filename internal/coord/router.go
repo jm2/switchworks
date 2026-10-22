@@ -750,6 +750,55 @@ func (r *router) settle(id string, fn func(*model.Message)) (model.Message, bool
 	return cur, true
 }
 
+// promoted records the mode a promoted message went with.
+func (r *router) promoted(id, mode string) model.Message {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(id)
+	if ok && mode != "" && cur.Mode != mode {
+		cur.Mode = mode
+		_ = r.put(cur)
+	}
+	return cur
+}
+
+// cancelPending cancels a message the coordinator still holds, unless a
+// delivery of it is under way (the node may be taking it).
+func (r *router) cancelPending(id, by string) error {
+	r.mu.Lock()
+	if r.inflight[id] {
+		r.mu.Unlock()
+		return errors.New("the message is being delivered now; try again")
+	}
+	r.mu.Unlock()
+	if !r.cancelled(id, by) {
+		return errors.New("the message is no longer pending")
+	}
+	return nil
+}
+
+// cancelled marks a pending or queued message cancelled, wakes a fleet_ask
+// waiting on it (it will not be answered) and tells an agent that sent it.
+// It reports whether it changed the message.
+func (r *router) cancelled(id, by string) bool {
+	r.mu.Lock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || (cur.State != model.MsgPending && cur.State != model.MsgDelivered) || r.inflight[id] && cur.State == model.MsgPending {
+		r.mu.Unlock()
+		return false
+	}
+	cur.State, cur.Error = model.MsgCancelled, "cancelled by "+by
+	_ = r.put(cur)
+	ws := r.waiters[id]
+	delete(r.waiters, id)
+	for _, w := range ws {
+		w <- cur
+	}
+	r.mu.Unlock()
+	r.notifySender(cur, fmt.Sprintf("Your %s message %s to %s was cancelled by %s before it was delivered.", cur.Kind, cur.ID, cur.To, by))
+	return true
+}
+
 func (r *router) fail(m model.Message, why string) model.Message {
 	out, changed := r.settle(m.ID, func(cur *model.Message) { cur.State, cur.Error = model.MsgFailed, why })
 	if !changed {
@@ -905,7 +954,7 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 // returns the reply, or the ask itself if it failed.
 func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *model.Message {
 	r.mu.Lock()
-	if ask, ok := r.s.store.Message(askID); ok && ask.State == model.MsgFailed {
+	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled) {
 		r.mu.Unlock()
 		return &ask
 	}
@@ -1040,7 +1089,7 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 		}
 		t := &fleet.AskResult{Status: fleet.AskPending, MessageID: ask.ID, Target: ask.ToPath}
 		switch ask.State {
-		case model.MsgFailed, model.MsgExpired:
+		case model.MsgFailed, model.MsgExpired, model.MsgCancelled:
 			t.Status, t.Error = fleet.AskFailed, ask.Error
 		default:
 			wait := time.Duration(args.WaitSeconds) * time.Second

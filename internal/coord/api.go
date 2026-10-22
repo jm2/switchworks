@@ -48,6 +48,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"GET /v1/sessions/{id}", scopeRead, s.handleSession},
 		{"GET /v1/sessions/{id}/events", scopeRead, s.handleEvents},
 		{"GET /v1/sessions/{id}/stream", scopeRead, s.handleStream},
+		{"GET /v1/sessions/{id}/queue", scopeRead, s.handleQueue},
 		{"GET /v1/messages", scopeRead, s.handleListMessages},
 		{"GET /v1/messages/{id}", scopeRead, s.handleGetMessage},
 		{"GET /v1/usage", scopeRead, s.handleUsage},
@@ -65,6 +66,8 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
+		{"POST /v1/messages/{id}/promote", scopeOperate, s.handlePromote},
+		{"POST /v1/messages/{id}/cancel", scopeOperate, s.handleCancel},
 
 		// admin: change who is in the fleet and who may use it, and erase
 		// history.

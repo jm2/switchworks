@@ -36,8 +36,14 @@ system; the choice is kept per browser.
   The composer delivers **now** (into the running turn, or as a new turn
   when none is running; the default; a session that can't take input
   mid-turn gets it on the next turn), on the **next turn**, **interrupts
-  and sends**, or **asks** with the answer going to your inbox. Next to that menu, **Approvals** changes the session's approval
-  policy (Ask first, Ask if needed, Never ask) for sessions whose harness
+  and sends**, or **asks** with the answer going to your inbox. A message
+  that waits for the next turn shows below the transcript as a dimmed
+  **Queued** bubble with its place ("Queued, 3 ahead"), **Send now**
+  (steers it into the running turn, or interrupts a session that cannot
+  take one mid-turn) and **Cancel**; it becomes the usual message when its
+  turn starts. Messages queued by agents show as one row, "N queued from
+  agents", with **Clear** (an owner's browser only). Next to that menu,
+  **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser
   signed in with the admin token or an owner token. Interrupt and Stop are in the top bar; session details are at the

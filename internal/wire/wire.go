@@ -116,6 +116,11 @@ const (
 	OpResolve   = "resolve"
 	OpStop      = "stop"
 	OpPolicy    = "policy"
+	// Queue ops (nodes from 0.1.5; older ones answer "unknown op"): list a
+	// session's queue, deliver one queued message now, or drop one.
+	OpQueue   = "queue"
+	OpPromote = "promote"
+	OpCancel  = "cancel"
 )
 
 type Cmd struct {
@@ -125,7 +130,32 @@ type Cmd struct {
 	Message *MessageCmd    `json:"message,omitempty"`
 	Resolve *ResolveCmd    `json:"resolve,omitempty"`
 	Policy  *PolicyCmd     `json:"policy,omitempty"`
+	Queued  *QueuedCmd     `json:"queued,omitempty"`
 	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+// QueuedCmd names a queued message for OpPromote (with Mode steer or
+// interrupt) and OpCancel.
+type QueuedCmd struct {
+	MessageID string `json:"message_id"`
+	Mode      string `json:"mode,omitempty"`
+}
+
+// QueueResult answers OpQueue: the session's queued messages, in the
+// order they will be delivered.
+type QueueResult struct {
+	Messages []QueueEntry `json:"messages"`
+}
+
+// QueueEntry is one queued message. Position counts the messages ahead of
+// it.
+type QueueEntry struct {
+	ID       string `json:"id"`
+	From     string `json:"from"`
+	Kind     string `json:"kind,omitempty"`
+	Owner    bool   `json:"owner,omitempty"`
+	Images   int    `json:"images,omitempty"`
+	Position int    `json:"position"`
 }
 
 // SpawnCmd carries the coordinator's session record and the request.
@@ -165,7 +195,7 @@ type MessageCmd struct {
 	Attachments []model.Attachment `json:"attachments,omitempty"`
 }
 
-// DeliverResult is the data of a successful deliver command.
+// DeliverResult is the data of a successful deliver (or promote) command.
 type DeliverResult struct {
 	Mode      string `json:"mode"`                // how it was delivered: queue, steer or interrupt
 	Duplicate bool   `json:"duplicate,omitempty"` // already seen; nothing done

@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Store alias, which Codex's sandbox can't start, and says to install the PowerShell 7 MSI.
 - **Queue length** — Nodes report how many messages wait in each session's queue; `fleet_list`,
   `fleet_status`, the API and the web UI's session lists and details show it.
+- **Queued messages in the web UI** — A message that waits for a session's next turn shows as a
+  dimmed "Queued, N ahead" bubble with Send now and Cancel; agents' queued messages show as one
+  row with Clear. `GET /v1/sessions/{id}/queue`, `POST /v1/messages/{id}/promote` and
+  `POST /v1/messages/{id}/cancel` (the sender or an owner) do the same through the API.
 
 ### Changed
 

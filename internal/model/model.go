@@ -188,6 +188,8 @@ const (
 	KindMessageQueued     = "message.queued"
 	KindMessageDelivered  = "message.delivered"
 	KindMessageFailed     = "message.failed"
+	KindMessagePromoted   = "message.promoted"  // a queued message sent now (its mode says how)
+	KindMessageCancelled  = "message.cancelled" // a queued message taken out of the queue
 	KindUsage             = "usage"
 	KindError             = "error"
 	KindWarning           = "warning"

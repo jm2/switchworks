@@ -23,6 +23,7 @@ import (
 	"github.com/jm2/switchworks/internal/fleet"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/pki"
+	"github.com/jm2/switchworks/internal/wire"
 )
 
 // Config is the CLI's connection file (cli.json).
@@ -216,6 +217,22 @@ func (c *Client) Events(ctx context.Context, id string, after int64, limit int) 
 }
 
 // SendResult is the response to a message.
+// Queue is a session's queue (GET /v1/sessions/{id}/queue), in the order
+// its messages will be delivered.
+type Queue struct {
+	Session  string          `json:"session"`
+	Messages []QueuedMessage `json:"messages"`
+}
+
+// QueuedMessage is one queued message: the node's entry, and what the
+// coordinator's record adds.
+type QueuedMessage struct {
+	wire.QueueEntry
+	Text      string    `json:"text,omitempty"`
+	Via       string    `json:"via,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
+}
+
 type SendResult struct {
 	MessageID string `json:"message_id"`
 	State     string `json:"state,omitempty"`

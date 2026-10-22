@@ -5,6 +5,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,5 +392,93 @@ func TestSteersBatchedWhileInFlight(t *testing.T) {
 	}
 	if delivered := s.events(model.KindMessageDelivered); len(delivered) != 10 {
 		t.Fatalf("%d delivered events", len(delivered))
+	}
+}
+
+// queueIDs lists the session's queue through OpQueue.
+func queueIDs(t *testing.T, n *Node, s *session) []string {
+	t.Helper()
+	res := n.handleCmd(wire.Cmd{Op: wire.OpQueue, Session: s.rec.ID})
+	var qr wire.QueueResult
+	if !res.OK || json.Unmarshal(res.Data, &qr) != nil {
+		t.Fatalf("queue: %+v", res)
+	}
+	var out []string
+	for i, e := range qr.Messages {
+		if e.Position != i {
+			t.Fatalf("entry %d has position %d", i, e.Position)
+		}
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+// #38: a queued message can be steered in now, moved first with an
+// interrupt, or cancelled, after which a redelivery does not bring it back.
+func TestPromoteAndCancel(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive, steer: true}
+	n, s := queueNode(t, h)
+	ids := []string{ulid.New(), ulid.New(), ulid.New()}
+	for i, id := range ids {
+		send(t, n, s, wire.MessageCmd{ID: id, From: "devbox/b", Text: fmt.Sprint("msg ", i), Mode: model.ModeQueue})
+	}
+	if got := queueIDs(t, n, s); strings.Join(got, ",") != strings.Join(ids, ",") {
+		t.Fatalf("queue %v", got)
+	}
+	promote := func(id, mode string) wire.Result {
+		return n.handleCmd(wire.Cmd{Op: wire.OpPromote, Session: s.rec.ID, Queued: &wire.QueuedCmd{MessageID: id, Mode: mode}})
+	}
+
+	// Steered into the running turn.
+	res := promote(ids[1], model.ModeSteer)
+	var dr wire.DeliverResult
+	if !res.OK || json.Unmarshal(res.Data, &dr) != nil || dr.Mode != model.ModeSteer {
+		t.Fatalf("promote: %+v", res)
+	}
+	if d := h.deliveries(); len(d) != 1 || d[0].mode != adapter.DeliverSteer || !strings.Contains(d[0].in.Text, "msg 1") {
+		t.Fatalf("deliveries %+v", d)
+	}
+	if len(s.events(model.KindMessagePromoted)) != 1 {
+		t.Fatal("no message.promoted")
+	}
+
+	// Cancelled: gone from the queue, and a redelivery is a duplicate.
+	if res := n.handleCmd(wire.Cmd{Op: wire.OpCancel, Session: s.rec.ID, Queued: &wire.QueuedCmd{MessageID: ids[0]}}); !res.OK {
+		t.Fatalf("cancel: %s", res.Error)
+	}
+	if dup := send(t, n, s, wire.MessageCmd{ID: ids[0], From: "devbox/b", Text: "msg 0", Mode: model.ModeQueue}); !dup.Duplicate {
+		t.Fatal("a cancelled message came back")
+	}
+	if res := n.handleCmd(wire.Cmd{Op: wire.OpCancel, Session: s.rec.ID, Queued: &wire.QueuedCmd{MessageID: ids[0]}}); res.OK {
+		t.Fatal("cancelled twice")
+	}
+	if c := s.events(model.KindMessageCancelled); len(c) != 1 || !strings.Contains(c[0], ids[0]) {
+		t.Fatalf("message.cancelled events %v", c)
+	}
+
+	// A person's message waits ahead of agents'; an interrupt puts the
+	// promoted one first of all.
+	owner := ulid.New()
+	send(t, n, s, wire.MessageCmd{ID: owner, From: "user:web", Owner: true, Text: "mine", Mode: model.ModeQueue})
+	if res := promote(ids[2], model.ModeInterrupt); !res.OK || !strings.Contains(string(res.Data), model.ModeInterrupt) {
+		t.Fatalf("promote with interrupt: %+v", res)
+	}
+	if got := queueIDs(t, n, s); strings.Join(got, ",") != ids[2]+","+owner {
+		t.Fatalf("queue after interrupt %v", got)
+	}
+
+	// With no turn running, a steer leaves it first, to go next.
+	h.mu.Lock()
+	h.status = model.StatusWaitingApproval // not idle, but nothing to steer
+	h.steer = false
+	h.mu.Unlock()
+	if res := promote(owner, model.ModeSteer); !res.OK || !strings.Contains(string(res.Data), model.ModeQueue) {
+		t.Fatalf("promote without a steerable turn: %+v", res)
+	}
+	if got := queueIDs(t, n, s); strings.Join(got, ",") != owner+","+ids[2] {
+		t.Fatalf("queue %v", got)
+	}
+	if res := promote(ulid.New(), model.ModeSteer); res.OK || !strings.Contains(res.Error, "not queued") {
+		t.Fatalf("promoting an unknown message: %+v", res)
 	}
 }

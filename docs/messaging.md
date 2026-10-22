@@ -234,6 +234,16 @@ carry metadata only.
 - Each node reports how many messages wait in each session's queue
   (`session.queue`); `fleet_list`, `fleet_status`, `GET /v1/sessions` and
   the web UI show it. Older nodes do not report it.
+- A queued message can be sent now or cancelled, by its sender (the same
+  credential) or an owner (the admin token, an owner token, or a browser
+  one of those signed in): `POST /v1/messages/{id}/promote` with `mode`
+  `steer` (into the running turn; with none running it goes next, ahead of
+  the queue) or `interrupt`, and `POST /v1/messages/{id}/cancel`, after
+  which the node never delivers it. The node records `message.promoted`
+  and `message.cancelled`; a cancelled message's state is `cancelled`, an
+  agent that sent it gets a `system` notice, and a cancelled ask fails.
+  `GET /v1/sessions/{id}/queue` lists a session's queue in delivery order.
+  These need a node from 0.1.5 (an older one answers 409).
 - A queued message is delivered when its session goes idle. If the harness
   still says it is busy (Codex reports the thread idle a moment before the
   turn ends), the node tries again once the turn ends, or after 1, 5 and
@@ -411,8 +421,12 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
+| GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, messages: [{id, from, kind, owner, images, position, text, via, created_at}]}`; `position` counts those ahead |
+| POST | `/v1/messages/{id}/promote` | `{mode: steer|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
+| POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
-Reading needs a `read` token; sending, asking and replying need `operate`.
+Reading needs a `read` token; sending, asking, replying, promoting and
+cancelling need `operate`.
 API tokens are managed with `POST /v1/tokens` (`{name, scope, ttl_seconds}`;
 the secret comes back once), `GET /v1/tokens` and `DELETE
 /v1/tokens/{id-or-name}`, all admin only. A request beyond a token's scope

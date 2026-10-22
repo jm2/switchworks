@@ -23,6 +23,7 @@ const (
 	MsgAnswered  = "answered"  // an ask that has been replied to
 	MsgExpired   = "expired"
 	MsgFailed    = "failed"
+	MsgCancelled = "cancelled" // taken out of the queue before delivery
 )
 
 // Delivery modes.
@@ -81,7 +82,7 @@ type Message struct {
 // can still move from delivered to answered).
 func (m Message) Terminal() bool {
 	switch m.State {
-	case MsgExpired, MsgFailed, MsgAnswered:
+	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled:
 		return true
 	case MsgDelivered:
 		return m.Kind != MsgAsk
