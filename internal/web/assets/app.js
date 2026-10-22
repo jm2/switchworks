@@ -244,6 +244,30 @@ const statusLabel = {
 };
 const liveSession = (s) => s.status !== 'stopped' && s.status !== 'gone';
 
+// The composer's delivery mode, per session: Now (steer) unless the person
+// picked another, which holds until the session ends.
+const modeKey = (id) => 'swk-mode:' + id;
+function savedMode(id) {
+  try { return localStorage.getItem(modeKey(id)) || 'auto'; } catch (e) { return 'auto'; }
+}
+function saveMode(id, m) {
+  try {
+    if (m === 'auto') localStorage.removeItem(modeKey(id));
+    else localStorage.setItem(modeKey(id), m);
+  } catch (e) { /* this page only */ }
+}
+// Forgets the picks of sessions that have ended or are gone.
+function pruneModes() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('swk-mode:')) continue;
+      const s = S.sessions.get(k.slice('swk-mode:'.length));
+      if (!s || !liveSession(s)) localStorage.removeItem(k);
+    }
+  } catch (e) { /* nothing kept */ }
+}
+
 // ---------- fleet state, kept current by GET /v1/stream ----------
 
 const S = {hosts: new Map(), sessions: new Map(), messages: new Map(), live: false, ready: false};
@@ -294,6 +318,7 @@ function connectFleet() {
     S.sessions = new Map(d.sessions.map((x) => [x.id, x]));
     S.messages = new Map(d.messages.map((x) => [x.id, x]));
     S.ready = true;
+    pruneModes();
     setConn(true);
     changed('all');
   });
@@ -301,6 +326,7 @@ function connectFleet() {
     fleetES.addEventListener(type, (e) => {
       const d = JSON.parse(e.data);
       ({session: S.sessions, host: S.hosts, message: S.messages})[type].set(d.id, d);
+      if (type === 'session' && !liveSession(d)) saveMode(d.id, 'auto'); // ended: forget its pick
       changed(type, d);
     });
   }
@@ -313,6 +339,7 @@ function connectFleet() {
   fleetES.addEventListener('session_removed', (e) => {
     const d = JSON.parse(e.data);
     S.sessions.delete(d.id);
+    saveMode(d.id, 'auto');
     changed('session', d);
   });
   fleetES.onerror = () => {
@@ -858,11 +885,17 @@ function sessionView(id, full) {
   // Now (steer) goes into the running turn if there is one, and starts a
   // turn otherwise; a harness that cannot steer, or a session that does
   // not accept it, gets it on the next turn.
-  const mode = h('select', {'aria-label': 'How to deliver'},
+  // autocomplete off: the browser must not restore an earlier pick over
+  // the one kept for this session.
+  const mode = h('select', {'aria-label': 'How to deliver', autocomplete: 'off'},
     h('option', {value: 'auto', text: 'Now (steer)'}),
     h('option', {value: 'queue', text: 'Next turn'}),
     h('option', {value: 'interrupt', text: 'Interrupt and send'}),
     h('option', {value: 'ask', text: 'Ask, answer to Inbox'}));
+  let chosenMode = savedMode(id);
+  mode.value = chosenMode;
+  if (mode.value !== chosenMode) mode.value = chosenMode = 'auto';
+  mode.addEventListener('change', () => { chosenMode = mode.value; saveMode(id, chosenMode); });
   const sendBtn = h('button', {type: 'submit', class: 'send', 'aria-label': 'Send', title: 'Send'}, icon('send'));
   // Approval policy, for sessions that can change it while running.
   const policy = h('select', {'aria-label': 'Approval policy'},
@@ -907,6 +940,7 @@ function sessionView(id, full) {
       picker.clear();
       input.value = '';
       input.style.height = 'auto';
+      mode.value = chosenMode; // only the person changes it
       follow = true;
     } catch (err) {
       toast(err.message);
