@@ -629,7 +629,8 @@ func TestFleetTools(t *testing.T) {
 	if sdoc["modelProvider"] != "gemini" || len(allow) != 2 || allow[0] != "command(git)" || allow[1] != "mcp("+name+"/*)" {
 		t.Fatalf("settings %s", sb)
 	}
-	if fi, err := os.Stat(settings); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no Unix modes to keep.
+	if fi, err := os.Stat(settings); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("settings mode changed: %v %v", fi.Mode(), err)
 	}
 	// The credentials reach agy (and so `swk mcp`) through its environment.
@@ -1257,7 +1258,7 @@ func TestFleetToolsRuleLifecycle(t *testing.T) {
 	if got := strings.Join(allowRules(t, settings), " "); got != "command(git) mcp(swk/*) mcp(swk-x/*) "+rule {
 		t.Fatalf("rules after setup: %s", got)
 	}
-	if fi, _ := os.Stat(settings); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(settings); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("settings mode %v", fi.Mode())
 	}
 	_ = h.Stop(ctx)
@@ -1309,7 +1310,7 @@ func TestFleetToolsResumeAdopts(t *testing.T) {
 	}
 	fleetEntry(t, cfgPath)
 
-	if fi, err := os.Stat(settings); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(settings); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("new settings file: %v %v", fi, err)
 	}
 	a2, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
