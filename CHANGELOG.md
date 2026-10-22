@@ -7,12 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Codex config overrides** — `codex.config` in `node.json` is a map of Codex config overrides
+  the node passes as `-c key=value` ahead of `app-server`, values written in TOML and nested
+  objects as dotted keys, e.g. `{"model_auto_compact_token_limit": 128000}`.
+
 ### Changed
 
 - **Web messages steer by default** — The session composer now delivers into the running turn
   ("Steer now") unless you pick another mode. "Next turn" queued your message behind every message
   already waiting, which on a busy session meant hours. A session that can't take input mid-turn
   still queues it, and says so.
+
+### Fixed
+
+- **Codex args without a subcommand** — `codex.args` is Codex's whole argument list; one with only
+  `-c` overrides dropped `app-server` and every session failed with "connection closed". The node
+  now refuses it at start, and logs app-server's stderr when it fails to start.
 
 ### Security
 

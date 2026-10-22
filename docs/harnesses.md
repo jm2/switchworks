@@ -104,6 +104,52 @@ Anthropic endpoints have been exercised only through the mock provider's
 Anthropic Messages emulation (`swk dev mock-provider`), not with real keys.
 Keys in `node.json` are plain text (0600).
 
+## Codex: node.json settings
+
+The `codex` object in `node.json` configures how the node runs
+`codex app-server`. Every key is optional:
+
+| Key | What it does |
+| --- | --- |
+| `bin` | The `codex` binary (default `codex` on `PATH`). |
+| `home` | `CODEX_HOME` for app-server (default: Codex's own, `~/.codex`). |
+| `args` | Codex's **whole** argument list, subcommand included. Default `["app-server"]`. |
+| `config` | Config overrides, passed as `-c key=value` ahead of `args`. |
+| `permissions` | A permission profile for `workspace-write` sessions ([below](#codex-network-without-exposing-credentials)). |
+
+`args` replaces the argument list rather than adding to it, so it must
+still name the subcommand: `["-c", "x=1"]` alone runs Codex without
+`app-server`, and every session fails with "app-server initialize:
+jsonrpc: connection closed". The node refuses to start with such an
+`args`. Put overrides in `config` instead:
+
+```json
+"codex": {
+  "config": {
+    "model_auto_compact_token_limit": 128000,
+    "web_search": "disabled",
+    "features": {"apps": false}
+  }
+}
+```
+
+The node passes these as `-c features.apps=false -c
+model_auto_compact_token_limit=128000 -c web_search="disabled"
+app-server`. Values are written in TOML: strings quoted and escaped,
+numbers and booleans as they are, arrays as arrays. A nested object
+becomes dotted keys, so `"features": {"apps": false}` and
+`"features.apps": false` are the same. Each part of a key must be
+letters, digits, `_` or `-`, since Codex splits keys on dots. A key set
+both in `config` and by a `-c` in `args` stops the node at start, as
+does a `null` value. Overrides apply to every Codex session on the node
+and take precedence over `config.toml`; restart the node after changing
+them.
+
+When app-server fails to start, the node log has the end of what it
+wrote to stderr, which usually says why (an unknown argument, a
+`config.toml` error). The full output is in `logs/harness.log` in the
+node directory.
+
 ## Codex: network without exposing credentials
 
 Codex's `workspace-write` sandbox limits writes and, by default, the

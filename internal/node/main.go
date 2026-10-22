@@ -179,6 +179,10 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 // HarnessOptions builds adapter options from node config, writing harness
 // logs under dir/logs.
 func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.Options, error) {
+	codexConf, err := codexConfig(cfg)
+	if err != nil {
+		return harness.Options{}, err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
@@ -186,7 +190,7 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err != nil {
 		return harness.Options{}, err
 	}
-	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexPermissions: cfg.Codex.Permissions,
+	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexConfig: codexConf, CodexPermissions: cfg.Codex.Permissions,
 		AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args, Agy: cfg.Agy.Options, ACP: cfg.ACP, Stderr: logFile, Logf: logf}
 	if cfg.Codex.Home != "" {
 		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}

@@ -124,6 +124,12 @@ func (a *Adapter) getClient(ctx context.Context) (*codex.Client, error) {
 		Bin: a.cfg.Bin, Args: a.cfg.Args, Dir: a.cfg.Dir, Env: a.cfg.Env, Stderr: a.cfg.Stderr, Tap: a.cfg.Tap,
 	}, a)
 	if err != nil {
+		// "connection closed" alone does not say why; app-server's last
+		// words usually do. They stay in the node log, not in events.
+		var se *codex.StartError
+		if errors.As(err, &se) && se.Stderr != "" {
+			a.cfg.Logf("codex app-server failed to start: %v; its stderr ends:\n%s", err, se.Stderr)
+		}
 		return nil, err
 	}
 	a.mu.Lock()

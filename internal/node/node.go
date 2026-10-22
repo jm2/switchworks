@@ -48,9 +48,15 @@ type Config struct {
 	CoordinatorNode string `json:"coordinator_node"`
 
 	Codex struct {
-		Bin  string   `json:"bin,omitempty"`
-		Home string   `json:"home,omitempty"` // CODEX_HOME override
+		Bin  string `json:"bin,omitempty"`
+		Home string `json:"home,omitempty"` // CODEX_HOME override
+		// Args is codex's whole argument list, subcommand included
+		// (default ["app-server"]); the node refuses one without a
+		// subcommand. Config overrides belong in Config.
 		Args []string `json:"args,omitempty"`
+		// Config holds Codex config overrides, passed as -c key=value
+		// ahead of Args: values in TOML, nested objects as dotted keys.
+		Config map[string]json.RawMessage `json:"config,omitempty"`
 		// Permissions names a permission profile in codex's config.toml
 		// for workspace-write sessions, e.g. one that turns the network on
 		// but denies reads of credentials. Without it they get codex's

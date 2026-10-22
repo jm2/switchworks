@@ -14,6 +14,7 @@ import (
 	"github.com/jm2/switchworks/internal/adapter/acpad"
 	"github.com/jm2/switchworks/internal/adapter/agyad"
 	"github.com/jm2/switchworks/internal/adapter/codexad"
+	"github.com/jm2/switchworks/internal/codex"
 	"github.com/jm2/switchworks/internal/jsonrpc"
 	"github.com/jm2/switchworks/internal/model"
 )
@@ -33,8 +34,11 @@ type ACPAgent struct {
 // Options configure every adapter a host may run.
 type Options struct {
 	CodexBin  string            // default "codex"
-	CodexArgs []string          // default ["app-server"]
+	CodexArgs []string          // codex's whole argv; default ["app-server"]
 	CodexEnv  map[string]string // e.g. CODEX_HOME
+	// CodexConfig are config overrides (dotted key -> TOML value), passed
+	// as -c key=value ahead of CodexArgs.
+	CodexConfig map[string]string
 	// CodexPermissions names the codex permission profile workspace-write
 	// sessions run under (codexad.Config.Permissions).
 	CodexPermissions string
@@ -100,7 +104,7 @@ func New(name string, o Options) (adapter.Adapter, error) {
 	switch name {
 	case codexad.Harness, "":
 		return codexad.New(codexad.Config{
-			Bin: o.CodexBin, Args: o.CodexArgs, Env: o.CodexEnv, Permissions: o.CodexPermissions,
+			Bin: o.CodexBin, Args: CodexArgv(o), Env: o.CodexEnv, Permissions: o.CodexPermissions,
 			Stderr: o.Stderr, Tap: o.Tap, Logf: o.Logf,
 		}), nil
 	case agyad.Harness:
@@ -113,6 +117,19 @@ func New(name string, o Options) (adapter.Adapter, error) {
 		return acpad.New(c), nil
 	}
 	return nil, fmt.Errorf("unknown harness %q (supported: %v)", name, Names(o))
+}
+
+// CodexArgv is the argument list codex is started with: the config
+// overrides as -c options, then CodexArgs (default "app-server").
+func CodexArgv(o Options) []string {
+	args := o.CodexArgs
+	if len(args) == 0 {
+		args = []string{"app-server"}
+	}
+	if len(o.CodexConfig) == 0 {
+		return args
+	}
+	return append(codex.OverrideArgs(o.CodexConfig), args...)
 }
 
 // EnforcesSandbox reports whether a harness applies the sandbox setting a
