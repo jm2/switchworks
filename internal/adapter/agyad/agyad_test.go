@@ -322,7 +322,7 @@ func TestStreamModeTurnsAndUsage(t *testing.T) {
 		t.Fatalf("usage %+v", us)
 	}
 	inv := invocations(t, log)
-	if len(inv) != 1 || !hasArgs(inv[0].Argv, "--output-format", "stream-json", "--input-format", "stream-json", "--model", "gemini-3-pro") {
+	if len(inv) != 1 || !hasArgs(inv[0].Argv, "--output-format", "stream-json", "--input-format", "stream-json", "--model=gemini-3-pro") {
 		t.Fatalf("invocations %+v", inv)
 	}
 	if hasArgs(inv[0].Argv, "--sandbox") || hasArgs(inv[0].Argv, "--dangerously-skip-permissions") {
@@ -389,6 +389,66 @@ func TestToolSteps(t *testing.T) {
 	col.turn(t, h, "NOSTREAM", "completed")
 	if m := items(col.all()[n:], model.KindItemCompleted, "agentMessage"); len(m) != 1 || m[0].Text != "only in the result" {
 		t.Fatalf("unstreamed message %+v", m)
+	}
+}
+
+// A model name is one argv item, so it cannot pass for a flag.
+func TestModelArg(t *testing.T) {
+	h := &handle{a: New(Config{}), spec: adapter.StartSpec{Model: "--dangerously-skip-permissions"}}
+	args := h.args()
+	if !hasArgs(args, "--model=--dangerously-skip-permissions") || hasArgs(args, "--dangerously-skip-permissions") {
+		t.Fatalf("args %v", args)
+	}
+}
+
+// The fleet tools server's random name is only for agy's settings: the
+// transcript shows the usual one.
+func TestFleetServerNameInTranscript(t *testing.T) {
+	h := &handle{a: New(Config{}), spec: adapter.StartSpec{MCP: &adapter.MCPServer{Name: "swk"}}, fleetName: "swk-0123456789abcdef"}
+	tr := &turnState{h: h, id: "t1", steps: map[int]*step{}}
+	for name, want := range map[string]string{"swk-0123456789abcdef/fleet_list": "swk", "other/fleet_list": "other"} {
+		it := tr.toolItem(&step{itemID: "s", toolName: name, tool: map[string]any{"name": name}}, true)
+		var mc struct{ Server, Tool string }
+		_ = json.Unmarshal(it.Raw, &mc)
+		if mc.Server != want || mc.Tool != "fleet_list" {
+			t.Errorf("%s: %s", name, it.Raw)
+		}
+	}
+}
+
+// agy's stdout lines are capped; an over-long one is skipped whole.
+func TestReadLineCap(t *testing.T) {
+	in := "short\n" + strings.Repeat("x", 300) + "\nafter\nend"
+	br := bufio.NewReaderSize(strings.NewReader(in), 16)
+	want := []struct {
+		line string
+		err  error
+	}{{"short\n", nil}, {"", errLineTooLong}, {"after\n", nil}, {"end", io.EOF}}
+	for i, w := range want {
+		got, err := readLine(br, 100)
+		if string(got) != w.line || !errors.Is(err, w.err) && !(w.err == nil && err == nil) {
+			t.Fatalf("read %d: got %q, %v; want %q, %v", i, got, err, w.line, w.err)
+		}
+	}
+}
+
+// The set of stderr notices already warned about stays bounded.
+func TestDeniedSeenBounded(t *testing.T) {
+	var n int
+	h := &handle{a: New(Config{}), sink: func(adapter.Event) { n++ }}
+	for i := 0; i < 5*maxDenied; i++ {
+		h.stderrLine(fmt.Sprintf("tool %d was denied", i))
+		if len(h.deniedSeen) > maxDenied {
+			t.Fatalf("%d notices remembered", len(h.deniedSeen))
+		}
+	}
+	if n != 5*maxDenied {
+		t.Fatalf("%d warnings for %d distinct notices", n, 5*maxDenied)
+	}
+	h.stderrLine("tool 0 was denied")
+	h.stderrLine("tool 0 was denied")
+	if n != 5*maxDenied+1 {
+		t.Fatalf("repeated notice warned %d times", n-5*maxDenied)
 	}
 }
 
@@ -552,8 +612,10 @@ func TestFleetTools(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	s := doc.McpServers["swk"]
-	if s.Command != os.Args[0] || len(s.Args) != 1 || s.Args[0] != "mcp" || len(s.Env) != 0 || strings.Contains(string(b), "secret-token") {
+	name := fleetEntry(t, filepath.Join(cwd, workspaceMCP))
+	s := doc.McpServers[name]
+	if len(doc.McpServers) != 1 || s.Command != os.Args[0] || len(s.Args) != 1 || s.Args[0] != "mcp" || len(s.Env) != 0 ||
+		strings.Contains(string(b), "secret-token") {
 		t.Fatalf("mcp config %s", b)
 	}
 	ex, _ := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
@@ -564,8 +626,11 @@ func TestFleetTools(t *testing.T) {
 	var sdoc map[string]any
 	_ = json.Unmarshal(sb, &sdoc)
 	allow := sdoc["permissions"].(map[string]any)["allow"].([]any)
-	if sdoc["modelProvider"] != "gemini" || len(allow) != 2 || allow[0] != "command(git)" || allow[1] != "mcp(swk/*)" {
+	if sdoc["modelProvider"] != "gemini" || len(allow) != 2 || allow[0] != "command(git)" || allow[1] != "mcp("+name+"/*)" {
 		t.Fatalf("settings %s", sb)
+	}
+	if fi, err := os.Stat(settings); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("settings mode changed: %v %v", fi.Mode(), err)
 	}
 	// The credentials reach agy (and so `swk mcp`) through its environment.
 	col.turn(t, h, "hi", "completed")
@@ -744,8 +809,15 @@ func TestApprovalPolicyModes(t *testing.T) {
 		{policy: "untrusted", notWant: []string{"--mode", "--dangerously-skip-permissions"}},
 		{policy: "on-request", want: []string{"--mode accept-edits"}, notWant: []string{"--dangerously-skip-permissions"}},
 		{policy: "on-failure", sandbox: "workspace-write", want: []string{"--sandbox", "--mode accept-edits"}},
-		{policy: "never", sandbox: "workspace-write", want: []string{"--sandbox", "--dangerously-skip-permissions"}, notWant: []string{"--mode"}},
+		// Below full access permissions are never skipped: agy's --sandbox
+		// does not confine its edit tools, its prompts do.
+		{policy: "never", sandbox: "workspace-write", want: []string{"--sandbox", "--mode accept-edits"}, notWant: []string{"--dangerously-skip-permissions"}},
+		{policy: "never", want: []string{"--mode accept-edits"}, notWant: []string{"--dangerously-skip-permissions"}},
 		{policy: "never", sandbox: "danger-full-access", want: []string{"--dangerously-skip-permissions"}, notWant: []string{"--mode", "--sandbox"}},
+		{policy: "untrusted", sandbox: "danger-full-access", want: []string{"--dangerously-skip-permissions"}, notWant: []string{"--mode", "--sandbox"}},
+		// Read-only keeps request-review, which stops edits.
+		{policy: "never", sandbox: "read-only", want: []string{"--sandbox"}, notWant: []string{"--mode", "--dangerously-skip-permissions"}},
+		{policy: "on-request", sandbox: "read-only", want: []string{"--sandbox"}, notWant: []string{"--mode", "--dangerously-skip-permissions"}},
 		{policy: "on-request", extra: []string{"--mode=plan"}, want: []string{"--mode=plan"}, notWant: []string{"--mode"}},
 		{policy: "on-request", extra: []string{"--mode", "auto"}, want: []string{"--mode auto"}, notWant: []string{"accept-edits"}},
 	} {
@@ -894,7 +966,7 @@ func TestFleetToolsNotSetUpOnResume(t *testing.T) {
 }
 
 // An explicit Stop takes out what the session's setup created, and only
-// that; the global allow rule stays (with a warning when it was added).
+// that, the global allow rule included (it was added with a warning).
 func TestFleetToolsCleanupOnStop(t *testing.T) {
 	ctx := context.Background()
 	settings := filepath.Join(t.TempDir(), "settings.json")
@@ -914,7 +986,7 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 	}
 	col.waitFor(t, 0, "settings warning", func(e adapter.Event) bool {
 		w, ok := e.Payload.(model.ErrorEvent)
-		return ok && e.Kind == model.KindWarning && strings.Contains(w.Message, settings) && strings.Contains(w.Message, "mcp(swk/*)")
+		return ok && e.Kind == model.KindWarning && strings.Contains(w.Message, settings) && strings.Contains(w.Message, "mcp(swk-")
 	})
 	// A second session in the workspace takes over the cleanup when the
 	// first stops.
@@ -933,8 +1005,8 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 	if b, _ := os.ReadFile(exFile); string(b) != "*.log\n" {
 		t.Fatalf("exclude %q", b)
 	}
-	if b, _ := os.ReadFile(settings); !strings.Contains(string(b), "mcp(swk/*)") {
-		t.Fatalf("global allow rule removed: %s", b)
+	if b, _ := os.ReadFile(settings); strings.Contains(string(b), "mcp(swk") {
+		t.Fatalf("global allow rule left behind: %s", b)
 	}
 
 	// Servers the user added meanwhile stay.
@@ -950,7 +1022,7 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 	_ = os.WriteFile(cfgPath, b, 0o644)
 	_ = h3.Stop(ctx)
 	b, _ = os.ReadFile(cfgPath)
-	if !strings.Contains(string(b), `"mine"`) || strings.Contains(string(b), `"swk"`) {
+	if !strings.Contains(string(b), `"mine"`) || strings.Contains(string(b), `"swk-`) {
 		t.Fatalf("config after stop %s", b)
 	}
 
@@ -960,25 +1032,29 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(cfgPath); !strings.Contains(string(b), `"swk"`) {
+	if b, _ := os.ReadFile(cfgPath); !strings.Contains(string(b), `"swk-`) {
 		t.Fatalf("entry not added to an existing config: %s", b)
 	}
 	_ = h4.Stop(ctx)
-	if after, _ := os.ReadFile(cfgPath); strings.Contains(string(after), `"swk"`) || !strings.Contains(string(after), `"mine"`) {
+	if after, _ := os.ReadFile(cfgPath); strings.Contains(string(after), `"swk-`) || !strings.Contains(string(after), `"mine"`) {
 		t.Fatalf("config after stop:\n%s", after)
 	}
 
-	// An swk entry that was there before the session is not the session's
-	// to remove.
-	doc["mcpServers"].(map[string]any)["swk"] = map[string]any{"command": os.Args[0], "args": []string{"mcp"}}
+	// An swk entry that was there before the session is neither used nor
+	// removed: the session's entry has a name of its own.
+	doc = map[string]any{"mcpServers": map[string]any{"mine": map[string]any{"command": "mine"},
+		"swk": map[string]any{"command": os.Args[0], "args": []string{"mcp"}}}}
 	b, _ = json.Marshal(doc)
 	_ = os.WriteFile(cfgPath, b, 0o644)
 	h5, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if b, _ := os.ReadFile(cfgPath); !strings.Contains(string(b), `"swk-`) {
+		t.Fatalf("no entry of the session's own: %s", b)
+	}
 	_ = h5.Stop(ctx)
-	if after, _ := os.ReadFile(cfgPath); !strings.Contains(string(after), `"swk"`) {
+	if after, _ := os.ReadFile(cfgPath); !strings.Contains(string(after), `"swk"`) || strings.Contains(string(after), `"swk-`) {
 		t.Fatalf("pre-existing entry removed:\n%s", after)
 	}
 	fresh := t.TempDir()
@@ -991,32 +1067,37 @@ func TestFleetToolsCleanupOnStop(t *testing.T) {
 	}
 }
 
-// A different swk entry that a session replaced is put back when it stops.
-func TestFleetToolsRestoreReplacedEntry(t *testing.T) {
-	ctx := context.Background()
-	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: filepath.Join(t.TempDir(), "settings.json")})
-	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+// An entry of the same name is rewritten to exactly the command and args:
+// nothing of it (env above all) is carried over, and it is put back on
+// cleanup.
+func TestFleetToolsMergeExact(t *testing.T) {
 	repo := t.TempDir()
-	cfgPath := filepath.Join(repo, ".agents", "mcp_config.json")
+	cfgPath := filepath.Join(repo, workspaceMCP)
 	_ = os.MkdirAll(filepath.Dir(cfgPath), 0o755)
-	orig := `{"mcpServers":{"swk":{"command":"/opt/old/swk","args":["mcp","--old"]}}}`
+	const name = "swk-0123456789abcdef"
+	orig := `{"mcpServers":{"` + name + `":{"command":"/bin/swk","args":["mcp"],"env":{"LD_PRELOAD":"/w/evil.so"},"cwd":"/w"}}}`
 	_ = os.WriteFile(cfgPath, []byte(orig), 0o644)
-	h, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
-	if err != nil {
-		t.Fatal(err)
+	server := map[string]any{"command": "/bin/swk", "args": []string{"mcp"}}
+	created, added, previous, err := mergeMCPConfig(repo, workspaceMCP, name, server)
+	if err != nil || created || added || previous == nil {
+		t.Fatalf("merge: %v %v %v %v", created, added, previous, err)
 	}
-	if b, _ := os.ReadFile(cfgPath); strings.Contains(string(b), "/opt/old/swk") {
-		t.Fatalf("entry not replaced: %s", b)
-	}
-	_ = h.Stop(ctx)
 	b, _ := os.ReadFile(cfgPath)
 	var doc struct {
-		MCPServers map[string]struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
-		} `json:"mcpServers"`
+		MCPServers map[string]map[string]any `json:"mcpServers"`
 	}
-	if err := json.Unmarshal(b, &doc); err != nil || doc.MCPServers["swk"].Command != "/opt/old/swk" || len(doc.MCPServers["swk"].Args) != 2 {
+	if err := json.Unmarshal(b, &doc); err != nil || len(doc.MCPServers[name]) != 2 || !sameJSON(doc.MCPServers[name], server) {
+		t.Fatalf("entry not rewritten exactly: %s", b)
+	}
+	// Exactly as wanted: nothing written.
+	if _, added, previous, err := mergeMCPConfig(repo, workspaceMCP, name, server); err != nil || added || previous != nil {
+		t.Fatalf("second merge: %v %v %v", added, previous, err)
+	}
+	f := &fleetSetup{cwd: repo, name: name, installed: server, previous: map[string]any{"command": "/opt/old/swk"}}
+	if err := removeFleetTools(f); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(cfgPath); !strings.Contains(string(b), "/opt/old/swk") {
 		t.Fatalf("entry not restored: %s", b)
 	}
 }
@@ -1033,7 +1114,8 @@ func TestFleetToolsKeepEditedEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited := `{"mcpServers":{"swk":{"command":"/usr/local/bin/swk","args":["mcp"],"disabledTools":["fleet_spawn"]}}}`
+	name := fleetEntry(t, cfgPath)
+	edited := `{"mcpServers":{"` + name + `":{"command":"/usr/local/bin/swk","args":["mcp"],"disabledTools":["fleet_spawn"]}}}`
 	_ = os.WriteFile(cfgPath, []byte(edited), 0o644)
 	_ = h.Stop(ctx)
 	if b, _ := os.ReadFile(cfgPath); string(b) != edited {
@@ -1110,4 +1192,159 @@ func TestDeliverToDeadProcess(t *testing.T) {
 		t.Fatalf("interrupt after the turn: %v", err)
 	}
 	col.turn(t, h, "again", "completed")
+}
+
+// fleetEntry returns the name of the one fleet tools entry in the MCP
+// config at path.
+func fleetEntry(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	_ = json.Unmarshal(b, &doc)
+	var names []string
+	for n := range doc.MCPServers {
+		if fleetNameRe("swk").MatchString(n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("fleet entries %v in %s", names, b)
+	}
+	return names[0]
+}
+
+func allowRules(t *testing.T, path string) []string {
+	t.Helper()
+	_, _, allow, err := readSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, r := range allow {
+		s, _ := r.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// The allow rule is for the workspace's random server name only, lives as
+// long as sessions there do, and stale ones are swept; a rule for the bare
+// name earlier versions added is reported, not removed.
+func TestFleetToolsRuleLifecycle(t *testing.T) {
+	ctx := context.Background()
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	const stale = "mcp(swk-00000000deadbeef/*)"
+	_ = os.WriteFile(settings, []byte(`{"permissions":{"allow":["command(git)","mcp(swk/*)","`+stale+`","mcp(swk-x/*)"]}}`), 0o644)
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	col := &collector{}
+	h, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, col.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "legacy rule warning", func(e adapter.Event) bool {
+		w, ok := e.Payload.(model.ErrorEvent)
+		return ok && strings.Contains(w.Message, `"mcp(swk/*)"`) && strings.Contains(w.Message, "untrusted")
+	})
+	name := fleetEntry(t, filepath.Join(repo, workspaceMCP))
+	rule := "mcp(" + name + "/*)"
+	if got := strings.Join(allowRules(t, settings), " "); got != "command(git) mcp(swk/*) mcp(swk-x/*) "+rule {
+		t.Fatalf("rules after setup: %s", got)
+	}
+	if fi, _ := os.Stat(settings); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("settings mode %v", fi.Mode())
+	}
+	_ = h.Stop(ctx)
+	if got := strings.Join(allowRules(t, settings), " "); got != "command(git) mcp(swk/*) mcp(swk-x/*)" {
+		t.Fatalf("rules after stop: %s", got)
+	}
+
+	// A first session that skips permissions adds no rule; one that joins
+	// it without doing so adds it.
+	full, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp, Sandbox: "danger-full-access"}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(allowRules(t, settings)); n != 3 {
+		t.Fatalf("rule added for a session that skips permissions")
+	}
+	ws, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp, Sandbox: "workspace-write"}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := allowRules(t, settings)
+	if len(rules) != 4 || rules[3] != "mcp("+fleetEntry(t, filepath.Join(repo, workspaceMCP))+"/*)" {
+		t.Fatalf("rules for the joining session: %v", rules)
+	}
+	_ = full.Stop(ctx)
+	_ = ws.Stop(ctx)
+	if n := len(allowRules(t, settings)); n != 3 {
+		t.Fatalf("rules after both stopped: %v", allowRules(t, settings))
+	}
+}
+
+// A node shutdown keeps the workspace entry but not the rule; the next node
+// resuming the session takes the entry over, rule and cleanup included. An
+// entry of that name with anything more is not taken over.
+func TestFleetToolsResumeAdopts(t *testing.T) {
+	ctx := context.Background()
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	mcp := &adapter.MCPServer{Name: "swk", Command: os.Args[0], Args: []string{"mcp"}}
+	repo := t.TempDir()
+	cfgPath := filepath.Join(repo, workspaceMCP)
+	a, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	if _, err := a.Start(ctx, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink); err != nil {
+		t.Fatal(err)
+	}
+	name := fleetEntry(t, cfgPath)
+	a.Close()
+	if r := allowRules(t, settings); len(r) != 0 {
+		t.Fatalf("rule left after shutdown: %v", r)
+	}
+	fleetEntry(t, cfgPath)
+
+	if fi, err := os.Stat(settings); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("new settings file: %v %v", fi, err)
+	}
+	a2, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	h, err := a2.Resume(ctx, model.NativeRef{Harness: "agy", ID: "conv-1"}, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := allowRules(t, settings); len(r) != 1 || r[0] != "mcp("+name+"/*)" {
+		t.Fatalf("rule after resume: %v", r)
+	}
+	if h.(*handle).fleetName != name {
+		t.Fatalf("fleet name %q, want %q", h.(*handle).fleetName, name)
+	}
+	_ = h.Stop(ctx)
+	if _, err := os.Stat(filepath.Join(repo, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("adopted entry not cleaned up: %v", err)
+	}
+	if r := allowRules(t, settings); len(r) != 0 {
+		t.Fatalf("rule left after stop: %v", r)
+	}
+
+	// A planted entry with the right name, command and args but an env.
+	_ = os.MkdirAll(filepath.Dir(cfgPath), 0o755)
+	planted := `{"mcpServers":{"swk-0123456789abcdef":{"command":"` + os.Args[0] + `","args":["mcp"],"env":{"LD_PRELOAD":"/w/x.so"}}}}`
+	_ = os.WriteFile(cfgPath, []byte(planted), 0o644)
+	a3, _ := newAdapter(t, Options{FleetTools: true, SettingsPath: settings})
+	h, err = a3.Resume(ctx, model.NativeRef{Harness: "agy", ID: "conv-2"}, adapter.StartSpec{Cwd: repo, MCP: mcp}, (&collector{}).sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h.Stop(ctx)
+	if r := allowRules(t, settings); len(r) != 0 {
+		t.Fatalf("planted entry approved: %v", r)
+	}
+	if b, _ := os.ReadFile(cfgPath); string(b) != planted {
+		t.Fatalf("planted entry touched: %s", b)
+	}
 }

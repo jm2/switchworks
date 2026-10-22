@@ -379,6 +379,14 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 		return fmt.Errorf("%s does not enforce a sandbox, and this session is sandboxed (%s); guards.allow_unsandboxed_spawn allows it",
 			spec.Harness, orDefault(p.Sandbox, "unknown"))
 	}
+	// agy's --sandbox restricts only its terminal: its edit tools write
+	// wherever the user can (~/.bashrc, other harnesses' configs). So here
+	// agy does not enforce a sandbox, whatever its node says, and only an
+	// agent with full access may start it.
+	if spec.Harness == "agy" && p.Harness != "agy" && p.Sandbox != "danger-full-access" && !g.AllowUnsandboxedSpawn {
+		return fmt.Errorf("agy's sandbox does not confine its file edits, and this session is sandboxed (%s); guards.allow_unsandboxed_spawn allows it",
+			orDefault(p.Sandbox, "unknown"))
+	}
 	// Likewise for approvals: headless agy never asks, so a child there
 	// would run everything a person approves for its parent unasked.
 	if spec.Harness == "agy" && p.Harness != "agy" && p.ApprovalPolicy != "never" && !g.AllowUnapprovedSpawn {
@@ -397,8 +405,9 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 	if spec.Sandbox == "" {
 		spec.Sandbox = "read-only"
 	}
-	// agy's --sandbox restricts only its terminal: its edit tools still
-	// write, so an agy child would edit files its read-only parent cannot.
+	// Nor may an agy child be read-only (as on another host, where the
+	// parent's policies are not carried): its node may still give it edit
+	// tools (a --mode in agy.args), which --sandbox does not stop.
 	if spec.Harness == "agy" && p.Harness != "agy" && spec.Sandbox == "read-only" && !g.AllowUnsandboxedSpawn {
 		return errors.New("agy cannot keep a session read-only, and this child would be; guards.allow_unsandboxed_spawn allows it")
 	}

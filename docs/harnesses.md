@@ -614,19 +614,32 @@ agy.jsonl "hello"` and report anything that renders oddly.
   is denied, and Switchworks shows agy's notice as a warning. The spawn's
   approval policy picks agy's mode:
 
-  | Approval policy | agy flags | What runs without an allow rule |
-  | --- | --- | --- |
-  | `untrusted` (or none) | agy's default, request-review | reading files |
-  | `on-request`, `on-failure` | `--mode accept-edits` | reading and editing files |
-  | `never` | `--dangerously-skip-permissions` | everything |
+  | Sandbox | Approval policy | agy flags | What runs without an allow rule |
+  | --- | --- | --- | --- |
+  | `danger-full-access` | any | `--dangerously-skip-permissions` | everything |
+  | `workspace-write` (or none) | `never`, `on-request`, `on-failure` | `--mode accept-edits` | reading and editing files |
+  | `workspace-write` (or none) | `untrusted` (or none) | agy's default, request-review | reading files |
+  | `read-only` | any | agy's default, request-review | reading files |
 
-  Sandbox `read-only` and `workspace-write` add `--sandbox` (agy's terminal
-  restrictions); `danger-full-access` skips permissions like `never`. A
-  `--mode` in `args` overrides the mapping. agy's `--mode auto` does not
-  help headless sessions: commands and MCP calls were still denied. To let
-  a session run commands without skipping permissions, allow them in
-  `~/.gemini/antigravity-cli/settings.json`, the only settings file agy
-  reads (`"permissions": {"allow": ["command(git)", "command(python3)", "mcp(swk/*)"]}`).
+  `read-only` and `workspace-write` also add `--sandbox`, but that only
+  restricts agy's terminal: its edit tools write wherever the user can,
+  inside the workspace or not. So permissions are skipped only with
+  `danger-full-access` (approval policy `never` alone no longer does it),
+  and a read-only session never gets `accept-edits`. A `--mode` in `args`
+  overrides the mapping (and with it this protection). agy's `--mode auto`
+  does not help headless sessions: commands and MCP calls were still
+  denied. To let a session run commands without skipping permissions,
+  allow them in `~/.gemini/antigravity-cli/settings.json`, the only
+  settings file agy reads (`"permissions": {"allow": ["command(git)", "command(python3)"]}`).
+  Do not allow `mcp(swk/*)` there: it would pre-approve the tools of any
+  MCP server named `swk`, including one an untrusted repository defines in
+  its `.agents/mcp_config.json` (the fleet tools use names of their own,
+  below).
+- **Spawned by an agent.** Because of the above, the coordinator treats agy
+  as not enforcing a sandbox: an agent of another harness may spawn agy
+  only if it has `danger-full-access` itself, or `allow_unsandboxed_spawn`
+  is set (and, since headless agy never asks, only with approval policy
+  `never`, or `allow_unapproved_spawn`). See [messaging](messaging.md).
 - **What to expect.** With permissions skipped, agy 1.4.0 finished the
   fleet test's coding task correctly, but took about eleven minutes and
   ten times the tokens Codex and goose used, and read other conversations'
@@ -643,17 +656,27 @@ agy.jsonl "hello"` and report anything that renders oddly.
   stdin closes), but a turn whose process crashes or is killed before
   writing it is not counted.
 - **Fleet tools** (`fleet_tools: true`): agy has no per-run MCP option, so
-  for each new session the node adds a `swk` entry (command and args only)
-  to `<cwd>/.agents/mcp_config.json`, keeping any other entries, and lists
-  the file in `.git/info/exclude` if it created it. When the last session
-  in that workspace stops, the node removes the entry it added (and the
-  file and exclude line, if it created them), and puts back an `swk`
-  entry it replaced. Unless the session skips permissions, the node also
-  adds `mcp(swk/*)` to `permissions.allow` in agy's global settings, and
-  says so in a warning; that rule stays. Sessions that already existed
-  when you turned fleet tools on are not changed when the node resumes
-  them. The session's credentials reach `swk mcp` through agy's
+  for a new session the node adds an entry named `swk-` and 16 random hex
+  digits (exactly `command` and `args`, nothing else) to
+  `<cwd>/.agents/mcp_config.json`, keeping any other entries, and lists
+  the file in `.git/info/exclude` if it created it. Sessions running in
+  the same workspace share that entry. Unless the session skips
+  permissions, the node also adds `mcp(swk-<those digits>/*)` to
+  `permissions.allow` in agy's global settings, and says so in a warning:
+  only that name is pre-approved, so a server another workspace calls
+  `swk` (or anything else) is not, and no workspace can define this one
+  ahead of time. The rule is removed when the last session in the
+  workspace ends, whether it is stopped or the node shuts down; rules
+  left by a node that crashed are removed the next time the node sets up
+  fleet tools, and a leftover `mcp(swk/*)` from earlier versions is
+  reported in a warning (remove it yourself). When the last session in the
+  workspace is stopped, the node also removes the entry it added (and the
+  file and exclude line, if it created them). A node shutdown leaves the
+  entry, and the session resumed there takes it over (adding the rule
+  again) if it is still exactly the node's command and args; otherwise,
+  sessions resumed by the node are not given fleet tools in their
+  workspace. The session's credentials reach `swk mcp` through agy's
   environment, so every command and MCP server agy runs in that session
   can see the session's fleet token. The node refuses to write through a
   symlinked `.agents`, and only appends to `info/exclude` of a real git
-  directory.
+  directory. The transcript shows the tools under `swk` as usual.

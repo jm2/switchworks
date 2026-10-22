@@ -396,3 +396,36 @@ func TestAgentSpawnAgyReadOnly(t *testing.T) {
 		t.Fatalf("with allow_unsandboxed_spawn: %v", err)
 	}
 }
+
+// agy's edit tools write outside any sandbox, so for spawning agy counts as
+// unsandboxed: only a full-access parent may start it, whatever its node
+// reports, unless allow_unsandboxed_spawn says so.
+func TestAgentSpawnAgyNeedsFullAccess(t *testing.T) {
+	s := testServer(t, Guards{SpawnHarnesses: []string{"agy"}})
+	for sandbox, ok := range map[string]bool{"workspace-write": false, "": false, "read-only": false, "danger-full-access": true} {
+		p := addSession(t, s, "devbox", "p-"+sandbox, func(x *model.Session) {
+			x.Cwd, x.ApprovalPolicy, x.Sandbox = "/w", "never", sandbox
+		})
+		spec := model.SpawnSpec{Harness: "agy"}
+		err := s.agentSpawn(from(p), &spec, 1)
+		if (err == nil) != ok || err != nil && !strings.Contains(err.Error(), "allow_unsandboxed_spawn") {
+			t.Errorf("parent sandbox %q: %v", sandbox, err)
+		}
+	}
+	// An agy parent starts its like: nothing it could not do itself.
+	a := addSession(t, s, "devbox", "agy", func(x *model.Session) {
+		x.Cwd, x.Harness, x.ApprovalPolicy, x.Sandbox = "/w", "agy", "never", "workspace-write"
+	})
+	spec := model.SpawnSpec{Harness: "agy"}
+	if err := s.agentSpawn(from(a), &spec, 1); err != nil {
+		t.Fatalf("agy child of agy: %v", err)
+	}
+	s.router.guards.AllowUnsandboxedSpawn = true
+	p := addSession(t, s, "devbox", "ww", func(x *model.Session) {
+		x.Cwd, x.ApprovalPolicy, x.Sandbox = "/w", "never", "workspace-write"
+	})
+	spec = model.SpawnSpec{Harness: "agy"}
+	if err := s.agentSpawn(from(p), &spec, 1); err != nil {
+		t.Fatalf("with allow_unsandboxed_spawn: %v", err)
+	}
+}

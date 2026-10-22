@@ -481,7 +481,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_steer_any` | false | let agents interrupt sessions they did not spawn, and steer ones that do not accept steering (any agent may steer the rest: steering only adds input to a turn) |
 | `allow_read_any` | false | let `fleet_status` show any session's last message to agents |
 | `max_broadcast` | 8 | recipients of one broadcast, or one send to several addresses, from an agent |
-| `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose), or a read-only one spawn agy |
+| `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose, and agy) |
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
 
@@ -498,8 +498,9 @@ sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such
 as goose run with the user's full access. So a sandboxed agent may not
 spawn one (even where `spawn_harnesses` allows it) unless
 `allow_unsandboxed_spawn` is set. agy's sandbox restricts only its
-terminal, not its edit tools, so a read-only agent may not spawn agy
-either, unless `allow_unsandboxed_spawn` is set.
+terminal, not its edit tools, so for this agy counts as unsandboxed too:
+an agent of another harness may spawn agy only with `danger-full-access`
+itself, or with `allow_unsandboxed_spawn` set.
 
 The child's working directory is checked on the target host with symlinks
 (and Windows junctions) resolved, and recorded resolved: the node checks

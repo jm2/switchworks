@@ -11,7 +11,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jm2/switchworks/internal/adapter"
@@ -27,25 +28,31 @@ type fleetSetup struct {
 	cwd, name   string
 	fileCreated bool           // the config file did not exist before
 	installed   map[string]any // the entry it wrote
-	previous    map[string]any // the entry it replaced, restored on cleanup
+	previous    any            // the entry it replaced, restored on cleanup
 	exclude     excludeFile    // .git/info/exclude, if a line was added to it
 	line        string         // the line added
+	settings    string         // agy's settings.json, if rule was added to it
+	rule        string         // the allow rule added
 }
 
-// setupFleetTools makes the fleet tools available to agy sessions in
-// spec.Cwd and returns warnings for anything it could not do, plus a record
-// of the workspace entry when it added or replaced it (nil when the entry
-// was already there as wanted).
-// It never removes or rewrites other entries, and never writes credentials
-// to disk.
-func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string) {
-	m := spec.MCP
-	var warns []string
-	var made *fleetSetup
-	cwd := spec.Cwd
-	if cwd == "" {
-		cwd = "."
-	}
+// newFleetName returns a server name for one workspace's fleet tools: base
+// and 16 random hex digits. Only that name is pre-approved in agy's global
+// settings, so a server another workspace defines (as "swk", say) is not,
+// and nothing can define this one ahead of time.
+func newFleetName(base string) string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return base + "-" + hex.EncodeToString(b[:])
+}
+
+// fleetNameRe matches the names newFleetName makes from base.
+func fleetNameRe(base string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(base) + `-[0-9a-f]{16}$`)
+}
+
+// fleetServer is the workspace entry for m: its command and args, nothing
+// else (no env: credentials reach `swk mcp` through agy's environment).
+func fleetServer(m *adapter.MCPServer) map[string]any {
 	cmd := m.Command
 	if abs, err := proc.LookPath(cmd); err == nil {
 		cmd = abs
@@ -54,49 +61,179 @@ func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string)
 	if args == nil {
 		args = []string{}
 	}
+	return map[string]any{"command": cmd, "args": args}
+}
+
+// settingsPath is agy's global settings.json.
+func settingsPath(cfg Config) string {
+	if cfg.Options.SettingsPath != "" {
+		return cfg.Options.SettingsPath
+	}
+	home := cfg.Env["HOME"]
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
+}
+
+// setupFleetTools makes the fleet tools available to agy sessions in
+// spec.Cwd under a new name and returns warnings for anything it could not
+// do, plus a record of what it added (nil when it added nothing).
+// It never removes or rewrites other entries, and never writes credentials
+// to disk.
+func setupFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string) {
+	m := spec.MCP
+	var warns []string
+	cwd := spec.Cwd
+	if cwd == "" {
+		cwd = "."
+	}
 	if err := insideWorkspace(cwd, workspaceMCP); err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	server := map[string]any{"command": cmd, "args": args}
-	created, added, previous, err := mergeMCPConfig(cwd, workspaceMCP, m.Name, server)
+	name := newFleetName(m.Name)
+	server := fleetServer(m)
+	created, added, previous, err := mergeMCPConfig(cwd, workspaceMCP, name, server)
 	if err != nil {
 		return nil, append(warns, "fleet tools unavailable: "+err.Error())
 	}
-	if added || previous != nil {
-		// server is what was written, the user's extra fields included.
-		made = &fleetSetup{cwd: cwd, name: m.Name, fileCreated: created, installed: server, previous: previous}
+	if !added && previous == nil {
+		return nil, warns // already there as wanted; not this session's
 	}
+	made := &fleetSetup{cwd: cwd, name: name, fileCreated: created, installed: server, previous: previous}
 	if created {
 		if made.exclude, made.line, err = gitExclude(cwd, workspaceMCP); err != nil {
 			warns = append(warns, "could not add "+workspaceMCP+" to .git/info/exclude: "+err.Error())
 		}
 	}
-	if !skipsPermissions(spec) {
-		path := cfg.Options.SettingsPath
-		if path == "" {
-			home := cfg.Env["HOME"]
-			if home == "" {
-				home, _ = os.UserHomeDir()
-			}
-			path = filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
-		}
-		rule := fmt.Sprintf("mcp(%s/*)", m.Name)
-		added, err := addAllowRule(path, rule)
-		if err != nil {
-			warns = append(warns, fmt.Sprintf("could not add %s to %s (agy will soft-deny the fleet tools): %v", rule, path, err))
-		} else if added {
-			// A global file: say so, since it outlives the session.
-			warns = append(warns, fmt.Sprintf("added %q to permissions.allow in %s (agy's global settings; left in place)", rule, path))
-		}
-	}
-	return made, warns
+	return made, append(warns, addFleetRule(made, spec, cfg)...)
 }
 
-// removeFleetTools undoes what setupFleetTools recorded in f: the server
-// entry (and the file and .agents directory once empty) and the exclude
-// line. Anything else in those files stays, and so does an entry that was
-// changed since setup.
+// adoptFleetTools takes over, for a resumed session, the entry an earlier
+// node set up in spec.Cwd: one with a name newFleetName makes and exactly
+// this node's command and args, which so runs nothing but `swk mcp`. It
+// adds the entry's allow rule again (the earlier node removed it, or the
+// sweep did). It writes nothing to the workspace, and returns nil when
+// there is no such entry.
+func adoptFleetTools(spec adapter.StartSpec, cfg Config) (*fleetSetup, []string) {
+	m := spec.MCP
+	cwd := spec.Cwd
+	if cwd == "" {
+		cwd = "."
+	}
+	if insideWorkspace(cwd, workspaceMCP) != nil {
+		return nil, nil
+	}
+	root, err := os.OpenRoot(cwd)
+	if err != nil {
+		return nil, nil
+	}
+	defer root.Close()
+	b, err := root.ReadFile(workspaceMCP)
+	if err != nil {
+		return nil, nil
+	}
+	doc := map[string]any{}
+	if json.Unmarshal(b, &doc) != nil {
+		return nil, nil
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	server := fleetServer(m)
+	re := fleetNameRe(m.Name)
+	var names []string
+	for n, v := range servers {
+		if re.MatchString(n) && sameJSON(v, server) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	sort.Strings(names)
+	made := &fleetSetup{cwd: cwd, name: names[0], installed: server,
+		// Nothing else in the file: the earlier node created it.
+		fileCreated: len(servers) == 1 && len(doc) == 1}
+	return made, addFleetRule(made, spec, cfg)
+}
+
+// addFleetRule adds the allow rule for f's server to agy's settings unless
+// the session skips permissions anyway, and records it in f.
+func addFleetRule(f *fleetSetup, spec adapter.StartSpec, cfg Config) []string {
+	if skipsPermissions(spec) || f.rule != "" {
+		return nil
+	}
+	path := settingsPath(cfg)
+	rule := fmt.Sprintf("mcp(%s/*)", f.name)
+	added, err := addAllowRule(path, rule)
+	if err != nil {
+		return []string{fmt.Sprintf("could not add %s to %s (agy will soft-deny the fleet tools): %v", rule, path, err)}
+	}
+	if !added {
+		return nil
+	}
+	f.settings, f.rule = path, rule
+	// A global file: say so, though the rule goes with the sessions.
+	return []string{fmt.Sprintf("added %q to permissions.allow in %s (agy's global settings) while sessions here run", rule, path)}
+}
+
+// removeFleetRule takes out the allow rule addFleetRule added for f.
+func removeFleetRule(f *fleetSetup) error {
+	if f.rule == "" {
+		return nil
+	}
+	rule := f.rule
+	if _, err := removeAllowRules(f.settings, func(r string) bool { return r == rule }); err != nil {
+		return err
+	}
+	f.settings, f.rule = "", ""
+	return nil
+}
+
+// sweepRules runs once per adapter, before its first fleet tools setup: it
+// takes out allow rules for fleet tools servers that no session here uses
+// (left by a node that crashed), and warns about a rule for the fixed name
+// that earlier versions added. Callers hold fleetMu.
+func (a *Adapter) sweepRules(base string) []string {
+	if a.swept {
+		return nil
+	}
+	a.swept = true
+	path := settingsPath(a.cfg)
+	live := map[string]bool{}
+	for _, o := range a.owners {
+		if o.setup.rule != "" {
+			live[o.setup.rule] = true
+		}
+	}
+	re := fleetNameRe(base)
+	legacy := fmt.Sprintf("mcp(%s/*)", base)
+	var warns []string
+	_, err := removeAllowRules(path, func(r string) bool {
+		if r == legacy {
+			warns = append(warns, fmt.Sprintf("permissions.allow in %s has %q (which earlier Switchworks versions added): it pre-approves any MCP server named %s, including one an untrusted workspace defines; consider removing it",
+				path, legacy, base))
+		}
+		n, ok := strings.CutPrefix(r, "mcp(")
+		if n, ok2 := strings.CutSuffix(n, "/*)"); ok && ok2 {
+			return re.MatchString(n) && !live[r]
+		}
+		return false
+	})
+	if err != nil {
+		a.cfg.Logf("agy: removing stale fleet tools rules from %s: %v", path, err)
+	}
+	return warns
+}
+
+// removeFleetTools undoes what setupFleetTools recorded in f: the allow
+// rule, the server entry (and the file and .agents directory once empty)
+// and the exclude line. Anything else in those files stays, and so does an
+// entry that was changed since setup.
 func removeFleetTools(f *fleetSetup) error {
+	return errors.Join(removeFleetRule(f), removeWorkspaceEntry(f))
+}
+
+func removeWorkspaceEntry(f *fleetSetup) error {
 	root, err := os.OpenRoot(f.cwd)
 	if err != nil {
 		return err
@@ -208,11 +345,14 @@ func insideWorkspace(cwd, rel string) error {
 }
 
 // mergeMCPConfig sets mcpServers[name] in the agy MCP config file rel
-// under cwd, keeping everything else. It reports whether it created the
-// file, whether the entry is new, and the entry it replaced (nil if none,
-// or if the entry already matched and nothing was written). All access goes through an os.Root on cwd, so a symlink the agent
-// swaps in after insideWorkspace looked cannot lead the write outside.
-func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, added bool, previous map[string]any, err error) {
+// under cwd to exactly server, keeping everything else. It reports whether
+// it created the file, whether the entry is new, and the entry it replaced
+// (nil if none, or if the entry already matched and nothing was written).
+// An entry with other fields (env, say: LD_PRELOAD would run code in
+// `swk mcp`) does not match, and none of them is carried over. All access
+// goes through an os.Root on cwd, so a symlink the agent swaps in after
+// insideWorkspace looked cannot lead the write outside.
+func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, added bool, previous any, err error) {
 	root, err := os.OpenRoot(cwd)
 	if err != nil {
 		return false, false, nil, err
@@ -238,22 +378,9 @@ func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, adde
 		}
 		servers = map[string]any{}
 	}
-	old, replacing := servers[name].(map[string]any)
-	if replacing {
-		same := old["command"] == server["command"] && reflect.DeepEqual(asStrings(old["args"]), server["args"])
-		if same {
-			return false, false, nil, nil
-		}
-		// Keep fields the user added (disabledTools, cwd, ...).
-		for k, v := range old {
-			if _, set := server[k]; !set && k != "env" {
-				server[k] = v
-			}
-		}
-	}
-	_, existed := servers[name]
-	if replacing {
-		previous = old
+	old, existed := servers[name]
+	if existed && sameJSON(old, server) {
+		return false, false, nil, nil
 	}
 	servers[name] = server
 	doc["mcpServers"] = servers
@@ -264,7 +391,7 @@ func mergeMCPConfig(cwd, rel, name string, server map[string]any) (created, adde
 	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
 		return false, false, nil, err
 	}
-	return created, !existed, previous, writeAtomicIn(root, rel, append(out, '\n'))
+	return created, !existed, old, writeAtomicIn(root, rel, append(out, '\n'))
 }
 
 // sameJSON reports whether a and b encode to the same JSON (a value read
@@ -275,38 +402,51 @@ func sameJSON(a, b any) bool {
 	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
 }
 
-func asStrings(v any) []string {
-	a, _ := v.([]any)
-	out := make([]string, 0, len(a))
-	for _, x := range a {
-		s, _ := x.(string)
-		out = append(out, s)
+// readSettings reads agy's settings.json at path (an empty document if
+// there is none) and its permissions.allow.
+func readSettings(path string) (doc, perms map[string]any, allow []any, err error) {
+	doc = map[string]any{}
+	b, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return nil, nil, nil, err
+	case len(bytes.TrimSpace(b)) > 0:
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return nil, nil, nil, fmt.Errorf("not valid JSON; not touching it: %v", err)
+		}
 	}
-	return out
+	perms, _ = doc["permissions"].(map[string]any)
+	if perms == nil {
+		if _, exists := doc["permissions"]; exists {
+			return nil, nil, nil, fmt.Errorf("permissions is not an object; not touching it")
+		}
+		perms = map[string]any{}
+	}
+	allow, _ = perms["allow"].([]any)
+	return doc, perms, allow, nil
+}
+
+// writeSettings writes doc to agy's settings.json at path, atomically and
+// (if new) readable by the user only.
+func writeSettings(path string, doc map[string]any) error {
+	out, err := json.MarshalIndent(doc, "", "    ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeAtomic(path, append(out, '\n'))
 }
 
 // addAllowRule adds rule to permissions.allow in agy's settings.json and
 // reports whether it changed the file.
 func addAllowRule(path, rule string) (bool, error) {
-	doc := map[string]any{}
-	b, err := os.ReadFile(path)
-	switch {
-	case os.IsNotExist(err):
-	case err != nil:
+	doc, perms, allow, err := readSettings(path)
+	if err != nil {
 		return false, err
-	case len(bytes.TrimSpace(b)) > 0:
-		if err := json.Unmarshal(b, &doc); err != nil {
-			return false, fmt.Errorf("not valid JSON; not touching it: %v", err)
-		}
 	}
-	perms, _ := doc["permissions"].(map[string]any)
-	if perms == nil {
-		if _, exists := doc["permissions"]; exists {
-			return false, fmt.Errorf("permissions is not an object; not touching it")
-		}
-		perms = map[string]any{}
-	}
-	allow, _ := perms["allow"].([]any)
 	for _, r := range allow {
 		if r == rule || r == "mcp(*)" {
 			return false, nil
@@ -314,14 +454,32 @@ func addAllowRule(path, rule string) (bool, error) {
 	}
 	perms["allow"] = append(allow, rule)
 	doc["permissions"] = perms
-	out, err := json.MarshalIndent(doc, "", "    ")
+	return true, writeSettings(path, doc)
+}
+
+// removeAllowRules takes the rules drop picks out of permissions.allow in
+// agy's settings.json and reports whether it changed the file. A missing
+// file is no error.
+func removeAllowRules(path string, drop func(string) bool) (bool, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	doc, perms, allow, err := readSettings(path)
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false, err
+	keep := make([]any, 0, len(allow))
+	for _, r := range allow {
+		if s, ok := r.(string); !ok || !drop(s) {
+			keep = append(keep, r)
+		}
 	}
-	return true, writeAtomic(path, append(out, '\n'))
+	if len(keep) == len(allow) {
+		return false, nil
+	}
+	perms["allow"] = keep
+	doc["permissions"] = perms
+	return true, writeSettings(path, doc)
 }
 
 // excludeFile is a .git/info/exclude that gitExclude added a line to: rel
@@ -488,7 +646,7 @@ func isGitDir(root *os.Root, dir string) bool {
 }
 
 func writeAtomic(path string, b []byte) error {
-	mode := os.FileMode(0o644)
+	mode := os.FileMode(0o600) // a new file is the user's alone
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
 	}

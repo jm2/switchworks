@@ -105,9 +105,10 @@ real-Codex test.
   on the way.
 - **agy fleet tools write outside the session** when enabled (opt-in):
   `.agents/mcp_config.json` in the workspace (removed when the session
-  stops) and an `mcp(swk/*)` allow rule in agy's global settings (kept,
-  with a warning when added). They are set up for new sessions only, not
-  for sessions resumed after the setting changes. Environment inheritance
+  stops) and an allow rule for that entry's random `swk-...` name in agy's
+  global settings (removed when the workspace's last session ends, with a
+  warning when added). They are set up for new sessions only; a resumed
+  session only takes over an entry an earlier node left. Environment inheritance
   from agy to `swk mcp` works with agy 1.4.0.
 - **Running sessions grow without bound.** Ended sessions are deleted
   with their event logs 90 days after they ended by
