@@ -864,6 +864,9 @@ function sessionView(id, full) {
       return;
     }
     const attachments = picker.attachments();
+    // Whether a turn was running when it was sent: the turn may end before
+    // the answer comes back.
+    const wasRunning = running();
     sendBtn.disabled = true;
     try {
       let res;
@@ -873,7 +876,7 @@ function sessionView(id, full) {
       } else {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         if (res.state === 'pending') toast('The host is offline. The message will be delivered when it returns');
-        else if (mode.value === 'steer' && res.mode === 'queue' && running()) toast('This session can’t take messages mid-turn, so it waits for the next turn');
+        else if (mode.value === 'steer' && res.mode === 'queue' && wasRunning) toast('This session can’t take messages mid-turn, so it waits for the next turn');
       }
       picker.clear();
       input.value = '';

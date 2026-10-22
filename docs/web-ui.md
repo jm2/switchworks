@@ -32,7 +32,8 @@ system; the choice is kept per browser.
   output, file changes with a diff, MCP tools, plans, thinking). Pending
   approvals sit above the composer with the decisions the harness offers.
   The composer **steers** the running turn (the default; an idle session
-  starts a turn), delivers on the **next turn**, **interrupts and sends**, or
+  starts a turn, and one that can't take input mid-turn gets it on the next
+  turn), delivers on the **next turn**, **interrupts and sends**, or
   **asks** with the answer going to your
   inbox. Next to that menu, **Approvals** changes the session's approval
   policy (Ask first, Ask if needed, Never ask) for sessions whose harness
