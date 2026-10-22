@@ -181,9 +181,14 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 	}
 	switch op {
 	case wire.ReqSend, wire.ReqAsk, wire.ReqSpawn:
-		// Image paths are read here, on the sender's host, under the
-		// session's working directory only.
-		if body, err = n.resolveImages(s, body); err != nil {
+		// Image and file paths are read here, on the sender's host, under
+		// the session's working directory only. Files go with messages,
+		// not spawn prompts.
+		var extra []pathArg
+		if op != wire.ReqSpawn {
+			extra = append(extra, filesArg)
+		}
+		if body, err = n.resolveImages(s, body, extra...); err != nil {
 			writeLocal(w, 200, LocalResponse{Error: err.Error()})
 			return
 		}

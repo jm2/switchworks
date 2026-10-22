@@ -241,14 +241,22 @@ type SendResult struct {
 
 // Send delivers a message into a session, with optional images.
 func (c *Client) Send(ctx context.Context, id, text, mode, from string, images ...model.Attachment) (SendResult, error) {
+	return c.SendMessage(ctx, id, SessionMessage{Text: text, Mode: mode, From: from, Attachments: images})
+}
+
+// SessionMessage is the body of POST /v1/sessions/{id}/messages.
+type SessionMessage struct {
+	Text        string             `json:"text"`
+	Mode        string             `json:"mode"`
+	From        string             `json:"from"`
+	Attachments []model.Attachment `json:"attachments,omitempty"` // images
+	Files       []model.Attachment `json:"files,omitempty"`       // text files
+}
+
+// SendMessage delivers a message into a session.
+func (c *Client) SendMessage(ctx context.Context, id string, m SessionMessage) (SendResult, error) {
 	var out SendResult
-	body := struct {
-		Text        string             `json:"text"`
-		Mode        string             `json:"mode"`
-		From        string             `json:"from"`
-		Attachments []model.Attachment `json:"attachments,omitempty"`
-	}{text, mode, from, images}
-	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages", body, &out)
+	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(id)+"/messages", m, &out)
 }
 
 // Attachment fetches a stored image by its SHA-256.
@@ -272,6 +280,8 @@ type PostMessage struct {
 	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files are text files (data, base64 in JSON), for agent sessions.
+	Files []model.Attachment `json:"files,omitempty"`
 }
 
 type postMessageJSON PostMessage

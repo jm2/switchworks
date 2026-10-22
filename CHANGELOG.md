@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Messages to several recipients** — `fleet_send`'s `to` (and the API's, and `swk msg --to`
   repeated) takes a list of addresses: one message per recipient, sharing a group id, and a
   result that lists each one's id or why it could not go. Limits count every recipient.
+- **File attachments** — Messages carry up to 4 text files (patches, logs; 1 MiB each): `files`
+  in `fleet_send`/`fleet_ask`, checked like images, and `--file` on `swk send`, `msg` and `ask`.
+  The receiving node writes them under `~/.cache/switchworks/files` and the message gives the paths.
 
 ### Changed
 

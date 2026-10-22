@@ -68,6 +68,10 @@ type Message struct {
 	State       string       `json:"state"`
 	Error       string       `json:"error,omitempty"`
 	Inline      bool         `json:"inline,omitempty"` // reply handed straight to a waiting fleet_ask
+	// Files are text files sent with the message, kept like Attachments
+	// (metadata here, bytes in the attachment store). The receiving node
+	// writes them to disk and names their paths in the message.
+	Files []Attachment `json:"files,omitempty"`
 	// HoldUntil (asks): the asker collects the reply itself until then, so
 	// a reply that arrives earlier is held rather than delivered as a turn.
 	HoldUntil time.Time `json:"hold_until,omitempty"`

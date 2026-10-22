@@ -367,12 +367,17 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
 	from := fs.String("from", "", "sender (default user:cli)")
 	images := addImageFlag(fs)
+	fileArgs := addFileFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--image FILE]... <session> <text>")
+		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--image FILE]... [--file FILE]... <session> <text>")
 		return 2
 	}
 	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	files, err := readFiles(*fileArgs)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -398,7 +403,8 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := ctxTimeout()
 	defer cancel()
-	res, err := c.Send(ctx, s.ID, strings.Join(pos[1:], " "), mode, *from, atts...)
+	res, err := c.SendMessage(ctx, s.ID, apiclient.SessionMessage{Text: strings.Join(pos[1:], " "), Mode: mode, From: *from,
+		Attachments: atts, Files: files})
 	if err != nil {
 		return fail(stderr, err)
 	}

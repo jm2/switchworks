@@ -121,6 +121,10 @@ func str(desc string) map[string]any { return map[string]any{"type": "string", "
 var imagesProp = map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 	"description": "Image files to attach (screenshots, diagrams): paths of PNG, JPEG, WebP or GIF files inside your working directory (relative to it, or absolute), at most 4, 5 MiB each and 10 MiB in all. Symlinks and files outside your working directory are refused. The recipient's harness must take images (Codex does; agy does not)."}
 
+// filesProp is the schema of the files argument.
+var filesProp = map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
+	"description": "Text files to attach (a patch from git format-patch, a log, notes): paths inside your working directory (relative to it, or absolute), at most 4, 1 MiB each and 2 MiB in all, UTF-8 text without NUL bytes. The recipient gets a copy of each and the copy's path in the message, so nothing needs copying by hand. Symlinks and files outside your working directory are refused."}
+
 const addressHelp = `Addresses: "host/name" (a session path), a fleet-unique session name, "parent" (the session that spawned you), "@key=value" (sessions with that label; host and harness also work as keys), or "user:<name>" (a person, who reads it in the Switchworks UI or CLI).`
 
 // Tools are the fleet tools.
@@ -145,6 +149,7 @@ var Tools = []Tool{
 			"mode":      map[string]any{"type": "string", "enum": []string{"auto", "queue", "steer", "interrupt"}, "description": "Delivery mode (default auto)."},
 			"broadcast": map[string]any{"type": "boolean", "description": "Send to every session matching an @selector."},
 			"images":    imagesProp,
+			"files":     filesProp,
 		}, "to", "text")},
 	{Name: "fleet_ask", Title: "Ask and wait for an answer",
 		Description: "Ask another agent session (or a person) a question and wait for the answer, for up to wait_seconds (default 600, max 1800). " + addressHelp +
@@ -154,6 +159,7 @@ var Tools = []Tool{
 			"text":         str("The question."),
 			"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 1800, "description": "How long to wait for the answer (default 600; 0 returns a ticket at once)."},
 			"images":       imagesProp,
+			"files":        filesProp,
 		}, "to", "text")},
 	{Name: "fleet_reply", Title: "Answer a question",
 		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id.`,
@@ -319,15 +325,25 @@ func (s *Server) HandleRequest(id json.RawMessage, method string, params json.Ra
 // read by the node, which confines them to the session's working
 // directory (attach.ReadWithin); agents cannot pass image data directly.
 func checkImages(paths []string, atts []model.Attachment) error {
-	if len(atts) > 0 {
-		return errors.New(`attach images by file path, in "images"`)
+	return checkPaths("images", paths, attach.MaxImages, len(atts) > 0)
+}
+
+// checkFiles validates the files argument, as checkImages does images
+// (attach.ReadFileWithin reads them on the node).
+func checkFiles(paths []string, atts []model.Attachment) error {
+	return checkPaths("files", paths, attach.MaxFiles, len(atts) > 0)
+}
+
+func checkPaths(field string, paths []string, max int, data bool) error {
+	if data {
+		return fmt.Errorf("attach %s by file path, in %q", field, field)
 	}
-	if len(paths) > attach.MaxImages {
-		return fmt.Errorf("%d images; at most %d per message", len(paths), attach.MaxImages)
+	if len(paths) > max {
+		return fmt.Errorf("%d %s; at most %d per message", len(paths), field, max)
 	}
 	for _, p := range paths {
 		if strings.TrimSpace(p) == "" || strings.ContainsRune(p, 0) || len(p) > 4096 {
-			return errors.New("images: each entry must be a file path")
+			return fmt.Errorf("%s: each entry must be a file path", field)
 		}
 	}
 	return nil
@@ -389,6 +405,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 		if err := checkImages(a.Images, a.Attachments); err != nil {
 			return "", nil, err
 		}
+		if err := checkFiles(a.Files, a.FileAttachments); err != nil {
+			return "", nil, err
+		}
 		op, args = "send", a
 	case "fleet_ask":
 		a, err := decode[fleet.AskArgs](raw)
@@ -396,6 +415,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 			return "", nil, err
 		}
 		if err := checkImages(a.Images, a.Attachments); err != nil {
+			return "", nil, err
+		}
+		if err := checkFiles(a.Files, a.FileAttachments); err != nil {
 			return "", nil, err
 		}
 		return s.ask(ctx, a)

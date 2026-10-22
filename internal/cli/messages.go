@@ -84,10 +84,11 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	from := fs.String("from", "", "sender (default user:cli)")
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")
 	images := addImageFlag(fs)
+	fileArgs := addFileFlag(fs)
 	var to imageFlag
 	fs.Var(&to, "to", "a recipient address (repeat to send to several, up to 64; then every argument is text)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: swk msg [flags] [--image FILE]... <address> <text>\n       swk msg [flags] --to <address> [--to <address>]... <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
+		fmt.Fprintln(stderr, "usage: swk msg [flags] [--image FILE]... [--file FILE]... <address> <text>\n       swk msg [flags] --to <address> [--to <address>]... <text>\n  address: host/name, name, @key=value (labels, host, harness) or user:<name>")
 		fs.PrintDefaults()
 	}
 	pos, err := interleave(fs, args)
@@ -110,6 +111,9 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	}
 	atts, err := readImages(*images)
 	if err != nil {
+		return fail(stderr, err)
+	}
+	if pm.Files, err = readFiles(*fileArgs); err != nil {
 		return fail(stderr, err)
 	}
 	c, ok := client(stderr)
@@ -137,12 +141,17 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	wait := fs.Duration("wait", 10*time.Minute, "how long to wait for the answer (0: print the ticket and exit)")
 	from := fs.String("from", "", "sender (default user:cli)")
 	images := addImageFlag(fs)
+	fileArgs := addFileFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swk ask [--wait 10m] [--image FILE]... <address> <question>")
+		fmt.Fprintln(stderr, "usage: swk ask [--wait 10m] [--image FILE]... [--file FILE]... <address> <question>")
 		return 2
 	}
 	atts, err := readImages(*images)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	files, err := readFiles(*fileArgs)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -158,7 +167,8 @@ func cmdAsk(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	ctx, cancel2 := context.WithTimeout(ctx, *wait+time.Minute)
 	defer cancel2()
-	res, err := c.Ask(ctx, apiclient.PostMessage{From: *from, To: pos[0], Text: strings.Join(pos[1:], " "), WaitSeconds: &secs, Attachments: atts})
+	res, err := c.Ask(ctx, apiclient.PostMessage{From: *from, To: pos[0], Text: strings.Join(pos[1:], " "), WaitSeconds: &secs, Attachments: atts,
+		Files: files})
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -237,8 +247,8 @@ func printMessages(stdout io.Writer, msgs []model.Message) {
 		}
 		// The 60-rune limit is the text's; the attachments are shown whole.
 		text := oneLine(m.Text, 60)
-		if len(m.Attachments) > 0 {
-			text = strings.TrimSpace(oneLine(attachmentsLabel(m.Attachments), 1<<16) + " " + text)
+		if atts := append(append([]model.Attachment{}, m.Attachments...), m.Files...); len(atts) > 0 {
+			text = strings.TrimSpace(oneLine(attachmentsLabel(atts), 1<<16) + " " + text)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ago(m.CreatedAt), m.Kind, m.From, to, state, text, m.ID)
 	}

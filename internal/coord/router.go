@@ -268,6 +268,9 @@ func (r *router) tidy(now time.Time) {
 			for _, a := range m.Attachments {
 				pinned[a.SHA256] = true
 			}
+			for _, f := range m.Files {
+				pinned[f.SHA256] = true
+			}
 		}
 		r.s.blobs.prune(now, pinned)
 	}
@@ -295,7 +298,50 @@ func (s *Server) storeAttachments(atts []model.Attachment) ([]model.Attachment, 
 	return out, nil
 }
 
-// loadAttachments reads a stored message's images back for delivery.
+// storeFiles keeps normalized files' bytes in the attachment store, which
+// images and files share (by digest, under the same retention and limits).
+func (s *Server) storeFiles(files []model.Attachment) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if s.blobs == nil {
+		return errors.New("this coordinator has no attachment store")
+	}
+	for _, f := range files {
+		if _, err := s.blobs.put(f.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// filesRefusal says why files cannot go to a session on host, or returns
+// nil.
+func (s *Server) filesRefusal(host string) error {
+	ok := false
+	if n, online := s.node(host); online {
+		ok = contains(n.hello.Features, wire.FeatureFiles)
+	} else if h, found := s.store.Host(host); found {
+		ok = h.Files
+	}
+	if !ok {
+		return fmt.Errorf("sessions on %s cannot take files (its node does not offer them; an older swk node never does)", host)
+	}
+	return nil
+}
+
+// filesTo says why files cannot go to t, or returns nil. People cannot
+// take them: they read messages in the web UI and the CLI, which show no
+// files.
+func (s *Server) filesTo(t target) error {
+	if t.sess == nil {
+		return fmt.Errorf("files go to agent sessions only, not to %s", t.user)
+	}
+	return s.filesRefusal(t.sess.Host)
+}
+
+// loadAttachments reads a stored message's images (or files) back for
+// delivery.
 func (s *Server) loadAttachments(metas []model.Attachment) ([]model.Attachment, error) {
 	if s.blobs == nil {
 		return nil, errors.New("this coordinator has no attachment store")
@@ -304,7 +350,7 @@ func (s *Server) loadAttachments(metas []model.Attachment) ([]model.Attachment, 
 	for _, m := range metas {
 		data, err := s.blobs.get(m.SHA256)
 		if err != nil {
-			return nil, fmt.Errorf("image %s: %w", m.Name, err)
+			return nil, fmt.Errorf("attachment %s: %w", m.Name, err)
 		}
 		m.Data = data
 		out = append(out, m)
@@ -496,6 +542,9 @@ func (r *router) allow(key string, perMinute int) bool { return r.allowN(key, pe
 // agent cannot crowd everyone's images out of the coordinator's store.
 const agentImageBytesPerMinute = 20 << 20
 
+// agentFileBytesPerMinute does the same for files.
+const agentFileBytesPerMinute = 8 << 20
+
 // allowN takes n tokens from key's bucket, which refills to perMinute a
 // minute.
 func (r *router) allowN(key string, perMinute int, n float64) bool {
@@ -549,6 +598,16 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		// attachments; an older node passes them on unread.
 		return nil, errors.New("image paths cannot be read: the sending host runs an older swk node; upgrade it")
 	}
+	if len(args.Files) > 0 {
+		return nil, errors.New("file paths cannot be read: the sending host runs an older swk node; upgrade it")
+	}
+	if len(args.FileAttachments) > 0 {
+		for _, t := range targets {
+			if err := r.s.filesTo(t); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if len(args.Attachments) > 0 {
 		for _, t := range targets {
 			if t.sess != nil {
@@ -599,6 +658,10 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 			return nil, err
 		}
 	}
+	files, err := attach.NormalizeFiles(args.FileAttachments)
+	if err != nil {
+		return nil, err
+	}
 	if from.sess != nil {
 		for _, t := range targets {
 			limit, class := r.guards.SendPerMinute, "send"
@@ -624,11 +687,17 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if n := attach.TotalBytes(images); n > 0 && !r.allowN("img|"+from.sess.ID, agentImageBytesPerMinute, float64(n)) {
 			return nil, fmt.Errorf("%w: agents may send at most %d MiB of images a minute", ErrRateLimit, agentImageBytesPerMinute>>20)
 		}
+		if n := attach.TotalBytes(files); n > 0 && !r.allowN("file|"+from.sess.ID, agentFileBytesPerMinute, float64(n)) {
+			return nil, fmt.Errorf("%w: agents may send at most %d MiB of files a minute", ErrRateLimit, agentFileBytesPerMinute>>20)
+		}
 	}
 	if len(images) > 0 {
 		if images, err = r.s.storeAttachments(images); err != nil {
 			return nil, err
 		}
+	}
+	if err := r.s.storeFiles(files); err != nil {
+		return nil, err
 	}
 	now := time.Now().UTC()
 	var out []model.Message
@@ -636,6 +705,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
 			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
 			m.Mode = r.steerMode(from, *t.sess, m.Mode)
@@ -746,6 +816,11 @@ func (r *router) precheck(from sender, kind string, args fleet.SendArgs, to stri
 		return err
 	}
 	for _, t := range ts {
+		if len(args.FileAttachments) > 0 {
+			if err := r.s.filesTo(t); err != nil {
+				return err
+			}
+		}
 		if t.sess == nil {
 			continue
 		}
@@ -807,9 +882,20 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 			return r.fail(m, err.Error())
 		}
 	}
+	var files []model.Attachment
+	if len(m.Files) > 0 {
+		// Checked again: an older node would drop them unseen.
+		err := r.s.filesRefusal(sess.Host)
+		if err == nil {
+			files, err = r.s.loadAttachments(m.Files)
+		}
+		if err != nil {
+			return r.fail(m, err.Error())
+		}
+	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		Attachments: images}}, 30*time.Second)
+		Attachments: images, Files: files}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -1020,7 +1106,7 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 		opts = append(opts, func(m *model.Message) { m.HoldUntil = m.CreatedAt.Add(hold) })
 	}
 	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds,
-		Images: args.Images, Attachments: args.Attachments}, opts...)
+		Images: args.Images, Attachments: args.Attachments, Files: args.Files, FileAttachments: args.FileAttachments}, opts...)
 	if err != nil {
 		return fleet.AskResult{Status: fleet.AskFailed, Error: err.Error()}
 	}

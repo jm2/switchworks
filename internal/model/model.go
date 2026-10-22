@@ -30,6 +30,9 @@ type Host struct {
 	// Only that certificate may connect: enrolling again replaces it, and
 	// removing the host revokes it.
 	CertSHA256 string `json:"cert_sha256,omitempty"`
+	// Files: the host's node takes file attachments (wire.FeatureFiles), as
+	// it last reported.
+	Files bool `json:"files,omitempty"`
 }
 
 // Session modes.

@@ -32,6 +32,7 @@ func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *co
 		t.Fatal(err)
 	}
 	cfg.Codex.Bin = bin
+	cfg.FilesDir = filepath.Join(dir, "received-files")
 	hopts, err := node.HarnessOptions(dir, cfg, func(f string, a ...any) { t.Logf(host+": "+f, a...) })
 	if err != nil {
 		t.Fatal(err)

@@ -95,6 +95,11 @@ const FeatureCwdRoot = "cwd_root"
 // pins an agent-spawned session's resolved cwd.
 const FeatureAgentSpawn = "agent_spawn"
 
+// FeatureFiles: the node takes MessageCmd.Files, writing them where its
+// sessions can read them. An older node would drop them unseen, so the
+// coordinator sends files only to nodes that list this.
+const FeatureFiles = "files"
+
 type Welcome struct {
 	Protocol int              `json:"protocol"`
 	Acked    map[string]int64 `json:"acked"`
@@ -193,6 +198,9 @@ type MessageCmd struct {
 	// Attachments carry the image bytes (at most attach.MaxTotalBytes, so
 	// the envelope stays well under MaxLine).
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files carry text files' bytes (at most attach.MaxFileTotalBytes), to
+	// nodes with FeatureFiles only.
+	Files []model.Attachment `json:"files,omitempty"`
 }
 
 // DeliverResult is the data of a successful deliver (or promote) command.

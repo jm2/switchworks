@@ -77,6 +77,10 @@ type SendArgs struct {
 	Images []string `json:"images,omitempty"`
 	// Attachments carry the images' bytes to the coordinator.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files are text files on the sender's host (patches, logs), read by
+	// the sender's node as Images are, into FileAttachments.
+	Files           []string           `json:"files,omitempty"`
+	FileAttachments []model.Attachment `json:"file_attachments,omitempty"`
 }
 
 // sendArgsJSON is SendArgs without its methods, for them to use.
@@ -187,6 +191,9 @@ type AskArgs struct {
 	// Images and Attachments: as in SendArgs.
 	Images      []string           `json:"images,omitempty"`
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files and FileAttachments: as in SendArgs.
+	Files           []string           `json:"files,omitempty"`
+	FileAttachments []model.Attachment `json:"file_attachments,omitempty"`
 }
 
 // Ask statuses.

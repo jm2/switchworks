@@ -90,6 +90,11 @@ type Config struct {
 		Command  string   `json:"command,omitempty"` // default: this swk binary
 		Args     []string `json:"args,omitempty"`    // default: ["mcp"]
 	} `json:"mcp"`
+
+	// FilesDir is where files received with messages are written for the
+	// sessions to read (default: <user cache dir>/switchworks/files; see
+	// files.go). Keep it out of the directories a sandbox profile denies.
+	FilesDir string `json:"files_dir,omitempty"`
 }
 
 // spool compaction threshold.
@@ -106,6 +111,8 @@ type queuedMsg struct {
 	// Attachments: metadata only. The bytes wait in the session's
 	// attachment directory (see images.go) until the message is delivered.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
+	// Files were written to disk when the message was accepted (files.go).
+	Files []fileRef `json:"files,omitempty"`
 }
 
 // seenCap bounds the per-session list of delivered message ids kept for
@@ -234,9 +241,10 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 	}
 	n.status = runstatus.Start(dir, runstatus.Status{Role: "node", Host: cfg.Host,
 		Coordinator: cfg.CoordinatorNode, WebUI: webUIFor(cfg.CoordinatorAPI)})
-	n.wg.Add(2)
+	n.wg.Add(3)
 	go n.ticker()
 	go n.sender()
+	go n.filesJanitor()
 	for _, s := range n.sessionList() {
 		if !s.rec.Stopped {
 			n.resume(s)
@@ -812,7 +820,7 @@ func formatMessage(m queuedMsg) string {
 		kind = model.MsgNotify
 	}
 	if headerless(m) {
-		return m.Text
+		return filesLine(m.Files) + m.Text
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s msg=%s from=%s", version.Slug, m.ID, m.From)
@@ -837,6 +845,7 @@ func formatMessage(m queuedMsg) string {
 		}
 		fmt.Fprintf(&b, "(%d image%s attached, in this turn's input: %s.)\n", n, plural, attach.Summary(m.Attachments))
 	}
+	b.WriteString(filesLine(m.Files))
 	b.WriteString(quoteHeaders(m.Text))
 	return b.String()
 }
@@ -872,6 +881,10 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	if len(images) > 0 && !h.Caps().Images {
 		return nil, noImages(s.rec.Harness)
 	}
+	files, err := attach.NormalizeFiles(m.Files)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	dup := containsID(s.rec.Seen, m.ID)
 	if !dup {
@@ -901,6 +914,12 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 			}
 		}
 		s.mu.Unlock()
+	}
+	if len(files) > 0 {
+		if msg.Files, err = n.writeFiles(s.rec.ID, m.ID, files); err != nil {
+			unseen()
+			return nil, fmt.Errorf("write files: %w", err)
+		}
 	}
 	caps := h.Caps()
 	if caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h))) {
@@ -1580,6 +1599,9 @@ func (n *Node) hello() wire.Hello {
 	h := wire.Hello{Protocol: wire.ProtocolVersion, Host: n.cfg.Host, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Features: []string{wire.FeatureCwdRoot, wire.FeatureAgentSpawn}, Sandboxed: sandboxed(n.Adapters()), Images: takesImages(n.Adapters()),
 		Version: version.Version, Adapters: n.Adapters()}
+	if n.filesRoot() != "" {
+		h.Features = append(h.Features, wire.FeatureFiles)
+	}
 	for _, s := range n.sessionList() {
 		s.mu.Lock()
 		if !s.rec.Stopped || len(s.unacked) > 0 {

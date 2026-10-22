@@ -585,6 +585,14 @@ images; whether the model actually sees them depends on the model and the
 provider endpoint, which `swk dev vision-probe` checks. See
 [docs/messaging.md](docs/messaging.md#images).
 
+Messages can also carry text files (patches, logs, notes; up to 4 per
+message, 1 MiB each): `--file` on `swk send`, `msg` and `ask`, and a
+`files` list of paths in `fleet_send` and `fleet_ask`, with the same
+checks as images. The receiving node writes each file to a folder of its
+own and the message gives its path, so an agent that cannot push (Windows
+Codex keeps `.git` read-only) can hand a `git format-patch` to one that
+can, byte for byte. See [docs/messaging.md](docs/messaging.md#files).
+
 If a workstation is lost or compromised, `swk hosts rm <host>` revokes its
 certificate and `swk token rm <name>` its CLI token. Enrolling a host
 again also replaces its old certificate.
@@ -633,7 +641,9 @@ and providers, fleet tools, and what each supports.
 (see [docs/harnesses.md](docs/harnesses.md#codex-nodejson-settings)),
 and `codex.permissions`: a Codex permission profile for `workspace-write`
 sessions, which can give them the network while denying reads of your
-credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)).
+credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)),
+and `files_dir`: where files received with messages go (default
+`<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)).
 
 ### Trying it without spending tokens
 
