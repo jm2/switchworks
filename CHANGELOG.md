@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Delivery receipts** — A message is `seen` once the turn that carried it completes, with the
   turn and its last reply; `fleet_send` returns `delivered_at` for a steer, and `fleet_inbox`
   (`all`) shows sent messages' state. The web UI shows "Delivered 14:02", then "Seen 14:05 · reply".
+- **Low disk warning** — The coordinator checks the free space on its data volume every five
+  minutes, logs a warning while it is low (under 5% of the volume, between 1 and 10 GiB), and
+  reports `"storage_low": true` in `/v1/health`.
 
 ### Changed
 
@@ -59,6 +62,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **delivered_at means in the session's input** — A queued message's `delivered_at` is now set
   when its turn starts, not when the node queues it; until then it is `delivered` without one,
   which the web UI shows as "queued".
+- **`coordinator init` keeps the admin config to itself** — It no longer installs the admin
+  `cli.json` as your user's CLI config unless you pass `--user-cli` (the system service and the
+  container image still do; they run no agents). `--no-user-cli` is still accepted. Setup hints
+  now suggest a `read` token for every machine where agents run.
+- **Admin-token browsers sign in again** — Browsers signed in with the admin token must sign in
+  once more after upgrading (see Security), and so must a browser on HTTPS that still holds the
+  old `swk_session` cookie.
+- **Bounded session queues** — A session's queue holds at most 256 messages and 4 MiB of text,
+  and a node's sessions 256 MiB of queued images; the owner's messages may use all of it, everyone
+  else's three quarters, so agents can't lock the owner out. A message that doesn't fit, or that
+  the node can't save, fails with the reason.
+- **Stopped sessions are forgotten** — Stopping a session fails the messages in its queue, so
+  senders hear, and once the coordinator has its events the node drops its record and spool.
+- **At-most-once delivery across a crash** — The node saves a turn's messages as being sent before
+  the harness gets them; one still marked after a restart is reported failed rather than
+  delivered twice. Redeliveries are recognised until an hour past the message's expiry.
+- **Event logs are capped** — Each session's event log on the coordinator is capped at 256 MiB
+  (`event_log_max_mb`; negative for no cap). Past it the oldest events are dropped, keeping about
+  half, behind a warning event; seq numbers don't change, so acks, stream resume and paging work
+  as before. A long-running or looping session could fill the coordinator's disk.
+- **Received files** — A node keeps at most `files_quota_mib` (default 1024 MiB) of received files,
+  in `<session>/<message>-<random>/` folders. Sessions on one host run as the same user and can
+  read each other's received files.
+- **agy approval modes** — agy runs with `--dangerously-skip-permissions` only at sandbox
+  `danger-full-access`; approval policy `never` below that maps to `--mode accept-edits`, and
+  read-only sessions keep agy's request-review.
 
 ### Fixed
 
@@ -73,6 +102,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waited for an idle status that had already come. It now retries at once or with backoff, a
   sweep retries any session left idle with a queue (and logs a warning), and the Codex adapter
   drops a turn id that never completed once the thread has been idle for 10 s.
+- **One bad message failed a whole batch** — If the harness refuses a coalesced turn, each message
+  is retried on its own and only one that fails alone is failed. A turn or steer the harness
+  doesn't answer in time is neither resent nor failed, and is reported delivered if it starts.
+- **Expiry during long turns** — Queued messages now expire on time while their session runs a
+  long turn or waits for an approval, and the coordinator no longer expires a message while its
+  node is taking it.
+- **Receipts** — `message.delivered` is recorded once a queued message has gone in, not before a
+  busy attempt; a steered message is credited to the turn it went into.
+- **Promote and image cleanup** — A queued message being sent now keeps its images while it is
+  steered in.
+- **Codex double turns** — A running turn is no longer dropped as stale because of an idle status
+  from before it started, which could start a second turn beside it.
+- **A harness that stops reading** — It no longer hangs every session on the node: a write that
+  takes 30 s closes the connection and the node restarts the harness, and replies to the harness
+  no longer block reading from it.
+- **ACP and agy robustness** — An ACP agent that sends a request the moment it starts no longer
+  risks crashing the node, and edit diffs are computed once; agy stdout lines are capped and its
+  model is passed as `--model=value`; Codex notifications for unclaimed threads no longer fill
+  the early-notification buffer for good.
+- **Process groups** — On Linux and macOS, stopping a harness no longer signals a process group
+  whose id may have been reused; on Linux its leftovers are ended before its process is reaped.
+- **Store tidying** — Expired enrollment tokens are swept, the message budget also counts image
+  and file metadata, messages dropped for it no longer come back after a restart, and an unknown
+  `session.status` from a node is recorded as `error`. Sign-outs and other files written through
+  `paths.WriteFile` survive a power loss (the directory is synced; not on Windows).
 
 ### Security
 
@@ -86,6 +140,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commands outside the sandbox), and turn connector apps off. Also covers what execpolicy allow
   rules expose, agents' own git tokens, Windows' default sandbox reading your secrets, and running
   GPU work safely.
+- **Attachments could carry credentials** — Agents' attachments are read by the node as you,
+  outside the sandbox, so an agent could send itself or another host keys its sandbox denied it.
+  The node now refuses `images` and `files` from credential locations (`~/.ssh`, `~/.aws`,
+  `~/.codex`, `~/.config/gh`, keyrings, browser profiles and more), CODEX_HOME, received files,
+  the paths a permission profile in Codex's `config.toml` denies, and `attach_deny` in
+  `node.json`; names like `.env` and private SSH keys anywhere; and dot-files when the session
+  works in the home directory (`attach_allow` lifts those two). Windows refuses hard-linked
+  files too. People's credentials may send at most 8 MiB of files a minute, like agents.
+- **Hop limit across batches** — A turn that takes in several messages counts hops from the
+  deepest of them, so a shallow message no longer resets a long agent-to-agent chain; a
+  coordinator restart rebuilds the count from stored messages.
+- **Inbox shows only what arrived** — `fleet_inbox` no longer lists messages to a session that are
+  still queued, or were cancelled, expired or failed before reaching it; `fleet_reply` refuses
+  an ask that was cancelled, expired or failed.
+- **Owner powers** — Creating, marking or revoking an owner token takes the admin token or an
+  owner token. Promote and cancel match a queued message's sender by API token id (`via_token`),
+  so a new token under a revoked token's name cannot control its messages.
+- **Valid tokens while throttled** — A valid token is accepted even while its client is throttled
+  for failed attempts; only bad tokens get 429, so bad tokens from behind the same NAT, IPv6 /64
+  or proxy no longer lock everyone there out. A sign-in link refused by its token's limit is no
+  longer used up.
+- **Admin cookies follow the admin token** — Replacing `admin_token_hash` signs out the browsers the
+  admin token signed in. Over HTTPS only the `__Host-swk_session` cookie is accepted.
+- **Header lookalikes** — Lines imitating Switchworks's message header with fullwidth, Cyrillic,
+  Greek, mathematical or accented lookalikes, zero-width characters or a space after the bracket
+  are quoted too. The node also checks spawn and message fields itself and refuses a second spawn
+  for an id it already has.
+- **Sessions looser than asked** — A Codex thread running with a looser sandbox than its session
+  asked for is refused on spawn and resume instead of only being marked degraded, and one whose
+  sandbox Codex doesn't report refuses an agent's spawn. An ACP spawn whose approval policy
+  matches none of the agent's modes is refused instead of running in the agent's default mode.
+  ACP permission options of unknown kinds are offered as `option:<id>`, and unprintable paths are
+  quoted in diffs and approval prompts.
+- **agy fleet tools and spawns** — agy no longer leaves a global `mcp(swk/*)` allow rule that
+  pre-approved any MCP server named `swk`, including one an untrusted repository defines: each
+  workspace's entry has a random `swk-…` name and its rule is removed when the workspace's last
+  session ends. An agent may spawn agy only with `danger-full-access` itself or
+  `guards.allow_unsandboxed_spawn`, since agy's `--sandbox` does not confine its edits.
 
 ## [0.1.4] — 2026-10-19
 
