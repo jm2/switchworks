@@ -344,14 +344,22 @@ func TestSpawnCwdSymlinkSwaps(t *testing.T) {
 	if err := os.Symlink(outside, sub); err != nil {
 		t.Fatal(err)
 	}
-	say(c3.ID, "write here")
-	w3.waitFor(t, "turn refused after the swap", 0, func(e model.Event) bool {
-		var p struct {
-			Error string `json:"error"`
+	// The refusal comes as message.failed, or as the send's own error when
+	// it fails before the coordinator answers.
+	refused := fmt.Sprintf("cwd %q", sub)
+	if _, err := c.Send(ctx, c3.ID, "write here", "queue", ""); err != nil {
+		if !strings.Contains(err.Error(), refused) {
+			t.Fatal(err)
 		}
-		return e.Kind == model.KindMessageFailed && json.Unmarshal(e.Payload, &p) == nil &&
-			strings.Contains(p.Error, fmt.Sprintf("cwd %q", sub))
-	})
+	} else {
+		w3.waitFor(t, "turn refused after the swap", 0, func(e model.Event) bool {
+			var p struct {
+				Error string `json:"error"`
+			}
+			return e.Kind == model.KindMessageFailed && json.Unmarshal(e.Payload, &p) == nil &&
+				strings.Contains(p.Error, refused)
+		})
+	}
 	if countAgent(w3, agentSaid("write here")) != 0 {
 		t.Fatal("the turn ran in the swapped cwd")
 	}
