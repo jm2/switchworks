@@ -28,6 +28,7 @@
 | `swk service` (user services) | done | unit tests per platform (systemd unit quoting, LaunchAgent plist with `plutil -lint`, logon-task XML and SID names, the Windows stop event); CI's Services job runs a coordinator and node through systemd user units, LaunchAgents and logon tasks on GitHub's Linux, macOS and Windows runners: install, run as the user, connect, restart, stop, start, uninstall |
 | Coordinator system service (`--system`) | done, little real use | unit tests: the system unit and its account match the packages', the environment `swk --system` passes, root-only binary checks, which commands `--system` allows, the Windows service command line; run in a Fedora 44 container booted with systemd, as a user with sudo, from a copied binary and from the RPM's unit: runs as `switchworks` under the unit's sandbox (exposure 1.4 in `systemd-analyze security`), its directory closed to the user, an operate token and a node as the user, restart, uninstall. CI's System service job does the same on GitHub's Linux and Windows runners (Windows: the virtual account and the folder's permissions), and installs and removes the `.deb` around it |
 | Session retention (`swk rm`, `session_retention_days`) | done | unit tests: stopped and gone sessions past the retention are removed with their event logs and the web UI told; running, errored and recently ended ones stay, including one idle for long and only now marked gone (the end is the coordinator's clock); ancestors of a running session stay, and its spawn depth with them; a removed session's node cannot get it adopted again or reuse its id, and tombstones survive restarts and expire after a year; backlogs go in batches; a negative retention keeps all, a shorter one applies, an overflowing one is capped; removing a live session is refused; the route needs admin; event logs that cannot be removed are retried while running and at the next start. e2e: an operate token cannot `rm`, and an admin cannot remove a live session |
+| Event log cap (`event_log_max_mb`) and low-disk warning | done | unit tests: a log past the cap keeps its newest events behind a truncation warning, with seqs, `LastSeq`, paging, duplicates and appends unchanged, also after a restart; unprojected events and the last usage event are never dropped; a cap of 0 is off; a log being read is not compacted; a crashed compaction's temporary file is removed; the config's default, off and overflow; the low-disk threshold, its log (on change, hourly while low) and `/v1/health` |
 | Status file (`status.json`) | done | unit tests; a real coordinator and node run with `--log-file` reported running and connected, and the file went away on SIGTERM |
 | Linux tray (`swk-tray`, StatusNotifierItem) | done, little real use | D-Bus codec round trips and talks to a real `dbus-daemon`; a fake StatusNotifierWatcher receives the registration, reads the item's properties, pixmaps, tooltip and menu layout, and clicks an item. Not yet looked at in a real panel |
 | Windows tray (`swk-tray.exe`) | done, little real use | CI starts it on a Windows runner (it stays up; a second copy exits); not yet looked at on a real desktop |
@@ -109,10 +110,14 @@ real-Codex test.
   with a warning when added). They are set up for new sessions only, not
   for sessions resumed after the setting changes. Environment inheritance
   from agy to `swk mcp` works with agy 1.4.0.
-- **Running sessions grow without bound.** Ended sessions are deleted
-  with their event logs 90 days after they ended by
-  default (`session_retention_days`; negative keeps them), but a session that keeps running keeps its
-  whole log. Terminal messages are compacted after 14 days.
+- **Long-running sessions lose their oldest history.** Ended sessions are
+  deleted with their event logs 90 days after they ended by default
+  (`session_retention_days`; negative keeps them), and a session's log is
+  capped at 256 MiB (`event_log_max_mb`): past it the oldest events are
+  dropped, behind a warning event, and the web UI's earlier history starts
+  there. Compaction holds the store lock
+  while it copies up to half the cap. Terminal messages are compacted after
+  14 days.
 - **Hop counting is per session, not per conversation.** A session working
   on a deep chain that then gets an unrelated message starts again from that
   message's hop count. Good enough to stop ping-pong; not a causal trace.

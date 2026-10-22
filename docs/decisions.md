@@ -96,6 +96,23 @@ Removal goes in batches of 200, one `state.json` write each. `swk rm`
 deletes one sooner; it needs admin, since an operate token is what agents'
 machines carry, and history is worth more than the space.
 
+**Event logs are capped per session.** A session that runs for long, or
+loops, would otherwise grow its log until the coordinator's disk is full,
+and then nothing can be stored. Past `event_log_max_mb` (256 MiB by
+default; negative: no cap) the store rewrites the log on the next append
+with the newest half of the cap, behind a `warning` event whose seq is the
+last dropped one's and whose payload says so (`truncated_through`). Seqs
+do not change, so nodes' acks, `LastSeq`, SSE resumes and paging with
+`after` work as before; a reader from before the cut sees the warning, one
+past it misses nothing. Events not yet projected are never dropped (a
+crash replays them), the last usage event is kept ahead of the warning
+(after a restart, usage is counted from it), and a log being read is left
+for the next append.
+The rewrite goes to a temporary file renamed over the log, so a crash
+leaves one or the other whole. It runs under the store lock and copies up
+to half the cap, once per half cap appended. The coordinator also warns,
+in its log and `/v1/health`, when its data volume is low on space.
+
 **The coordinator can have an account of its own.** On a machine where
 agents also run, a coordinator running as you is readable by them: its CA
 key signs node certificates and its admin `cli.json` controls the fleet.

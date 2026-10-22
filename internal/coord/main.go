@@ -44,6 +44,10 @@ type Config struct {
 	// and event log are kept after it ended: 0 means the default (90), a
 	// negative number forever.
 	SessionRetentionDays int `json:"session_retention_days,omitempty"`
+	// EventLogMaxMB caps each session's event log, in MiB: past it, the
+	// oldest events are dropped (behind a warning event saying so). 0
+	// means the default (256), a negative number no cap.
+	EventLogMaxMB int `json:"event_log_max_mb,omitempty"`
 }
 
 const configFile = "coordinator.json"
@@ -296,6 +300,7 @@ func runCoordinator(parent context.Context, dir string, stderr io.Writer) int {
 		return 1
 	}
 	defer st.Close()
+	st.SetEventLogCap(cfg.eventLogCap())
 	srv, err := NewServer(dir, cfg, st, logger.Printf)
 	if err != nil {
 		logger.Print(err)
@@ -313,6 +318,7 @@ func runCoordinator(parent context.Context, dir string, stderr io.Writer) int {
 	}
 	ctx, cancel := runstatus.StopContext(parent, dir)
 	defer cancel()
+	go srv.watchDisk(ctx, filepath.Join(dir, "data"))
 	go func() {
 		if err := srv.ServeNodes(nodeLn); err != nil && ctx.Err() == nil {
 			logger.Printf("node listener: %v", err)
