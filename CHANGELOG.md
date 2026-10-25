@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hop limit with fast agents** — A node sends a session's events ahead of that session's fleet
+  requests, so the coordinator counts a message chain's hops from the message that started the
+  turn even when the agent answers at once; before, a fast enough loop could outrun the limit.
+
 ## [0.1.5] — 2026-10-22
 
 ### Added

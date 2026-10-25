@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -595,5 +596,34 @@ func TestSteerDropsExpired(t *testing.T) {
 	}
 	if d := s.events(model.KindMessageDelivered); len(d) != 1 {
 		t.Fatalf("delivered events %v", d)
+	}
+}
+
+// A session's fleet request goes to the coordinator after the events the
+// session has emitted so far, so the coordinator knows which message
+// started the turn (its hop count) before it routes what the turn sends.
+func TestRequestAfterEvents(t *testing.T) {
+	n, s := queueNode(t, &queueHandle{})
+	n.reqs = map[string]chan reqReply{}
+	ours, theirs := net.Pipe()
+	defer ours.Close()
+	defer theirs.Close()
+	n.conn = wire.NewConn(ours)
+	s.emit(model.KindMessageDelivered, model.MessageEvent{MessageID: ulid.New(), From: "devbox/b"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = n.request(ctx, wire.ReqSend, s.rec.ID, json.RawMessage(`{}`)) }()
+	coord := wire.NewConn(theirs)
+	var got []string
+	for len(got) == 0 || got[len(got)-1] != wire.TCmd {
+		env, err := coord.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, env.Type)
+	}
+	if got[0] != wire.TEvents {
+		t.Fatalf("the coordinator got %v: the request before the session's events", got)
 	}
 }

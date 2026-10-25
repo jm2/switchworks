@@ -369,6 +369,9 @@ type Node struct {
 	connMu sync.Mutex
 	conn   *wire.Conn
 	wake   chan struct{}
+	// sendMu orders what goes to the coordinator: the sender's batches,
+	// and a session's events ahead of that session's fleet requests.
+	sendMu sync.Mutex
 
 	reqMu   sync.Mutex
 	reqs    map[string]chan reqReply // node -> coordinator requests in flight
