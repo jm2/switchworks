@@ -7,8 +7,9 @@
 // The running process writes status.json into its own directory (mode 0600)
 // when something changes and every Heartbeat otherwise, and removes it when
 // it stops. A reader treats a file older than Stale, or one whose process
-// has exited, as a process that died without cleaning up. The file holds no secrets: process ID, version, host
-// name, coordinator address and connection state.
+// has exited, as a process that died without cleaning up. The file holds
+// no secrets: process ID, version, host name, coordinator address and
+// connection state.
 package runstatus
 
 import (
