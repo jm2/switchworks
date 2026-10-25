@@ -319,7 +319,7 @@ func (s *Server) agentSpawn(from sender, spec *model.SpawnSpec, hops int) error 
 	if d := s.depth(p) + 1; d > g.MaxSpawnDepth {
 		return fmt.Errorf("spawn depth limit: this would be level %d (max %d)", d, g.MaxSpawnDepth)
 	}
-	if hops > g.MaxHops {
+	if g.overHops(hops) {
 		return ErrHopLimit
 	}
 	if spec.Host == "" {

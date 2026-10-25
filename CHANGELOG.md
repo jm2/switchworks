@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **No hop limit by default** — Agents can keep messaging each other, like Claude Code sessions,
+  until they are stopped: `max_hops` is off unless set, leaving the rate limits and the daily token
+  budget. When it is set, a person's message starts the count over however it went in, and a steer
+  into a running turn no longer raises the turn's count. Before, a busy coordinator session that
+  only ever took steers piled up hops until its workers could not report back.
+
 ### Fixed
 
 - **Hop limit with fast agents** — A node sends a session's events ahead of that session's fleet
