@@ -229,38 +229,48 @@ func (n *Node) sender() {
 		if c == nil {
 			continue
 		}
+		n.sendMu.Lock()
 		for _, s := range n.sessionList() {
-			for {
-				s.mu.Lock()
-				var batch []model.Event
-				size := 0
-				for _, ev := range s.unacked {
-					if ev.Seq > s.sentSeq {
-						// Bounded by count and bytes, well inside the
-						// coordinator's line limit, however big a backlog
-						// of diffs has grown.
-						if len(batch) > 0 && size+len(ev.Payload)+512 > maxBatchBytes {
-							break
-						}
-						batch = append(batch, ev)
-						size += len(ev.Payload) + 512
-						if len(batch) == 500 {
-							break
-						}
-					}
-				}
-				if len(batch) > 0 {
-					s.sentSeq = batch[len(batch)-1].Seq
-				}
-				s.mu.Unlock()
-				if len(batch) == 0 {
+			if !n.sendEvents(c, s) {
+				break
+			}
+		}
+		n.sendMu.Unlock()
+	}
+}
+
+// sendEvents ships s's unsent events on c, holding n.sendMu. It reports
+// false if c failed (and is closed).
+func (n *Node) sendEvents(c *wire.Conn, s *session) bool {
+	for {
+		s.mu.Lock()
+		var batch []model.Event
+		size := 0
+		for _, ev := range s.unacked {
+			if ev.Seq > s.sentSeq {
+				// Bounded by count and bytes, well inside the
+				// coordinator's line limit, however big a backlog
+				// of diffs has grown.
+				if len(batch) > 0 && size+len(ev.Payload)+512 > maxBatchBytes {
 					break
 				}
-				if err := c.Send(wire.TEvents, "", "", wire.Events{Events: batch}); err != nil {
-					_ = c.Close()
+				batch = append(batch, ev)
+				size += len(ev.Payload) + 512
+				if len(batch) == 500 {
 					break
 				}
 			}
+		}
+		if len(batch) > 0 {
+			s.sentSeq = batch[len(batch)-1].Seq
+		}
+		s.mu.Unlock()
+		if len(batch) == 0 {
+			return true
+		}
+		if err := c.Send(wire.TEvents, "", "", wire.Events{Events: batch}); err != nil {
+			_ = c.Close()
+			return false
 		}
 	}
 }

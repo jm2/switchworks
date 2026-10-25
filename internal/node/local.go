@@ -234,7 +234,19 @@ func (n *Node) request(ctx context.Context, op, sessionID string, args json.RawM
 		delete(n.reqs, id)
 		n.reqMu.Unlock()
 	}
-	if err := c.Send(wire.TCmd, id, "", wire.NodeReq{Op: op, Session: sessionID, Args: args}); err != nil {
+	// The session's events go first: the coordinator reads them in order,
+	// so it knows which message started the turn this request comes from
+	// (its hop count) before it routes what the turn sends.
+	n.sendMu.Lock()
+	sent := true
+	if s, err := n.session(sessionID); err == nil {
+		sent = n.sendEvents(c, s)
+	}
+	if sent {
+		sent = c.Send(wire.TCmd, id, "", wire.NodeReq{Op: op, Session: sessionID, Args: args}) == nil
+	}
+	n.sendMu.Unlock()
+	if !sent {
 		drop()
 		return wire.Result{}, errNoCoordinator
 	}
