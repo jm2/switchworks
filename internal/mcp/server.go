@@ -152,7 +152,7 @@ var Tools = []Tool{
 			"broadcast": map[string]any{"type": "boolean", "description": "Send to every session matching an @selector."},
 			"supersedes": map[string]any{"type": "string", "maxLength": fleet.MaxSupersedesBytes,
 				"description": `A key for what this message reports, e.g. "status:gate5": it replaces your earlier message with the same key to the same session while that one still waits to be delivered.`},
-			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Expire undelivered after this many seconds (default 7200; at most the fleet's limit, 24 hours by default)."},
+			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Expire undelivered after this many seconds (default: the fleet's agent_notify_ttl_seconds, 2 hours unless changed; at most its default_ttl_seconds, 24 hours unless changed)."},
 			"images":      imagesProp,
 			"files":       filesProp,
 		}, "to", "text")},
