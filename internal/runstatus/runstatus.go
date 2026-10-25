@@ -6,8 +6,8 @@
 //
 // The running process writes status.json into its own directory (mode 0600)
 // when something changes and every Heartbeat otherwise, and removes it when
-// it stops. A reader treats a file older than Stale as a process that died
-// without cleaning up. The file holds no secrets: process ID, version, host
+// it stops. A reader treats a file older than Stale, or one whose process
+// has exited, as a process that died without cleaning up. The file holds no secrets: process ID, version, host
 // name, coordinator address and connection state.
 package runstatus
 
@@ -59,6 +59,21 @@ type Status struct {
 // process.
 func (s Status) Fresh(now time.Time) bool {
 	return !s.Updated.IsZero() && now.Sub(s.Updated) < Stale && s.Updated.Sub(now) < Stale
+}
+
+// Running reports whether s is fresh and its process still runs, so a
+// process killed before it could remove its file (by Task Scheduler, a
+// crash or SIGKILL) counts as stopped at once.
+func (s Status) Running(now time.Time) bool {
+	return s.Fresh(now) && alive(s.PID, s.Started)
+}
+
+// RemoveDead removes dir's status file if the process that wrote it has
+// exited. Best effort.
+func RemoveDead(dir string) {
+	if s, err := Read(dir); err == nil && !alive(s.PID, s.Started) {
+		_ = os.Remove(filepath.Join(dir, File))
+	}
 }
 
 // Read loads dir's status file.

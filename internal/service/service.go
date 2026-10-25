@@ -60,9 +60,10 @@ type Info struct {
 	Installed  bool `json:"installed"` // registered with the service manager
 	Enabled    bool `json:"enabled"`   // starts at login
 	// Running: the service manager says it runs, or a fresh status file
-	// shows a process started some other way (such as in a terminal).
+	// whose process is alive shows one started some other way (such as in
+	// a terminal).
 	Running bool              `json:"running"`
-	Status  *runstatus.Status `json:"status,omitempty"` // when fresh
+	Status  *runstatus.Status `json:"status,omitempty"` // when fresh and alive
 	Dir     string            `json:"dir"`
 	LogDir  string            `json:"log_dir"`
 	Error   string            `json:"error,omitempty"` // the service manager could not be asked
@@ -126,7 +127,7 @@ func Query(role string) Info {
 		in.Error = err.Error()
 	}
 	in.Installed, in.Enabled, in.Running = st.installed, st.enabled, st.active
-	if s, err := runstatus.Read(in.Dir); err == nil && s.Fresh(time.Now()) {
+	if s, err := runstatus.Read(in.Dir); err == nil && s.Running(time.Now()) {
 		in.Status = &s
 		in.Running = true
 	}
@@ -343,7 +344,7 @@ func run(name string, args ...string) (string, error) {
 func waitRunning(role string, d time.Duration, old int) bool {
 	deadline := time.Now().Add(d)
 	for {
-		if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) && (old == 0 || s.PID != old) {
+		if s, err := runstatus.Read(Dir(role)); err == nil && s.Running(time.Now()) && (old == 0 || s.PID != old) {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -353,12 +354,13 @@ func waitRunning(role string, d time.Duration, old int) bool {
 	}
 }
 
-// waitStopped waits for a role's status file to go away or go stale.
+// waitStopped waits for a role's status file to go away, go stale or name
+// a process that has exited.
 func waitStopped(role string, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
 		s, err := runstatus.Read(Dir(role))
-		if err != nil || !s.Fresh(time.Now()) {
+		if err != nil || !s.Running(time.Now()) {
 			return true
 		}
 		if time.Now().After(deadline) {

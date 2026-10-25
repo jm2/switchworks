@@ -262,14 +262,19 @@ func waitExit(role string, pid int, d time.Duration) bool {
 // state and end its harnesses, and ends the task only if that fails.
 func stop(role string) error {
 	pid := 0
-	if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+	if s, err := runstatus.Read(Dir(role)); err == nil && s.Running(time.Now()) {
 		pid = s.PID
 	}
 	err := runstatus.RequestStop(Dir(role))
 	if err == nil && waitExit(role, pid, 30*time.Second) {
 		return nil
 	}
-	if endErr := stopTask(unitName(role)); endErr != nil && err == nil {
+	if endErr := stopTask(unitName(role)); endErr == nil {
+		// Ending the task kills the process before it can remove its
+		// status file.
+		waitExit(role, pid, 5*time.Second)
+		runstatus.RemoveDead(Dir(role))
+	} else if err == nil {
 		return endErr
 	}
 	if err != nil && !errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
@@ -280,7 +285,7 @@ func stop(role string) error {
 
 func restart(role string) error {
 	old := 0
-	if s, err := runstatus.Read(Dir(role)); err == nil && s.Fresh(time.Now()) {
+	if s, err := runstatus.Read(Dir(role)); err == nil && s.Running(time.Now()) {
 		old = s.PID
 	}
 	if err := stop(role); err != nil {

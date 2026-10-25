@@ -10,8 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Hop limit with fast agents** — A node sends a session's events ahead of that session's fleet
-  requests, so the coordinator counts a message chain's hops from the message that started the
-  turn even when the agent answers at once; before, a fast enough loop could outrun the limit.
+  requests, so the coordinator counts a message chain's hops from the message that started the turn
+  even when the agent answers at once; before, a fast enough loop could outrun the limit.
+- **Stopped node shown as running** — `swk service status` and the tray no longer report a node or
+  coordinator as running for up to a minute after it was killed (as `swk service stop` does on
+  Windows) or crashed: a status file whose process has exited counts as stopped.
 
 ## [0.1.5] — 2026-10-22
 

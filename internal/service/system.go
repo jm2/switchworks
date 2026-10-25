@@ -65,7 +65,7 @@ func querySystemInfo() (Info, bool) {
 		Installed: st.installed, Enabled: st.enabled, Running: st.active,
 	}
 	in.Configured = systemConfigured(true)
-	if s, err := runstatus.Read(in.Dir); err == nil && s.Fresh(time.Now()) {
+	if s, err := runstatus.Read(in.Dir); err == nil && s.Running(time.Now()) {
 		in.Status = &s
 		in.Running = true
 	}
