@@ -266,6 +266,18 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 .queued-agents { justify-content: flex-end; }
 .queued.held .bubble { opacity: .45; }
 .queued-agents svg.i { width: 14px; height: 14px; }
+.queued-agents-box > summary { cursor: pointer; list-style: none; }
+.queued-agents-box > summary::-webkit-details-marker { display: none; }
+.queued-agents-box[open] > summary { margin-bottom: 8px; }
+.queued-agent { margin: 0 0 8px auto; max-width: min(85%, 600px); padding: 8px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.queued-agent.held { opacity: .6; }
+.queued-agent .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 2px; }
+.queued-agent .kind { font-size: 12px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); }
+.queued-agent .kind.ask { color: var(--accent-ink); }
+.queued-agent .kind.reply, .queued-agent .kind.done { color: var(--ok); }
+.queued-agent .kind.system { color: var(--warn); }
+.queued-agent .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.queued-agent .queued-foot { justify-content: flex-end; margin-top: 4px; }
 /* the composer's note while the session's host is offline */
 .offline-note { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 8px 12px; border-radius: 10px; font-size: 13px;
   color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: var(--canvas); }

@@ -299,6 +299,9 @@ func cmdInbox(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdMessages(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "promote" || args[0] == "cancel") {
+		return cmdQueued(args[0], args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("messages", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	limit := fs.Int("n", 50, "how many messages")
@@ -331,6 +334,54 @@ func cmdMessages(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	printMessages(stdout, msgs)
+	return 0
+}
+
+// cmdQueued sends a queued message now (promote) or takes it out of the
+// queue (cancel), as the web UI's Send now and Cancel do.
+func cmdQueued(op string, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("messages "+op, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	interrupt := false
+	if op == "promote" {
+		fs.BoolVar(&interrupt, "interrupt", false, "cancel the running turn to deliver it, for a session that cannot steer")
+	}
+	pos, err := interleave(fs, args)
+	if err != nil || len(pos) != 1 {
+		if op == "promote" {
+			fmt.Fprintln(stderr, "usage: swk messages promote [--interrupt] <message-id>")
+		} else {
+			fmt.Fprintln(stderr, "usage: swk messages cancel <message-id>")
+		}
+		return 2
+	}
+	c, ok := client(stderr)
+	if !ok {
+		return 1
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	if op == "cancel" {
+		if err := c.CancelMessage(ctx, pos[0]); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "%s: cancelled\n", pos[0])
+		return 0
+	}
+	mode := model.ModeSteer
+	if interrupt {
+		mode = model.ModeInterrupt
+	}
+	res, err := c.Promote(ctx, pos[0], mode)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	how := map[string]string{model.ModeSteer: "steered into the running turn", model.ModeInterrupt: "delivered, interrupting the turn",
+		model.ModeQueue: "nothing is running to steer into, so it goes next"}[res.Mode]
+	if how == "" {
+		how = res.Mode
+	}
+	fmt.Fprintf(stdout, "%s: %s\n", pos[0], how)
 	return 0
 }
 

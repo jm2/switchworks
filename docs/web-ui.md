@@ -42,12 +42,17 @@ system; the choice is kept per browser.
   (steers it into the running turn, or interrupts a session that cannot
   take one mid-turn) and **Cancel**, and when it expires undelivered
   ("expires 14:30", from a node that enforces it); it becomes the usual
-  message when its turn starts. Under a message from you (or another
+  message when its turn starts. A message sent **now** into a running
+  turn shows the same way, "Steered: the agent reads it at its next
+  step", until the harness takes it in (Codex reads a steer at its next
+  step, which can be a long tool call away). Under a message from you (or another
   person) a receipt says when it went into the session's input,
   "Delivered 14:02", and once the turn that carried it has finished,
   "Seen 14:05 · reply": **reply** scrolls to that turn's last agent
-  message. Messages queued by agents show as one row, "N queued from
-  agents", with **Clear** (an owner's browser only). Next to that menu,
+  message. Messages queued by agents fold into one row, "N queued from
+  agents", with **Clear**, which asks before it cancels them all; opened,
+  the row lists each one (sender, kind, text, expiry) with **Send now**
+  and **Cancel** (an owner's browser only). Next to that menu,
   **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser

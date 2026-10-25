@@ -1159,7 +1159,7 @@ func (r *router) notifySender(m model.Message, text string) {
 		return
 	}
 	n := model.Message{ID: ulid.New(), Kind: model.MsgSystem, From: model.SystemSender, To: sess.Path,
-		ToSession: sess.ID, ToPath: sess.Path, Text: text, Hops: m.Hops, State: model.MsgPending,
+		ToSession: sess.ID, ToPath: sess.Path, Text: text, Mode: r.steerMode(sender{}, sess, model.ModeAuto), Hops: m.Hops, State: model.MsgPending,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(n) == nil {
 		r.deliverLater(n)
@@ -1251,7 +1251,9 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 		}
 		opts = append(opts, func(m *model.Message) { m.HoldUntil = m.CreatedAt.Add(hold) })
 	}
-	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds,
+	// An ask goes into the target's running turn like any send: one that
+	// waited for the turn to end would often outlive its asker's wait.
+	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, Mode: model.ModeAuto, TTLSeconds: args.TTLSeconds,
 		Images: args.Images, Attachments: args.Attachments, Files: args.Files, FileAttachments: args.FileAttachments}, opts...)
 	if err != nil {
 		return fleet.AskResult{Status: fleet.AskFailed, Error: err.Error()}
@@ -1356,6 +1358,9 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 	case ask.FromSession != "":
 		if s, ok := r.s.store.Session(ask.FromSession); ok {
 			rep.ToSession, rep.ToPath = s.ID, s.Path
+			// Into the asker's running turn: it may have stopped waiting
+			// but still be working on what it asked about.
+			rep.Mode = r.steerMode(from, s, model.ModeAuto)
 		}
 	case strings.HasPrefix(ask.From, "user:"):
 		rep.ToUser, rep.ToPath = ask.From, ask.From
@@ -1677,7 +1682,7 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 	}
 	now := time.Now().UTC()
 	m := model.Message{ID: ulid.New(), Kind: model.MsgDone, From: child.Path, FromSession: child.ID, To: parent.Path,
-		ToSession: parent.ID, ToPath: parent.Path, Text: text, Hops: hops, State: model.MsgPending,
+		ToSession: parent.ID, ToPath: parent.Path, Text: text, Mode: r.steerMode(sender{sess: &child}, parent, model.ModeAuto), Hops: hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(m) == nil {
 		r.deliverLater(m)
