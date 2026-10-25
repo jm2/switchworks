@@ -74,7 +74,9 @@ func TestFresh(t *testing.T) {
 // fresh it is; one from this process reads as running.
 func TestRunning(t *testing.T) {
 	now := time.Now()
-	self := Status{PID: os.Getpid(), Started: now.Add(-time.Minute), Updated: now}
+	// Started as Start records it: after the process was created (on
+	// Windows, a process created later than Started is another one).
+	self := Status{PID: os.Getpid(), Started: now, Updated: now}
 	if !self.Running(now) {
 		t.Fatal("this process does not count as running")
 	}
