@@ -376,6 +376,12 @@ func cmdQueued(op string, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if res.State == model.MsgPending {
+		// The coordinator still holds it (its host is offline): it goes in
+		// this mode when the host is back.
+		fmt.Fprintf(stdout, "%s: still waiting for its host; it goes %s when the host is back\n", pos[0], res.Mode)
+		return 0
+	}
 	how := map[string]string{model.ModeSteer: "steered into the running turn", model.ModeInterrupt: "delivered, interrupting the turn",
 		model.ModeQueue: "nothing is running to steer into, so it goes next"}[res.Mode]
 	if how == "" {

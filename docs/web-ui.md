@@ -52,7 +52,8 @@ system; the choice is kept per browser.
   message. Messages queued by agents fold into one row, "N queued from
   agents", with **Clear**, which asks before it cancels them all; opened,
   the row lists each one (sender, kind, text, expiry) with **Send now**
-  and **Cancel** (an owner's browser only). Next to that menu,
+  and **Cancel**, or only **Cancel** for one held while its host is
+  offline (an owner's browser only). Next to that menu,
   **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser

@@ -867,6 +867,7 @@ function sessionView(id, full) {
   // can be seconds or a long tool call away).
   const sendingBox = h('div', {class: 'queued-box'});
   const sending = []; // {el, foot, text, id}
+  const failedSends = new Set(); // ids that failed, perhaps before their send returned
   let queueTimer = null;
   let queueAsked = 0;
   let agentsOpen = false; // the agents' queued row, kept open across refreshes
@@ -945,6 +946,8 @@ function sessionView(id, full) {
         if (res.state === 'pending' || res.mode === 'queue') {
           dropSending(pend);
           refreshQueue();
+        } else if (failedSends.has(res.message_id)) {
+          dropSending(pend); // it failed before its send returned
         } else if (pend.el.isConnected) {
           pend.id = res.message_id;
           pend.foot.textContent = 'Steered: the agent reads it at its next step';
@@ -978,8 +981,16 @@ function sessionView(id, full) {
     if (i >= 0) sending.splice(i, 1);
   }
   // takenIn drops the bubbles of messages that are now in the transcript.
+  // takenIn drops, one for one and oldest first, the bubbles of the
+  // messages an input carries (a steer can carry several).
   function takenIn(text) {
-    sending.filter((p) => text.includes(p.text)).forEach(dropSending);
+    let rest = text;
+    for (const p of [...sending]) {
+      const i = rest.indexOf(p.text);
+      if (i < 0) continue;
+      rest = rest.slice(0, i) + rest.slice(i + p.text.length);
+      dropSending(p);
+    }
   }
 
   // ---- the queue ----
@@ -1257,6 +1268,7 @@ function sessionView(id, full) {
         }
         break;
       case 'message.failed':
+        failedSends.add(p.message_id);
         dropSending(sending.find((x) => x.id === p.message_id));
         add(h('div', {class: 'sys bad', text: `A message from ${p.from} failed: ${p.error}`}));
         queueSoon();
