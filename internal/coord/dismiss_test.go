@@ -121,7 +121,7 @@ func TestDismissNoticeAndUndo(t *testing.T) {
 	if m.State != model.MsgDismissed || m.Inline || m.DismissedBy != "user:cli (admin)" || !ok {
 		t.Fatalf("dismissed ask: %+v", m)
 	}
-	if n.Kind != model.MsgSystem || n.ToSession != a.ID || n.State != model.MsgPending || !strings.Contains(n.Text, "dismissed by user:cli (admin) without an answer") ||
+	if n.Kind != model.MsgSystem || n.ToSession != a.ID || n.State != model.MsgPending || n.Mode != r.steerMode(sender{}, a, model.ModeAuto) || !strings.Contains(n.Text, "dismissed by user:cli (admin) without an answer") ||
 		n.NotBefore.Sub(m.DismissedAt) < dismissUndo-time.Second {
 		t.Fatalf("notice: %+v", n)
 	}

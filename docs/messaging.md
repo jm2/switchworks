@@ -592,6 +592,9 @@ clears it without an answer:
   dismissed. The mark is kept on the message by the coordinator
   (`read_at`, `read_by`), so every browser and client sees it. Each
   message to people has one mark, its recipient's, whoever set it.
+  A coordinator upgraded from 0.1.5 or earlier marks the messages to
+  people it already holds read (`read_by` "switchworks (upgrade)"), all
+  but the asks still open, so they do not all show as new at once.
 
 ## Completion notices
 

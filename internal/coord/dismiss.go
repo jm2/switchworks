@@ -63,7 +63,7 @@ func (r *router) dismiss(id string, by sender) (model.Message, error) {
 		// Built as notifySender builds its notices, but left for the loop
 		// to deliver after NotBefore.
 		n := model.Message{ID: ulid.New(), Kind: model.MsgSystem, From: model.SystemSender, To: sess.Path,
-			ToSession: sess.ID, ToPath: sess.Path, Hops: cur.Hops, State: model.MsgPending,
+			ToSession: sess.ID, ToPath: sess.Path, Mode: r.steerMode(sender{}, sess, model.ModeAuto), Hops: cur.Hops, State: model.MsgPending,
 			Text:      fmt.Sprintf("Your ask %s to %s was dismissed by %s without an answer; no answer will come.", cur.ID, cur.To, who),
 			CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second),
 			NotBefore: now.Add(dismissUndo)}
