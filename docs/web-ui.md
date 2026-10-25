@@ -58,9 +58,16 @@ system; the choice is kept per browser.
   full size when tapped. The home composer takes images for the first
   prompt the same way.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
-  reply box each, and other messages addressed to people.
+  reply box each, and new notifies to people; the badge counts them. Beside
+  Send answer, **Dismiss** clears a question without an answer (the asker
+  is told none will come), with **Undo** in the toast for a few seconds,
+  and **Mark read** moves it under Earlier messages, where it can still be
+  answered or dismissed. **Mark all read** and **Dismiss all** act on what
+  each section shows. Read marks are kept by the coordinator, so they hold
+  on every device. Earlier messages lists the rest, dismissed asks among
+  them.
 - **Traffic**: every routed message, filterable, with its delivery state
-  (queued, delivered, seen, answered, expired...; hover it for the
+  (queued, delivered, seen, answered, dismissed, expired...; hover it for the
   delivered and seen times). The Inbox's earlier messages show it too.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.

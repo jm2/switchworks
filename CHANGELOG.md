@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dismiss an ask** — Dismiss in the web Inbox (or `swk messages dismiss`) ends an ask to a person
+  as `dismissed`, with who and when; a waiting `fleet_ask` or `swk ask` returns at once, an asker
+  whose wait ended gets a notice after a short Undo window, and a late reply gets 409.
+- **Mark read** — Asks and notifies to people can be marked read (web Inbox, `swk messages read`),
+  leaving the badge without ending an ask; the coordinator keeps the mark, so it holds on every
+  device. Mark all read and Dismiss all act on a whole Inbox section.
+
 ## [0.1.5] — 2026-10-22
 
 ### Added

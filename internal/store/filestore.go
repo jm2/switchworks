@@ -624,7 +624,8 @@ const maxMessageBytes = 256 << 20
 // its images and files among it. Their bytes are in the attachment store,
 // under that store's own limits, and are not counted twice here.
 func messageBytes(m *model.Message) int {
-	n := len(m.Text) + len(m.Error) + len(m.From) + len(m.To) + len(m.ToPath) + len(m.Via) + len(m.SeenTurn) + len(m.SeenItem)
+	n := len(m.Text) + len(m.Error) + len(m.From) + len(m.To) + len(m.ToPath) + len(m.Via) + len(m.SeenTurn) + len(m.SeenItem) +
+		len(m.ReadBy) + len(m.DismissedBy)
 	for _, list := range [][]model.Attachment{m.Attachments, m.Files} {
 		for _, a := range list {
 			n += len(a.Name) + len(a.MIME) + len(a.SHA256) + len(a.Data) + 32

@@ -27,6 +27,9 @@ const (
 	MsgExpired   = "expired"
 	MsgFailed    = "failed"
 	MsgCancelled = "cancelled" // taken out of the queue before delivery
+	// MsgDismissed: an ask a person cleared from the Inbox without an
+	// answer (DismissedBy, DismissedAt).
+	MsgDismissed = "dismissed"
 )
 
 // Delivery modes.
@@ -74,7 +77,7 @@ type Message struct {
 	Hops        int          `json:"hops"`
 	State       string       `json:"state"`
 	Error       string       `json:"error,omitempty"`
-	Inline      bool         `json:"inline,omitempty"` // reply handed straight to a waiting fleet_ask
+	Inline      bool         `json:"inline,omitempty"` // reply (or an ask's dismissal) handed straight to a waiting fleet_ask
 	// Files are text files sent with the message, kept like Attachments
 	// (metadata here, bytes in the attachment store). The receiving node
 	// writes them to disk and names their paths in the message.
@@ -96,6 +99,18 @@ type Message struct {
 	SeenAt   time.Time `json:"seen_at,omitzero"`
 	SeenTurn string    `json:"seen_turn,omitempty"`
 	SeenItem string    `json:"seen_item,omitempty"`
+	// ReadAt (messages to people) is when a person marked it read in the
+	// Inbox, and ReadBy who: it no longer counts as new there. A read ask
+	// can still be answered or dismissed.
+	ReadAt time.Time `json:"read_at,omitzero"`
+	ReadBy string    `json:"read_by,omitempty"`
+	// DismissedAt and DismissedBy (dismissed asks) say when and by whom.
+	// NoticeID is the system notice that tells the asker, sent once the
+	// undo window has passed; none when a waiting asker was told at once
+	// (Inline) or the asker is a person.
+	DismissedAt time.Time `json:"dismissed_at,omitzero"`
+	DismissedBy string    `json:"dismissed_by,omitempty"`
+	NoticeID    string    `json:"notice_id,omitempty"`
 }
 
 // Terminal reports whether the message's delivery is over (asks can still
@@ -103,7 +118,7 @@ type Message struct {
 // still be marked seen, which only adds its receipt).
 func (m Message) Terminal() bool {
 	switch m.State {
-	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled:
+	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled, MsgDismissed:
 		return true
 	case MsgDelivered, MsgSeen:
 		return m.Kind != MsgAsk
@@ -122,7 +137,7 @@ func (m Message) Accepted() bool {
 // session's queue, or cancelled, expired or failed, has not reached it.
 func (m Message) Entered() bool {
 	switch m.State {
-	case MsgDelivered, MsgSeen, MsgAnswered:
+	case MsgDelivered, MsgSeen, MsgAnswered, MsgDismissed:
 		return !m.DeliveredAt.IsZero() || !m.SeenAt.IsZero()
 	}
 	return false

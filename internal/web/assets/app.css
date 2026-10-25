@@ -388,9 +388,13 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 .state.pending { color: var(--warn); }
 .state.failed { color: var(--bad); }
 .state.delivered, .state.seen, .state.answered { color: var(--ok); }
+.state.dismissed { color: var(--muted); }
 .reply-box { margin-top: 10px; }
 .reply-box textarea { min-height: 64px; }
 .reply-box .row { margin-top: 8px; }
+.row.section { margin: 26px 0 10px; }
+.row.section h2 { margin: 0; }
+.list .item .foot { margin-top: 6px; }
 input.filter { width: 100%; margin: 4px 0 6px; }
 
 /* ---------- usage ---------- */
@@ -426,6 +430,7 @@ body.login { display: grid; place-items: center; min-height: 100vh; padding: 16p
   background: var(--ink); color: var(--canvas); padding: 9px 16px; border-radius: 12px; font-size: 14px; z-index: 50; max-width: 90vw;
   box-shadow: var(--shadow);
 }
+.toast button.link { color: inherit; text-decoration: underline; margin-left: 10px; padding: 0 2px; }
 
 /* ---------- phones ---------- */
 @media (max-width: 899px) {

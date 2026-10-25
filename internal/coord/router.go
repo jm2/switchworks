@@ -84,6 +84,9 @@ var (
 	ErrHopLimit  = errors.New("hop limit reached: this message would extend a chain of agent-to-agent turns past the configured maximum")
 	ErrRateLimit = errors.New("rate limit: too many messages to this target; wait a minute")
 	ErrBudget    = errors.New("daily token budget reached; spawning is paused until tomorrow (UTC)")
+	// ErrAskClosed refuses a reply to an ask that was answered, or ended
+	// without an answer (dismissed, cancelled, expired or failed).
+	ErrAskClosed = errors.New("this ask can no longer be answered")
 )
 
 // sender is who a message is from: a session, a person, or Switchworks.
@@ -1280,8 +1283,11 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 // returns the reply, or the ask itself if it failed.
 func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *model.Message {
 	r.mu.Lock()
-	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled) {
+	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled || ask.State == model.MsgDismissed) {
 		r.mu.Unlock()
+		if ask.State == model.MsgDismissed {
+			r.dismissalSeen(askID)
+		}
 		return &ask
 	}
 	if ask, ok := r.s.store.Message(askID); ok && ask.ReplyID != "" {
@@ -1366,12 +1372,12 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		switch {
 		case cur.ReplyID != "":
 			r.mu.Unlock()
-			return fleet.ReplyResult{}, errors.New("this ask has already been answered")
-		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed:
+			return fleet.ReplyResult{}, fmt.Errorf("%w: it has already been answered", ErrAskClosed)
+		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed, cur.State == model.MsgDismissed:
 			// Its sender was told it will not be answered (and a waiting
 			// fleet_ask has returned): an answer now would contradict that.
 			r.mu.Unlock()
-			return fleet.ReplyResult{}, fmt.Errorf("this ask is %s and can no longer be answered", cur.State)
+			return fleet.ReplyResult{}, fmt.Errorf("%w: it is %s", ErrAskClosed, cur.State)
 		}
 	}
 	ws := r.waiters[ask.ID]
@@ -1423,7 +1429,10 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 		}
 		t := &fleet.AskResult{Status: fleet.AskPending, MessageID: ask.ID, Target: ask.ToPath}
 		switch ask.State {
-		case model.MsgFailed, model.MsgExpired, model.MsgCancelled:
+		case model.MsgFailed, model.MsgExpired, model.MsgCancelled, model.MsgDismissed:
+			if ask.State == model.MsgDismissed {
+				r.dismissalSeen(ask.ID)
+			}
 			t.Status, t.Error = fleet.AskFailed, ask.Error
 		default:
 			wait := time.Duration(args.WaitSeconds) * time.Second
