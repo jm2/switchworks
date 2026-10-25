@@ -351,6 +351,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		Text        string             `json:"text"`
 		Mode        string             `json:"mode"`
 		From        string             `json:"from"`
+		Supersedes  string             `json:"supersedes"`
 		Attachments []model.Attachment `json:"attachments"`
 		Files       []model.Attachment `json:"files"`
 	}
@@ -385,7 +386,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode,
-		Attachments: body.Attachments, FileAttachments: body.Files})
+		Supersedes: body.Supersedes, Attachments: body.Attachments, FileAttachments: body.Files})
 	if err != nil {
 		writeErr(w, routeStatus(err), err)
 		return
@@ -447,7 +448,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 			body.Mode = model.ModeAuto
 		}
 		res, err := s.router.sendEach(r.Context(), from, kind, fleet.SendArgs{To: body.To, ToList: body.ToList, Text: body.Text, Mode: body.Mode,
-			TTLSeconds: body.TTLSeconds, Attachments: body.Attachments, FileAttachments: body.Files})
+			TTLSeconds: body.TTLSeconds, Supersedes: body.Supersedes, Attachments: body.Attachments, FileAttachments: body.Files})
 		if err != nil {
 			writeErr(w, routeStatus(err), err)
 			return
@@ -456,6 +457,10 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	case model.MsgAsk:
 		if len(body.ToList) > 0 {
 			writeErr(w, 400, errors.New("an ask goes to exactly one recipient"))
+			return
+		}
+		if body.Supersedes != "" {
+			writeErr(w, 400, errors.New("supersedes is for notifies, not asks"))
 			return
 		}
 		wait := 0

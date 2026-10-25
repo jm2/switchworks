@@ -60,8 +60,12 @@ system; the choice is kept per browser.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
   reply box each, and other messages addressed to people.
 - **Traffic**: every routed message, filterable, with its delivery state
-  (queued, delivered, seen, answered, expired...; hover it for the
-  delivered and seen times). The Inbox's earlier messages show it too.
+  (queued, delivered, seen, answered, expired, superseded...; hover it for
+  the delivered and seen times, or when it expired). A message sent with a
+  `supersedes` key shows the key, and a superseded one says which newer
+  message replaced it; the transcript says "replaced by a newer one" when
+  the session's node drops it from the queue. The Inbox's earlier
+  messages show the same.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.
 - **New session**: every spawn option.

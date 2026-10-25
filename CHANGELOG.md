@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Superseding messages** — `supersedes` (a key such as `status:gate5`) on `fleet_send`, the API
+  and `swk msg`/`send --supersedes`: a newer message replaces the sender's earlier one with that key
+  to the same session while it is still pending or queued, so only the latest status reaches the
+  agent. The old one becomes `superseded`, naming its replacement in the web UI and the API.
+
+### Changed
+
+- **Short expiry for agents' notifies** — An agent's `fleet_send` now expires undelivered after 2 h
+  (guard `agent_notify_ttl_seconds`) unless it sets `ttl_seconds`, up to `default_ttl_seconds`; asks,
+  people's messages and spawn prompts keep 24 h. `fleet_send` now takes `ttl_seconds`.
+
 ## [0.1.5] — 2026-10-22
 
 ### Added

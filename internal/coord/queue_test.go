@@ -272,3 +272,130 @@ func TestQueuedMessageTokenReuse(t *testing.T) {
 		t.Fatalf("an old-style record sent after the token was made: %d", code)
 	}
 }
+
+// #47: a message with a supersedes key replaces the sender's earlier one
+// with that key to the same session while the coordinator still holds
+// it; another key, sender, credential or session does not.
+func TestSupersedePending(t *testing.T) {
+	s := testServer(t, Guards{})
+	a := addSession(t, s, "offbox", "a", func(x *model.Session) { x.ID = ulid.New() })
+	c := addSession(t, s, "offbox", "c", func(x *model.Session) { x.ID = ulid.New() })
+	addSession(t, s, "offbox", "b")
+	addSession(t, s, "offbox", "d")
+	ctx := context.Background()
+	send := func(from sender, to, key string) model.Message {
+		t.Helper()
+		msgs, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: to, Text: "status", Supersedes: key})
+		if err != nil || msgs[0].State != model.MsgPending {
+			t.Fatalf("send: %+v %v", msgs, err)
+		}
+		return msgs[0]
+	}
+	first := send(from(a), "b", "status:gate5")
+	otherKey := send(from(a), "b", "status:gate6")
+	otherSender := send(from(c), "b", "status:gate5")
+	otherSession := send(from(a), "offbox/d", "status:gate5")
+	unkeyed := send(from(a), "b", "")
+	second := send(from(a), "b", "status:gate5")
+	if m, _ := s.store.Message(first.ID); m.State != model.MsgSuperseded || m.SupersededBy != second.ID || !m.Terminal() {
+		t.Fatalf("superseded message: %+v", m)
+	}
+	for _, m := range []model.Message{otherKey, otherSender, otherSession, unkeyed, second} {
+		if st := msgState(s, m.ID); st != model.MsgPending {
+			t.Fatalf("%s (%s to %s) is %s", m.ID, m.Supersedes, m.ToPath, st)
+		}
+	}
+	if n := noticesTo(s, a); len(n) != 0 {
+		t.Fatalf("the sender was told: %+v", n)
+	}
+	// A superseded message is never delivered when its host returns.
+	s.router.deliver(ctx, first)
+	if st := msgState(s, first.ID); st != model.MsgSuperseded {
+		t.Fatalf("after a delivery attempt: %s", st)
+	}
+
+	// People: the same name with another credential is another sender.
+	web := sender{user: "user:web", via: "token:laptop", token: "01M58TOKEN0000000000000000"}
+	phone := sender{user: "user:web", via: "token:phone", token: "01M58TOKEN0000000000000001"}
+	p1 := send(web, "b", "deploy")
+	send(phone, "b", "deploy")
+	if st := msgState(s, p1.ID); st != model.MsgPending {
+		t.Fatalf("another credential superseded a person's message: %s", st)
+	}
+	p2 := send(web, "b", "deploy")
+	if m, _ := s.store.Message(p1.ID); m.State != model.MsgSuperseded || m.SupersededBy != p2.ID {
+		t.Fatalf("person's message: %+v", m)
+	}
+
+	if _, err := s.router.send(ctx, from(a), model.MsgAsk, fleet.SendArgs{To: "b", Text: "?", Supersedes: "q"}); err == nil {
+		t.Fatal("an ask took a supersedes key")
+	}
+	if _, err := s.router.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "b", Text: "x", Supersedes: strings.Repeat("k", fleet.MaxSupersedesBytes+1)}); err == nil {
+		t.Fatal("an overlong key was taken")
+	}
+}
+
+// #47: a superseded message waiting in the node's queue is cancelled there
+// (naming the newer one) and becomes superseded; one that went into a
+// turn, or that the node no longer holds, is left.
+func TestSupersedeQueued(t *testing.T) {
+	s := testServer(t, Guards{})
+	var mu sync.Mutex
+	var queued []string            // what the fake node holds
+	cancels := map[string]string{} // cancelled id -> superseded_by
+	steer := false                 // the next delivery goes into a turn
+	fakeNode(t, s, "devbox", func(cmd wire.Cmd) wire.Result {
+		mu.Lock()
+		defer mu.Unlock()
+		switch cmd.Op {
+		case wire.OpDeliver:
+			if steer {
+				return wire.Result{OK: true, Data: model.Marshal(wire.DeliverResult{Mode: model.ModeSteer})}
+			}
+			queued = append(queued, cmd.Message.ID)
+			return wire.Result{OK: true, Data: model.Marshal(wire.DeliverResult{Mode: model.ModeQueue})}
+		case wire.OpCancel:
+			for i, id := range queued {
+				if id == cmd.Queued.MessageID {
+					queued = append(queued[:i], queued[i+1:]...)
+					cancels[id] = cmd.Queued.SupersededBy
+					return wire.Result{OK: true}
+				}
+			}
+			return wire.Result{Error: "message " + cmd.Queued.MessageID + " is not queued"}
+		}
+		return wire.Result{Error: "unknown op " + cmd.Op}
+	})
+	a := addSession(t, s, "devbox", "a", func(x *model.Session) { x.ID = ulid.New() })
+	addSession(t, s, "devbox", "b", func(x *model.Session) { x.ID = ulid.New() })
+	ctx := context.Background()
+	send := func(text string) model.Message {
+		t.Helper()
+		msgs, err := s.router.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "devbox/b", Text: text, Mode: model.ModeQueue, Supersedes: "status:gate5"})
+		if err != nil || msgs[0].State != model.MsgDelivered {
+			t.Fatalf("send: %+v %v", msgs, err)
+		}
+		return msgs[0]
+	}
+	first := send("40%")
+	second := send("80%")
+	if m, _ := s.store.Message(first.ID); m.State != model.MsgSuperseded || m.SupersededBy != second.ID {
+		t.Fatalf("queued message: %+v", m)
+	}
+	mu.Lock()
+	if len(queued) != 1 || queued[0] != second.ID || cancels[first.ID] != second.ID {
+		t.Fatalf("node queue %v, cancels %v", queued, cancels)
+	}
+	// The node took the second into a turn (it no longer holds it), and
+	// the next is steered in: neither is superseded.
+	queued, steer = nil, true
+	mu.Unlock()
+	third := send("100%")
+	if st := msgState(s, second.ID); st != model.MsgDelivered {
+		t.Fatalf("a message the node no longer holds is %s", st)
+	}
+	send("done")
+	if st := msgState(s, third.ID); st != model.MsgDelivered {
+		t.Fatalf("a message steered into a turn is %s", st)
+	}
+}

@@ -388,6 +388,7 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 .state.pending { color: var(--warn); }
 .state.failed { color: var(--bad); }
 .state.delivered, .state.seen, .state.answered { color: var(--ok); }
+.state.expired, .state.superseded, .state.cancelled { color: var(--faint); }
 .reply-box { margin-top: 10px; }
 .reply-box textarea { min-height: 64px; }
 .reply-box .row { margin-top: 8px; }

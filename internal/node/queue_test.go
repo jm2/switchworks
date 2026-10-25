@@ -507,6 +507,29 @@ func TestPromoteAndCancel(t *testing.T) {
 	}
 }
 
+// #47: a queued message cancelled because a newer one supersedes it says
+// so in message.cancelled, and only the newer one goes into the next turn.
+func TestCancelSuperseded(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive}
+	n, s := queueNode(t, h)
+	old, newer := ulid.New(), ulid.New()
+	send(t, n, s, wire.MessageCmd{ID: old, From: "devbox/b", Text: "gate 5: 40%", Mode: model.ModeQueue})
+	send(t, n, s, wire.MessageCmd{ID: newer, From: "devbox/b", Text: "gate 5: 80%", Mode: model.ModeQueue})
+	if res := n.handleCmd(wire.Cmd{Op: wire.OpCancel, Session: s.rec.ID, Queued: &wire.QueuedCmd{MessageID: old, SupersededBy: newer}}); !res.OK {
+		t.Fatalf("cancel: %s", res.Error)
+	}
+	var ev model.MessageEvent
+	if c := s.events(model.KindMessageCancelled); len(c) != 1 || json.Unmarshal([]byte(c[0]), &ev) != nil ||
+		ev.MessageID != old || ev.SupersededBy != newer {
+		t.Fatalf("message.cancelled events %v", c)
+	}
+	h.setStatus(model.StatusIdle)
+	eventually(t, "the newer message delivered", func() bool { return len(h.deliveries()) == 1 && s.queueLen() == 0 })
+	if got := h.deliveries(); strings.Contains(got[0].in.Text, "40%") || !strings.Contains(got[0].in.Text, "80%") {
+		t.Fatalf("deliveries %+v", got)
+	}
+}
+
 // #46: a queued message past its expiry is never delivered: it is dropped
 // when the next turn's batch is built, reported expired, and a batch with
 // a live message carries only that one.

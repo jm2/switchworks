@@ -30,6 +30,9 @@ type Guards struct {
 	MaxSpawnDepth     int   `json:"max_spawn_depth,omitempty"`     // sessions spawned by spawned sessions... (default 2)
 	MaxDailyTokens    int64 `json:"max_daily_tokens,omitempty"`    // fleet-wide; refuses fleet_spawn once reached (0 = off)
 	DefaultTTLSeconds int   `json:"default_ttl_seconds,omitempty"` // undelivered messages expire (default 24h)
+	// AgentNotifyTTLSeconds is the default expiry of an agent's notify
+	// (default 2h); it may ask for longer, up to DefaultTTLSeconds.
+	AgentNotifyTTLSeconds int `json:"agent_notify_ttl_seconds,omitempty"`
 
 	// What agents may spawn. A child always inherits its parent's approval
 	// policy and sandbox.
@@ -66,6 +69,9 @@ func (g Guards) withDefaults() Guards {
 	}
 	if g.DefaultTTLSeconds <= 0 {
 		g.DefaultTTLSeconds = 24 * 3600
+	}
+	if g.AgentNotifyTTLSeconds <= 0 {
+		g.AgentNotifyTTLSeconds = 2 * 3600
 	}
 	if g.OutPerMinute <= 0 {
 		g.OutPerMinute = 60
@@ -613,6 +619,13 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if kind == model.MsgAsk && args.Broadcast {
 		return nil, errors.New("an ask goes to exactly one recipient")
 	}
+	supersedes := strings.TrimSpace(args.Supersedes)
+	switch {
+	case supersedes != "" && kind != model.MsgNotify:
+		return nil, errors.New("supersedes is for notifies, not asks")
+	case len(supersedes) > fleet.MaxSupersedesBytes || !utf8.ValidString(supersedes):
+		return nil, fmt.Errorf("supersedes must be UTF-8 text of at most %d bytes", fleet.MaxSupersedesBytes)
+	}
 	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
@@ -660,10 +673,15 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		return nil, ErrHopLimit
 	}
 	// The default is also the longest a message may wait: one that never
-	// expires would be kept and rescanned forever.
+	// expires would be kept and rescanned forever. An agent's notify is
+	// mostly news that goes stale, so it waits less unless it asks.
 	ttl := time.Duration(args.TTLSeconds) * time.Second
-	if max := time.Duration(r.guards.DefaultTTLSeconds) * time.Second; ttl <= 0 || ttl > max {
-		ttl = max
+	longest := time.Duration(r.guards.DefaultTTLSeconds) * time.Second
+	if ttl <= 0 && from.sess != nil && kind == model.MsgNotify {
+		ttl = time.Duration(r.guards.AgentNotifyTTLSeconds) * time.Second
+	}
+	if ttl <= 0 || ttl > longest {
+		ttl = longest
 	}
 	group := ""
 	if len(targets) > 1 {
@@ -738,7 +756,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
-			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes}
 		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
@@ -752,9 +770,60 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if err := r.put(m); err != nil {
 			return out, err
 		}
+		if supersedes != "" && m.ToSession != "" {
+			r.supersede(ctx, m) // before m goes, so the two never share a turn
+		}
 		out = append(out, r.deliver(ctx, m))
 	}
 	return out, nil
+}
+
+// supersede replaces the earlier messages m supersedes: those with its
+// key from the same sender (for a person, the same credential) to the
+// same session, still pending at the coordinator or queued at the
+// session's node, which is told to drop them. Each becomes superseded,
+// naming m. One that has gone into a turn, or that is being handed to
+// the node at this moment, is left as it is, as is one queued at a node
+// that is offline or older than 0.1.5.
+func (r *router) supersede(ctx context.Context, m model.Message) {
+	var queued []model.Message
+	for _, old := range r.s.store.Messages(store.MessageFilter{Session: m.ToSession}) {
+		if old.ID >= m.ID || old.Supersedes != m.Supersedes || old.ToSession != m.ToSession || old.Kind != model.MsgNotify ||
+			old.From != m.From || old.FromSession != m.FromSession || old.Via != m.Via || old.ViaToken != m.ViaToken {
+			continue
+		}
+		switch {
+		case old.State == model.MsgPending:
+			r.superseded(old.ID, m.ID, false)
+		case old.State == model.MsgDelivered && old.DeliveredAt.IsZero() && old.SeenAt.IsZero():
+			queued = append(queued, old)
+		}
+	}
+	sess, ok := r.s.store.Session(m.ToSession)
+	if !ok {
+		return
+	}
+	for _, old := range queued {
+		cmd := wire.Cmd{Op: wire.OpCancel, Queued: &wire.QueuedCmd{MessageID: old.ID, SupersededBy: m.ID}}
+		if _, err := r.s.queueCommand(ctx, sess, cmd); err == nil {
+			r.superseded(old.ID, m.ID, true)
+		}
+	}
+}
+
+// superseded marks a pending message (with queued, also one its node had
+// queued and has dropped) superseded by the message by, unless a delivery
+// of a pending one is under way. Its sender is not told: it sent the
+// newer one.
+func (r *router) superseded(id, by string, queued bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || !(cur.State == model.MsgPending && !r.inflight[id] || queued && cur.State == model.MsgDelivered) {
+		return
+	}
+	cur.State, cur.SupersededBy = model.MsgSuperseded, by
+	_ = r.put(cur)
 }
 
 // steerMode is the mode a message to sess goes with: a session that does
