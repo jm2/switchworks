@@ -201,6 +201,9 @@ type MessageCmd struct {
 	Mode    string `json:"mode,omitempty"` // queue (default) | auto | steer | interrupt; nodes before 0.1.5 queue auto
 	Kind    string `json:"kind,omitempty"` // notify | ask | reply | done | system
 	ReplyTo string `json:"reply_to,omitempty"`
+	// ReplyToText (replies): the start of the ask it answers, so the
+	// asker knows which question this is without looking it up.
+	ReplyToText string `json:"reply_to_text,omitempty"`
 	// Attachments carry the image bytes (at most attach.MaxTotalBytes, so
 	// the envelope stays well under MaxLine).
 	Attachments []model.Attachment `json:"attachments,omitempty"`

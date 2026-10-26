@@ -176,3 +176,16 @@ func TestHelloImages(t *testing.T) {
 		t.Fatalf("images %v", got)
 	}
 }
+
+// A reply quotes the ask it answers, so an asker with several questions
+// out can tell which "1. yes" is which.
+func TestFormatReplyQuotesAsk(t *testing.T) {
+	got := formatMessage(queuedMsg{ID: "r1", From: "user:jm", Kind: model.MsgReply, ReplyTo: "a1", Text: "1. yes",
+		ReplyToText: "May I close #281?\n(1) yes (2) no"})
+	if !strings.Contains(got, "fleet_ask a1, which asked:\n> May I close #281?\n> (1) yes (2) no\n)\n") || !strings.HasSuffix(got, "1. yes") {
+		t.Fatalf("reply:\n%s", got)
+	}
+	if got := formatMessage(queuedMsg{ID: "r2", From: "devbox/b", Kind: model.MsgReply, ReplyTo: "a2", Text: "ok"}); !strings.Contains(got, "(This answers your earlier fleet_ask a2.)") {
+		t.Fatalf("reply without the ask's text:\n%s", got)
+	}
+}

@@ -452,3 +452,31 @@ func TestSupersedeQueued(t *testing.T) {
 		t.Fatalf("a message steered into a turn is %s", st)
 	}
 }
+
+// A reply to an agent's ask carries the start of the ask, both to the
+// node that delivers it and in fleet_inbox.
+func TestReplyQuotesAsk(t *testing.T) {
+	ctx := context.Background()
+	s := testServer(t, Guards{})
+	r := s.router
+	lead := addSession(t, s, "devbox", "lead")
+	zero := 0
+	res := r.ask(ctx, from(lead), fleet.AskArgs{To: "user:jm", Text: "May I close #281 and #282?", WaitSeconds: &zero})
+	if res.Status == fleet.AskFailed {
+		t.Fatal(res.Error)
+	}
+	if got := r.askText(res.MessageID); got != "May I close #281 and #282?" {
+		t.Fatalf("askText: %q", got)
+	}
+	if _, err := r.reply(ctx, sender{user: "user:jm"}, fleet.ReplyArgs{MessageID: res.MessageID, Text: "1. yes"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range s.store.Messages(store.MessageFilter{Session: lead.ID}) {
+		if m.Kind == model.MsgReply && r.askText(m.ReplyTo) == "" {
+			t.Fatalf("reply %s does not lead back to its ask's text", m.ID)
+		}
+	}
+	if r.askText("nope") != "" || r.askText("") != "" {
+		t.Fatal("askText of no ask")
+	}
+}

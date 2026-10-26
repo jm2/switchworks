@@ -831,6 +831,23 @@ func (r *router) superseded(id, by string, queued bool) {
 	_ = r.put(cur)
 }
 
+// replyQuote is how much of an ask a reply quotes.
+const replyQuote = 400
+
+// askText is the start of the ask with this id, quoted with a reply to
+// it: an asker with several questions out cannot tell "1. yes" apart
+// otherwise.
+func (r *router) askText(id string) string {
+	if id == "" {
+		return ""
+	}
+	ask, ok := r.s.store.Message(id)
+	if !ok || ask.Kind != model.MsgAsk {
+		return ""
+	}
+	return clipText(ask.Text, replyQuote)
+}
+
 // steerMode is the mode a message to sess goes with: a session that does
 // not accept steering gets messages in mode auto, and an agent's steers
 // unless the agent spawned it (or allow_steer_any is set), queued.
@@ -1003,7 +1020,7 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		Attachments: images, Files: files, ExpiresAt: m.ExpiresAt}}, 30*time.Second)
+		ReplyToText: r.askText(m.ReplyTo), Attachments: images, Files: files, ExpiresAt: m.ExpiresAt}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -1568,7 +1585,7 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 	}
 	out := make([]fleet.InboxMessage, len(msgs))
 	for i, m := range msgs {
-		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo}
+		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo, ReText: r.askText(m.ReplyTo)}
 		if from.sess != nil && m.FromSession == from.sess.ID {
 			out[i].To, out[i].State, out[i].DeliveredAt, out[i].SeenAt = m.To, m.State, m.DeliveredAt, m.SeenAt
 		}

@@ -275,7 +275,8 @@ type InboxMessage struct {
 	To        string    `json:"to,omitempty"` // only on messages the session sent
 	CreatedAt time.Time `json:"created_at"`
 	Text      string    `json:"text"`
-	Re        string    `json:"re,omitempty"` // the ask a reply answers
+	Re        string    `json:"re,omitempty"`      // the ask a reply answers
+	ReText    string    `json:"re_text,omitempty"` // the start of that ask
 	// On messages the session sent: their state (delivered, seen,
 	// answered...), when they went into the target's input, and when the
 	// turn that carried them finished.
