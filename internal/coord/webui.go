@@ -69,6 +69,8 @@ var vendorVersion = sync.OnceValue(func() string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 })
 
+var vendorTypes = map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+
 // gzipped holds the vendored files compressed, made on first request.
 var gzipped sync.Map // name -> []byte
 
@@ -91,7 +93,10 @@ func serveVendor(w http.ResponseWriter, r *http.Request, files fs.FS) {
 	if r.PathValue("ver") == vendorVersion() {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
-	if t := mime.TypeByExtension(path.Ext(name)); t != "" {
+	// Named here, not looked up: Windows takes .js types from its registry.
+	if t := vendorTypes[path.Ext(name)]; t != "" {
+		h.Set("Content-Type", t)
+	} else if t := mime.TypeByExtension(path.Ext(name)); t != "" {
 		h.Set("Content-Type", t)
 	}
 	h.Set("Vary", "Accept-Encoding")
