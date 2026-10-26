@@ -27,6 +27,10 @@ const (
 	MsgExpired   = "expired"
 	MsgFailed    = "failed"
 	MsgCancelled = "cancelled" // taken out of the queue before delivery
+	// MsgSuperseded: replaced, before delivery, by a newer message with the
+	// same Supersedes key from the same sender to the same session
+	// (SupersededBy).
+	MsgSuperseded = "superseded"
 )
 
 // Delivery modes.
@@ -75,6 +79,12 @@ type Message struct {
 	State       string       `json:"state"`
 	Error       string       `json:"error,omitempty"`
 	Inline      bool         `json:"inline,omitempty"` // reply handed straight to a waiting fleet_ask
+	// Supersedes is the sender's key for what the message reports (e.g.
+	// "status:gate5"): a newer message with the same key from the same
+	// sender to the same session replaces it while it is still pending or
+	// queued, and SupersededBy is then that message's id.
+	Supersedes   string `json:"supersedes,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
 	// Files are text files sent with the message, kept like Attachments
 	// (metadata here, bytes in the attachment store). The receiving node
 	// writes them to disk and names their paths in the message.
@@ -103,7 +113,7 @@ type Message struct {
 // still be marked seen, which only adds its receipt).
 func (m Message) Terminal() bool {
 	switch m.State {
-	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled:
+	case MsgExpired, MsgFailed, MsgAnswered, MsgCancelled, MsgSuperseded:
 		return true
 	case MsgDelivered, MsgSeen:
 		return m.Kind != MsgAsk
@@ -119,7 +129,8 @@ func (m Message) Accepted() bool {
 
 // Entered reports whether the message went into its target's input (it has
 // a delivered_at or a receipt) and was not dropped there: one still in the
-// session's queue, or cancelled, expired or failed, has not reached it.
+// session's queue, or cancelled, superseded, expired or failed, has not
+// reached it.
 func (m Message) Entered() bool {
 	switch m.State {
 	case MsgDelivered, MsgSeen, MsgAnswered:

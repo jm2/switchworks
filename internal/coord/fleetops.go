@@ -296,8 +296,10 @@ func (s *Server) fleetSpawn(ctx context.Context, from sender, a fleet.SpawnArgs)
 	if from.sess != nil && strings.TrimSpace(a.Prompt) != "" {
 		// An agent's prompt goes to the child as a routed message from the
 		// agent: it carries the hop count, and the child sees who sent it
-		// rather than taking it for the owner's words.
-		msgs, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt, Attachments: a.Attachments})
+		// rather than taking it for the owner's words. It is a task, not
+		// news, so it keeps the full expiry.
+		msgs, err := s.router.send(ctx, from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: a.Prompt, Attachments: a.Attachments,
+			TTLSeconds: s.router.guards.DefaultTTLSeconds})
 		if err == nil && len(a.Attachments) > 0 && len(msgs) == 1 && msgs[0].State == model.MsgFailed {
 			err = errors.New(msgs[0].Error) // e.g. the child's agent does not take images
 		}

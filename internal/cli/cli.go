@@ -366,11 +366,12 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	steer := fs.Bool("steer", false, "go into the running turn even if the session does not accept steering")
 	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
 	from := fs.String("from", "", "sender (default user:cli)")
+	supersedes := fs.String("supersedes", "", "a key (e.g. status:build): replaces your earlier message with this key that is still waiting")
 	images := addImageFlag(fs)
 	fileArgs := addFileFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--image FILE]... [--file FILE]... <session> <text>")
+		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--supersedes KEY] [--image FILE]... [--file FILE]... <session> <text>")
 		return 2
 	}
 	atts, err := readImages(*images)
@@ -404,7 +405,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := ctxTimeout()
 	defer cancel()
 	res, err := c.SendMessage(ctx, s.ID, apiclient.SessionMessage{Text: strings.Join(pos[1:], " "), Mode: mode, From: *from,
-		Attachments: atts, Files: files})
+		Supersedes: *supersedes, Attachments: atts, Files: files})
 	if err != nil {
 		return fail(stderr, err)
 	}

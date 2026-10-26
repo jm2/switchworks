@@ -2176,9 +2176,9 @@ func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json
 	return model.Marshal(wire.DeliverResult{Mode: mode}), nil
 }
 
-// cancelQueued drops a queued message (OpCancel). Its id stays among the
-// accepted ones, so a redelivery from the coordinator does not bring it
-// back.
+// cancelQueued drops a queued message (OpCancel), and names the message
+// that superseded it, if one did. Its id stays among the accepted ones, so
+// a redelivery from the coordinator does not bring it back.
 func (n *Node) cancelQueued(s *session, c *wire.QueuedCmd) error {
 	if c == nil || c.MessageID == "" {
 		return errors.New("cancel: missing message id")
@@ -2188,7 +2188,7 @@ func (n *Node) cancelQueued(s *session, c *wire.QueuedCmd) error {
 		return err
 	}
 	n.persist()
-	s.emit(model.KindMessageCancelled, model.MessageEvent{MessageID: msg.ID, From: msg.From})
+	s.emit(model.KindMessageCancelled, model.MessageEvent{MessageID: msg.ID, From: msg.From, SupersededBy: c.SupersededBy})
 	n.gcFor(s, []queuedMsg{msg})
 	go n.tryDeliver(s) // the session may have settled
 	return nil

@@ -20,6 +20,8 @@ const (
 	DefaultAskWait = 10 * time.Minute
 	MaxAskWait     = 30 * time.Minute
 	MaxTextBytes   = 64 << 10
+	// MaxSupersedesBytes bounds a supersedes key.
+	MaxSupersedesBytes = 128
 )
 
 type ListArgs struct {
@@ -70,6 +72,11 @@ type SendArgs struct {
 	Mode       string   `json:"mode,omitempty"` // auto (default) | queue | steer | interrupt
 	Broadcast  bool     `json:"broadcast,omitempty"`
 	TTLSeconds int      `json:"ttl_seconds,omitempty"`
+	// Supersedes is a key for what the message reports (e.g.
+	// "status:gate5"): it replaces an earlier message with the same key
+	// from the same sender to the same session that is still pending or
+	// queued, which becomes superseded.
+	Supersedes string `json:"supersedes,omitempty"`
 	// Images are image files on the sender's host, as an agent names them
 	// in a fleet tool. The sender's node reads them (under the session's
 	// working directory only) and replaces them with Attachments; they

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `swk messages promote <id>` and `swk messages cancel <id>` do the same from the CLI.
 - **Steered messages show at once** — A message sent Now (steer) shows as a pending bubble from Send
   until the agent takes it in at its next step, instead of appearing only seconds later.
+- **Superseding messages** — `supersedes` (a key such as `status:gate5`) on `fleet_send`, the API
+  and `swk msg`/`send --supersedes`: a newer message replaces the sender's earlier one with that key
+  to the same session while it is still pending or queued, so only the latest status reaches the
+  agent. The old one becomes `superseded`, naming its replacement in the web UI and the API.
 
 ### Changed
 
@@ -22,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   budget. When it is set, a person's message starts the count over however it went in, and a steer
   into a running turn no longer raises the turn's count. Before, a busy coordinator session that
   only ever took steers piled up hops until its workers could not report back.
+- **Short expiry for agents' notifies** — An agent's `fleet_send` now expires undelivered after 2 h
+  (guard `agent_notify_ttl_seconds`) unless it sets `ttl_seconds`, up to `default_ttl_seconds`;
+  asks, people's messages and spawn prompts keep 24 h. `fleet_send` now takes `ttl_seconds`.
 
 ### Fixed
 

@@ -1274,7 +1274,7 @@ function sessionView(id, full) {
         queueSoon();
         break;
       case 'message.cancelled':
-        add(h('div', {class: 'sys', text: `A queued message from ${p.from} was cancelled`}));
+        add(h('div', {class: 'sys', text: p.superseded_by ? `A queued message from ${p.from} was replaced by a newer one` : `A queued message from ${p.from} was cancelled`}));
         queueSoon();
         break;
       case 'message.expired':
@@ -1520,11 +1520,12 @@ function inboxView() {
 }
 
 // receiptTitle says when a message went into its target's input and when
-// the turn that carried it finished.
+// the turn that carried it finished, or when it expired undelivered.
 function receiptTitle(m) {
   const parts = [];
   if (clock(m.delivered_at)) parts.push(`Delivered ${clock(m.delivered_at)}`);
   if (clock(m.seen_at)) parts.push(`seen ${clock(m.seen_at)}`);
+  if (m.state === 'expired' && clock(m.expires_at)) parts.push(`Expired ${clock(m.expires_at)}`);
   return parts.join(', ') || null;
 }
 
@@ -1534,10 +1535,19 @@ function msgState(m) {
   return m.state === 'delivered' && m.to_session && !clock(m.delivered_at) ? 'queued' : m.state;
 }
 
+// replacedBy says which newer message replaced a superseded one.
+function replacedBy(m) {
+  if (!m.superseded_by) return null;
+  const by = S.messages.get(m.superseded_by);
+  const text = by ? `Replaced by a newer message (${clock(by.created_at)}): ${clip(by.text, 160)}` : `Replaced by message ${m.superseded_by}`;
+  return h('div', {class: 'small faint', text});
+}
+
 function messageItem(m) {
   const el = h('div', {class: 'item clip', onclick: () => el.classList.toggle('clip')},
     h('div', {class: 'head'},
       h('span', {class: 'kind-tag ' + m.kind, text: m.kind}),
+      m.supersedes ? h('span', {class: 'faint mono', title: 'Supersedes key: a newer message with it replaces this one while it waits', text: m.supersedes}) : null,
       sessionLink(m.from, m.from_session), h('span', {class: 'faint', text: 'to'}),
       sessionLink(m.to_path || m.to, m.to_session),
       h('span', {class: 'grow'}),
@@ -1545,6 +1555,7 @@ function messageItem(m) {
       h('span', {class: 'faint', text: ago(m.created_at)})),
     h('div', {class: 'text', text: m.text}),
     thumbs(m.attachments),
+    replacedBy(m),
     m.error ? h('div', {class: 'small error', text: m.error}) : null);
   return el;
 }
@@ -1559,7 +1570,7 @@ function trafficView() {
   function refill() {
     const q = filter.value.toLowerCase();
     const msgs = [...S.messages.values()].sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .filter((m) => !q || [m.kind, m.from, m.to, m.to_path, m.text, m.state].join(' ').toLowerCase().includes(q));
+      .filter((m) => !q || [m.kind, m.from, m.to, m.to_path, m.text, m.state, m.supersedes].join(' ').toLowerCase().includes(q));
     fill(list, ...(msgs.length ? msgs.slice(0, 200).map(messageItem) : [h('p', {class: 'empty', text: q ? 'No messages match.' : 'No messages between agents yet.'})]));
   }
   function render() {
