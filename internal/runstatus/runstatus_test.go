@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -65,6 +67,51 @@ func TestFresh(t *testing.T) {
 		if got := (Status{Updated: c.updated}).Fresh(now); got != c.want {
 			t.Errorf("Fresh(updated %v) = %v, want %v", c.updated, got, c.want)
 		}
+	}
+}
+
+// A status file left by a process that has exited reads as stopped however
+// fresh it is; one from this process reads as running.
+func TestRunning(t *testing.T) {
+	now := time.Now()
+	// Started as Start records it: after the process was created (on
+	// Windows, a process created later than Started is another one).
+	self := Status{PID: os.Getpid(), Started: now, Updated: now}
+	if !self.Running(now) {
+		t.Fatal("this process does not count as running")
+	}
+	if (Status{PID: os.Getpid(), Updated: now.Add(-Stale - time.Second)}).Running(now) {
+		t.Fatal("a stale status file counts as running")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	dead := Status{Role: "node", PID: cmd.Process.Pid, Started: started, Updated: time.Now()}
+	if dead.Running(time.Now()) {
+		t.Fatalf("exited process %d counts as running", dead.PID)
+	}
+	if (Status{Updated: now}).Running(now) {
+		t.Fatal("a status file without a pid counts as running")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, File), []byte(`{"role":"node","pid":`+strconv.Itoa(dead.PID)+`}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveDead(dir)
+	if _, err := Read(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("RemoveDead kept a dead process's status file: %v", err)
+	}
+	r := Start(dir, Status{Role: "node"})
+	defer r.Stop()
+	RemoveDead(dir)
+	if _, err := Read(dir); err != nil {
+		t.Fatalf("RemoveDead removed a running process's status file: %v", err)
 	}
 }
 
