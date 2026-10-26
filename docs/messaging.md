@@ -92,7 +92,9 @@ Messages that waited in the queue go in together, as one turn: each keeps
 its own header, in the order they are delivered (see [Delivery](#delivery)),
 separated by a blank line.
 
-Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`), `done` (completion
+Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`, and the first 400 bytes
+of that ask quoted with `> ` under the header, also as `re_text` in
+`fleet_inbox`), `done` (completion
 notice), `system` (delivery failures and expiry). A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so no
 sender can put a header of its own in its text. The node matches a

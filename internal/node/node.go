@@ -122,6 +122,8 @@ type queuedMsg struct {
 	Text    string `json:"text"`
 	Kind    string `json:"kind,omitempty"`
 	ReplyTo string `json:"reply_to,omitempty"`
+	// ReplyToText: the start of the ask a reply answers.
+	ReplyToText string `json:"reply_to_text,omitempty"`
 	// Attachments: metadata only. The bytes wait in the session's
 	// attachment directory (see images.go) until the message is delivered.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
@@ -1231,7 +1233,15 @@ func formatMessage(m queuedMsg) string {
 	case model.MsgAsk:
 		fmt.Fprintf(&b, "(%s is waiting for an answer: reply with the fleet_reply tool, message_id=%s.)\n", m.From, m.ID)
 	case model.MsgReply:
-		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
+		if m.ReplyToText == "" {
+			fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s.)\n", m.ReplyTo)
+			break
+		}
+		fmt.Fprintf(&b, "(This answers your earlier fleet_ask %s, which asked:\n", m.ReplyTo)
+		for _, l := range strings.Split(strings.TrimRight(m.ReplyToText, "\n"), "\n") {
+			b.WriteString("> " + l + "\n")
+		}
+		b.WriteString(")\n")
 	}
 	if n := len(m.Attachments); n > 0 {
 		plural := "s"
@@ -1379,7 +1389,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	if err != nil {
 		return nil, err
 	}
-	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo,
+	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo, ReplyToText: m.ReplyToText,
 		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt}
 	caps := h.Caps()
 	steer := caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h)))
