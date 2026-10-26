@@ -167,6 +167,8 @@ type QueueEntry struct {
 	// ExpiresAt is when the node drops it undelivered (nodes from 0.1.5,
 	// for messages that came with one).
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// AtStep: it goes into the running turn at the turn's next step.
+	AtStep bool `json:"at_step,omitempty"`
 }
 
 // SpawnCmd carries the coordinator's session record and the request.

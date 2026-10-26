@@ -124,6 +124,10 @@ type queuedMsg struct {
 	ReplyTo string `json:"reply_to,omitempty"`
 	// ReplyToText: the start of the ask a reply answers.
 	ReplyToText string `json:"reply_to_text,omitempty"`
+	// AtStep: a steer into the running turn, held until that turn's next
+	// step (when the agent would read it anyway), so it can still be
+	// cancelled. If the turn ends first it starts the next one.
+	AtStep bool `json:"at_step,omitempty"`
 	// Attachments: metadata only. The bytes wait in the session's
 	// attachment directory (see images.go) until the message is delivered.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
@@ -240,6 +244,7 @@ type session struct {
 	// Steers in flight: steering is set while one is being delivered, and
 	// steerBuf holds the messages that arrived meanwhile, to go in together.
 	steering bool
+	stepping bool // stepSteers is running
 	steerBuf []*steerReq
 	// solo holds queued messages that failed in a batch: each is retried
 	// on its own, so only one that fails alone is reported failed.
@@ -616,6 +621,7 @@ func (s *session) sink(ev adapter.Event) {
 	s.appendLocked(ev.Kind, ev.Payload)
 	idle := false
 	save := false
+	step := false // the running turn finished a step, with steers held for it
 	switch ev.Kind {
 	case model.KindTurnStarted:
 		if p, ok := ev.Payload.(model.TurnStarted); ok {
@@ -634,6 +640,9 @@ func (s *session) sink(ev adapter.Event) {
 			idle = true // re-check delivery and settling now that the turn is done
 		}
 	case model.KindItemCompleted:
+		if p, ok := ev.Payload.(model.Item); ok && p.TurnID == s.activeTurn && p.ItemType != "userMessage" && s.hasAtStepLocked() {
+			step = true
+		}
 		if p, ok := ev.Payload.(model.Item); ok && p.ItemType == "agentMessage" {
 			if p.Text != "" {
 				s.lastText = p.Text
@@ -666,7 +675,49 @@ func (s *session) sink(ev adapter.Event) {
 	if idle {
 		go s.n.tryDeliver(s)
 	}
+	if step {
+		go s.n.stepSteers(s)
+	}
 	s.n.wakeSender()
+}
+
+func (s *session) hasAtStepLocked() bool {
+	for _, m := range s.rec.Queue {
+		if m.AtStep && !m.Sending {
+			return true
+		}
+	}
+	return false
+}
+
+// stepSteers steers the messages held for the running turn's next step
+// (AtStep) into it, as promote does: the agent reads steered input at its
+// next step, so holding them until then costs no time and leaves them
+// cancellable meanwhile.
+func (n *Node) stepSteers(s *session) {
+	s.mu.Lock()
+	if s.stepping {
+		s.mu.Unlock()
+		return
+	}
+	s.stepping = true
+	var ids []string
+	for _, m := range s.rec.Queue {
+		if m.AtStep && !m.Sending {
+			ids = append(ids, m.ID)
+		}
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.stepping = false
+		s.mu.Unlock()
+	}()
+	for _, id := range ids {
+		if _, err := n.promote(context.Background(), s, &wire.QueuedCmd{MessageID: id, Mode: model.ModeSteer}); err != nil {
+			n.logf("session %s: steer of held message %s: %v", s.rec.Path, id, err)
+		}
+	}
 }
 
 func (s *session) flushDeltaLocked() {
@@ -1393,6 +1444,12 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt}
 	caps := h.Caps()
 	steer := caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h)))
+	if steer && m.Mode == model.ModeAuto && s.turnRunning(h) && strings.HasPrefix(m.From, "user:") {
+		// A person's message sent Now goes into the running turn at its
+		// next step, from the queue, where they can still cancel it until
+		// then (stepSteers). An explicit steer, and agents', go in at once.
+		steer, msg.AtStep = false, true
+	}
 	s.mu.Lock()
 	if s.acceptedLocked(m.ID, time.Now()) || s.queuedLocked(m.ID) >= 0 {
 		s.mu.Unlock()
@@ -1508,7 +1565,11 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	if interrupt {
 		mode = model.ModeInterrupt
 	}
-	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: mode, Attachments: msg.Attachments})
+	queued := mode
+	if msg.AtStep {
+		queued = model.ModeSteer
+	}
+	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: queued, Attachments: msg.Attachments})
 	if interrupt {
 		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
@@ -2063,7 +2124,7 @@ func (n *Node) queueList(s *session) json.RawMessage {
 	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
 	for i, m := range s.rec.Queue {
 		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
-			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt})
+			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt, AtStep: m.AtStep})
 	}
 	return model.Marshal(res)
 }
