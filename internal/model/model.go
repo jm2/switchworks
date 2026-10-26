@@ -285,6 +285,8 @@ type MessageEvent struct {
 	Text      string `json:"text,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// SupersededBy (message.cancelled): the newer message that replaced it.
+	SupersededBy string `json:"superseded_by,omitempty"`
 	// Attachments: metadata only, never the image bytes.
 	Attachments []Attachment `json:"attachments,omitempty"`
 }

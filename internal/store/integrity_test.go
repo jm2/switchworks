@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/ulid"
 )
 
 // failWrites makes the next n writes to store files write half their bytes
@@ -332,5 +333,81 @@ func TestProjectedSeqMigration(t *testing.T) {
 			t.Errorf("version %d: projected seq %d, want %d", tc.version, sess.ProjectedSeq, tc.want)
 		}
 		s.Close()
+	}
+}
+
+// A store from before read marks has its messages to people marked read,
+// but for the asks still open, once; a new store's are left alone.
+func TestReadMarksOnUpgrade(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	msgs := []model.Message{
+		{ID: ulid.New(), Kind: model.MsgNotify, ToUser: "user:jm", State: model.MsgDelivered, CreatedAt: now, DeliveredAt: now.Add(time.Second)},
+		{ID: ulid.New(), Kind: model.MsgAsk, ToUser: "user:jm", State: model.MsgDelivered, CreatedAt: now, DeliveredAt: now},
+		{ID: ulid.New(), Kind: model.MsgAsk, ToUser: "user:jm", State: model.MsgAnswered, CreatedAt: now, DeliveredAt: now},
+		{ID: ulid.New(), Kind: model.MsgNotify, ToSession: s1, State: model.MsgDelivered, CreatedAt: now, DeliveredAt: now},
+	}
+	for _, version := range []int{0, 1, -1} {
+		dir := t.TempDir()
+		if version >= 0 {
+			b, _ := json.Marshal(snapshot{Version: version})
+			if err := os.WriteFile(filepath.Join(dir, "state.json"), b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var lines []byte
+		for _, m := range msgs {
+			b, _ := json.Marshal(m)
+			lines = append(append(lines, b...), '\n')
+		}
+		if err := os.WriteFile(filepath.Join(dir, "messages.jsonl"), lines, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for open := 0; open < 2; open++ {
+			s, err := OpenFileStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			note, _ := s.Message(msgs[0].ID)
+			ask, _ := s.Message(msgs[1].ID)
+			answered, _ := s.Message(msgs[2].ID)
+			toSession, _ := s.Message(msgs[3].ID)
+			if !note.ReadAt.Equal(msgs[0].DeliveredAt) || note.ReadBy != upgradeReader || !answered.ReadAt.Equal(now) {
+				t.Errorf("version %d: old messages not read: %+v %+v", version, note, answered)
+			}
+			if !ask.ReadAt.IsZero() || !toSession.ReadAt.IsZero() {
+				t.Errorf("version %d: open ask or a session's message marked read: %+v %+v", version, ask, toSession)
+			}
+			if open == 0 {
+				// A new notify after the upgrade stays new on the next open.
+				fresh := model.Message{ID: ulid.New(), Kind: model.MsgNotify, ToUser: "user:jm", State: model.MsgDelivered, CreatedAt: now}
+				if err := s.PutMessage(fresh); err != nil {
+					t.Fatal(err)
+				}
+				msgs = append(msgs, fresh)
+			} else if m, _ := s.Message(msgs[len(msgs)-1].ID); !m.ReadAt.IsZero() {
+				t.Errorf("version %d: marked read again on the next open: %+v", version, m)
+			}
+			s.Close()
+		}
+		msgs = msgs[:4]
+	}
+
+	// A new store, and one already at this version, mark nothing.
+	dir := t.TempDir()
+	s, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMessage(msgs[0]); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if m, _ := s.Message(msgs[0].ID); !m.ReadAt.IsZero() {
+		t.Fatalf("a current store's message marked read: %+v", m)
 	}
 }

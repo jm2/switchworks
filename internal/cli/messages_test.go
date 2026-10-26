@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jm2/switchworks/internal/model"
 )
@@ -27,5 +28,18 @@ func TestPrintMessagesLongAttachmentNames(t *testing.T) {
 		Attachments: []model.Attachment{{Name: long, Size: 1 << 10}, {Name: "second.png", Size: 2 << 10}}}})
 	if !strings.Contains(b.String(), "second.png 2 KiB]") || !strings.Contains(b.String(), "…") {
 		t.Fatalf("table:\n%s", b.String())
+	}
+}
+
+// Dismissed asks and read messages say so in the table.
+func TestPrintMessagesDismissedAndRead(t *testing.T) {
+	var b bytes.Buffer
+	now := time.Now()
+	printMessages(&b, []model.Message{
+		{ID: "m1", Kind: model.MsgAsk, From: "h/a", To: "user:jm", State: model.MsgDismissed, Inline: true, ReadAt: now, Text: "q?"},
+		{ID: "m2", Kind: model.MsgNotify, From: "h/a", To: "user:jm", State: model.MsgDelivered, ReadAt: now, Text: "done"}})
+	out := b.String()
+	if !strings.Contains(out, "dismissed (inline) ") || strings.Contains(out, "dismissed (inline) (read)") || !strings.Contains(out, "delivered (read)") {
+		t.Fatalf("table:\n%s", out)
 	}
 }

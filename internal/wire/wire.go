@@ -144,6 +144,9 @@ type Cmd struct {
 type QueuedCmd struct {
 	MessageID string `json:"message_id"`
 	Mode      string `json:"mode,omitempty"`
+	// SupersededBy (OpCancel): the newer message that replaces it, which
+	// message.cancelled names. Older nodes ignore it.
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // QueueResult answers OpQueue: the session's queued messages, in the

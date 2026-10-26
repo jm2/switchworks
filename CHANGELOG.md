@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-10-25
+
+### Added
+
+- **Superseding messages** — `supersedes` (a key such as `status:gate5`) on `fleet_send`, the API
+  and `swk msg`/`send --supersedes`: a newer message replaces the sender's earlier one with that key
+  to the same session while it is still pending or queued, so only the latest status reaches the
+  agent. The old one becomes `superseded`, naming its replacement in the web UI and the API.
+- **Dismiss an ask** — Dismiss in the web Inbox (or `swk messages dismiss`) ends an ask to a person
+  as `dismissed`, with who and when; a waiting `fleet_ask` or `swk ask` returns at once, an asker
+  whose wait ended gets a notice after a short Undo window, and a late reply gets 409.
+- **Mark read** — Asks and notifies to people can be marked read (web Inbox, `swk messages read`),
+  leaving the badge without ending an ask; the coordinator keeps the mark, so it holds on every
+  device. Mark all read and Dismiss all act on a whole Inbox section.
+- **Queued agents' messages one by one** — The web UI's "queued from agents" row opens into each
+  message, with its sender, kind, text and expiry, and Send now and Cancel; Clear still asks first.
+  `swk messages promote <id>` and `swk messages cancel <id>` do the same from the CLI.
+- **Steered messages show at once** — A message sent Now (steer) shows as a pending bubble from Send
+  until the agent takes it in at its next step, instead of appearing only seconds later.
+- **Markdown in the web UI** — Agents' messages render as full Markdown: tables, task lists,
+  strikethrough, footnotes, autolinks, `:emoji:` shortcodes, highlighted code with a Copy button,
+  KaTeX math and Mermaid diagrams, sanitized and under the page's CSP. The scripts are pinned,
+  integrity-checked and embedded (`internal/web/vendor.sh`); Mermaid loads only when needed.
+
+### Changed
+
+- **Short expiry for agents' notifies** — An agent's `fleet_send` now expires undelivered after 2 h
+  (guard `agent_notify_ttl_seconds`) unless it sets `ttl_seconds`, up to `default_ttl_seconds`;
+  asks, people's messages and spawn prompts keep 24 h. `fleet_send` now takes `ttl_seconds`.
+- **No hop limit by default** — Agents can keep messaging each other, like Claude Code sessions,
+  until they are stopped: `max_hops` is off unless set, leaving the rate limits and the daily token
+  budget. When it is set, a person's message starts the count over however it went in, and a steer
+  into a running turn no longer raises the turn's count. Before, a busy coordinator session that
+  only ever took steers piled up hops until its workers could not report back.
+
 ### Fixed
 
 - **Hop limit with fast agents** — A node sends a session's events ahead of that session's fleet
@@ -15,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stopped node shown as running** — `swk service status` and the tray no longer report a node or
   coordinator as running for up to a minute after it was killed (as `swk service stop` does on
   Windows) or crashed: a status file whose process has exited counts as stopped.
+- **Asks, replies and notices steer** — Asks, replies, completion notices and Switchworks's notices
+  go in mode auto like other messages, so they reach a running turn instead of waiting for it to
+  end. Sessions spawned with `--no-steer`, and harnesses that cannot steer, still get them queued.
 
 ## [0.1.5] — 2026-10-22
 
@@ -326,7 +364,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Running sessions grow without bound** — Only ended sessions are deleted.
 - **Web UI tested in Chromium only** — Safari on iOS has not been tried.
 
-[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/jm2/switchworks/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/jm2/switchworks/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/jm2/switchworks/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/jm2/switchworks/compare/v0.1.2...v0.1.3

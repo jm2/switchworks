@@ -37,7 +37,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `images` (see [Images](#images)); `files` (see [Files](#files)) |
+| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `supersedes` and `ttl_seconds` (see [Superseding](#superseding) and [Delivery](#delivery)); `images` (see [Images](#images)); `files` (see [Files](#files)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images`; `files` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
@@ -394,7 +394,12 @@ it runs this version.
 - Every message is stored before delivery is attempted.
 - A message to a host that is offline stays **pending** and is delivered
   when the host reconnects (the router retries every 2 s). It expires after
-  its TTL (default 24 h), and the sender gets a `system` notice.
+  its TTL, and the sender gets a `system` notice. The TTL is 24 h
+  (`default_ttl_seconds`), except for an agent's notify (`fleet_send`),
+  which is mostly news that goes stale: 2 h (`agent_notify_ttl_seconds`).
+  A sender may set `ttl_seconds`, shorter or longer, up to
+  `default_ttl_seconds`. Asks, replies, completion notices and an agent's
+  `fleet_spawn` prompt keep the full default.
 - The TTL also covers the session's queue. The coordinator gives the node
   each message's `expires_at`, and when the node builds a turn from the
   queue, or steers in messages that waited for another steer, it drops any
@@ -402,7 +407,7 @@ it runs this version.
   The node records `message.expired`, the message's state becomes
   `expired`, and an agent that sent it gets the same `system` notice (an
   expired ask fails, like a cancelled one). People's messages have the
-  same default TTL as agents'; `ttl_seconds` sets a shorter one. Send now
+  24 h default; `ttl_seconds` sets a shorter one. Send now
   (promote) sends a message whatever its expiry. Nodes before 0.1.5
   ignore `expires_at` and keep a queued message until it is delivered.
 - The node deduplicates by message id, so redelivery after a reconnect has
@@ -428,8 +433,9 @@ it runs this version.
   | `steer` | into that turn, even if the session does not accept steering (for people, and an agent's own children) | starts a turn |
   | `interrupt` | goes to the head of the queue and cancels the turn | starts a turn |
 
-  Asks, replies, completion notices and Switchworks's notices are queued.
-  The returned mode says what happened (`steer` or `queue`). Harnesses that
+  Asks, replies, completion notices and Switchworks's notices go in mode
+  `auto` too, so they reach a running turn rather than wait it out. The
+  returned mode says what happened (`steer` or `queue`). Harnesses that
   cannot steer (agy, ACP agents) queue instead, and a session spawned with
   `accept_steer: false` (`swk spawn --no-steer`) gets `auto` messages, and
   other agents' steers, queued: for a long build that must not be
@@ -496,6 +502,31 @@ it runs this version.
   usual week). Nodes before 0.1.5 kept a stopped session's record and
   queue for good.
 
+### Superseding
+
+A sender that reports progress can give each update the same
+`supersedes` key (`fleet_send`, `POST /v1/messages` and
+`POST /v1/sessions/{id}/messages`, `swk msg`/`send --supersedes`), such as
+`status:gate5`: at most 128 bytes, chosen by the sender. When a message
+with a key is sent, each earlier message with the same key from the same
+sender (for a person, the same credential, not only the same name) to the
+same session that has not reached the session yet is replaced: one the
+coordinator still holds (`pending`) is never sent, and one waiting in the
+session's queue is dropped by the node (with `POST /v1/messages/{id}/cancel`'s
+`OpCancel`, naming the newer message, so `message.cancelled` carries
+`superseded_by`). The old message becomes `superseded`, with
+`superseded_by` set to the newer one's id, and its sender gets no notice
+(it sent the newer one). This happens before the newer message is
+delivered, so the two never share a turn, and only the latest status
+reaches the agent. A message that has gone into a turn (steered in, or
+delivered) is left as it is, as is one being handed to the node at that
+moment, and one queued on a node that is offline or older than 0.1.5
+(which cannot cancel). A node from 0.1.5 drops it but leaves
+`superseded_by` out of `message.cancelled`, so its transcript says
+"cancelled". A different key, sender or session never supersedes.
+Keys are for notifies (and broadcasts, per recipient): an ask with one is
+refused. An older coordinator refuses `supersedes` ("unknown field").
+
 ### States
 
 | State | Meaning |
@@ -507,12 +538,15 @@ it runs this version.
 | `expired` | not delivered within its TTL, at the coordinator or in the session's queue |
 | `failed` | could not be delivered, or an ask whose target stopped |
 | `cancelled` | taken out of the queue before delivery |
+| `superseded` | replaced before delivery by a newer message with the same `supersedes` key (`superseded_by`); see [Superseding](#superseding) |
+| `dismissed` | an ask to a person that a person cleared without an answer (`dismissed_by`, `dismissed_at`); see [Asks to people](#asks-to-people) |
 
 `delivered` (for a message that is not an ask), `seen` (likewise),
-`answered`, `expired`, `failed` and `cancelled` are final. An ask moves on
-from `delivered` or `seen` to `answered`, or to `failed` if its target
-stops first; a `fleet_reply` to an ask that is `cancelled`, `expired` or
-`failed` (its sender has been told it will not be answered) is refused.
+`answered`, `expired`, `failed`, `cancelled`, `superseded` and `dismissed`
+are final. An ask moves on from `delivered` or `seen` to `answered`, or to
+`failed` if its target stops first; a `fleet_reply` to an ask that is
+`cancelled`, `expired`, `failed` or `dismissed` (its sender has been told it
+will not be answered), or already answered, is refused (409 through the API).
 A delivery the node reports again, or only after the message was seen,
 changes neither its state nor its `delivered_at`.
 
@@ -564,6 +598,36 @@ Unanswered asks are kept 14 days, like finished messages.
 A person can ask an agent (`swk ask <address> <question>`) and an agent
 can ask a person (`fleet_ask` to `user:<name>`).
 
+### Asks to people
+
+A person answers an ask in the web UI's Inbox or with `swk reply`, or
+clears it without an answer:
+
+- **Dismiss** (`swk messages dismiss <id>`, `POST
+  /v1/messages/{id}/dismiss`) ends the ask as `dismissed`, recording who
+  (`dismissed_by`: the name and credential) and when. An asker still
+  waiting (`fleet_ask`, `swk ask`, a ticket wait) gets `failed`
+  "dismissed without an answer by …" at once, and the ask is marked
+  `inline`. An asker whose wait has ended gets a `system` notice
+  (`notice_id`) that no answer will come; it is held back for 8 seconds,
+  and until the ask's hold window closes (its `swk mcp` may still collect
+  the dismissal with its ticket, and then needs no notice). A later reply
+  gets 409.
+- **Undo** (`POST /v1/messages/{id}/undismiss`) reopens a dismissed ask
+  only while its asker has not been told: no waiting asker was woken, it
+  has not checked its ticket, and the notice has not gone out (it is
+  withdrawn, `cancelled`). Otherwise it gets 409. The web UI offers Undo
+  for 6 seconds after a dismissal.
+- **Mark read** (`swk messages read <id>`, `POST /v1/messages/{id}/read`)
+  takes an ask or a notify to a person out of the Inbox's new items and
+  badge count, without ending an ask: a read ask can still be answered or
+  dismissed. The mark is kept on the message by the coordinator
+  (`read_at`, `read_by`), so every browser and client sees it. Each
+  message to people has one mark, its recipient's, whoever set it.
+  A coordinator upgraded from 0.1.5 or earlier marks the messages to
+  people it already holds read (`read_by` "switchworks (upgrade)"), all
+  but the asks still open, so they do not all show as new at once.
+
 ## Completion notices
 
 A node emits `session.settled` when a session's last turn has completed and
@@ -578,7 +642,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `max_hops` | 8 | longest chain of message-triggered turns; a send that would exceed it is refused |
+| `max_hops` | 0 (no limit) | longest chain of message-triggered turns; a send that would exceed it is refused. Off by default, so agents can keep messaging each other until they are stopped |
 | `send_per_minute` | 30 | per sender → target pair (all `user:` recipients count as one target) |
 | `out_per_minute` | 60 | per agent, all its messages together |
 | `ask_per_minute` | 10 | per sender → target pair |
@@ -595,6 +659,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 | `allow_unsandboxed_spawn` | false | let a sandboxed agent spawn a harness that does not enforce sandboxes (ACP agents such as goose, and agy) |
 | `allow_unapproved_spawn` | false | let an agent that asks for approval spawn agy, which never asks |
 | `default_ttl_seconds` | 86400 | how long an undelivered message waits; also the longest `ttl_seconds` a sender may ask for |
+| `agent_notify_ttl_seconds` | 7200 | how long an agent's undelivered notify waits unless it sets `ttl_seconds` (never longer than `default_ttl_seconds`) |
 
 The coordinator keeps at most 256 MiB of messages (their text, and the
 names and digests of their images and files; the bytes themselves are in
@@ -602,15 +667,18 @@ the attachment store, under its own limits); past that the oldest
 delivered (answered or not), failed or expired ones are dropped first, and
 stay dropped across a restart.
 
-People are not rate limited. Hops count from the messages that started the
-sender's current work: a person's message is hop 0, the agent's message to
-another agent is hop 1, and so on. A turn that takes in several messages
-(a batch from the queue, or steers into the running turn) counts from the
-deepest of them, so a shallow message cannot shorten a long chain; the
-count starts over only with the next turn after the session goes idle.
-After a coordinator restart it is rebuilt from the stored messages. A
-spawn counts as a hop too, so a loop of spawns and completion notices ends
-at `max_hops`.
+People are not rate limited. With `max_hops` set, hops count from the
+messages that started the sender's current work: a person's message is hop
+0, the agent's message to another agent is hop 1, and so on. A turn that
+starts with several messages (a batch from the queue) counts from the
+deepest of them, so a shallow message cannot shorten a long chain. A steer
+into a running turn does not change its count (it did not start the turn),
+and a person's message, steered or not, starts it over at 0. After a
+coordinator restart it is rebuilt from the stored messages. A spawn counts
+as a hop too, so a loop of spawns and completion notices ends at
+`max_hops`. Without `max_hops` (the default), agents' messages are limited
+only by the per-minute rate limits and `max_daily_tokens`, like Claude
+Code's sessions messaging each other.
 
 A session an agent spawns always inherits the agent's approval policy and
 sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such
@@ -723,11 +791,16 @@ swk msg buildbox/helper "the build is green"         # by address
 swk msg --broadcast @role=reviewer "please look at PR 42"
 swk msg --to devbox/a --to buildbox/b "rebased on main"   # several recipients
 swk msg --image shot.png --image diff.png reviewer "these two frames"
+swk msg --supersedes status:deploy lead "deploy 3/5 hosts done"   # replaces my earlier status:deploy still waiting
 swk send --file 0001-fix.patch linuxbox/ci "git am this and push"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
 swk reply <ask-id> "yes, go ahead"
+swk messages dismiss <ask-id>                    # clear a question without an answer
+swk messages read <id>                           # mark a message to a person read
 swk messages [session]                           # traffic log
+swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
+swk messages cancel <id>                         # take it out of the queue
 swk usage                                        # tokens by host, model, day
 ```
 
@@ -735,20 +808,23 @@ swk usage                                        # tokens by host, model, day
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks) |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` not for asks |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
-| GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen |
-| POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
+| GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen; `supersedes`, and `superseded_by` once superseded |
+| POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask; 409 if it was answered or ended (dismissed, cancelled, expired, failed) |
+| POST | `/v1/messages/{id}/dismiss` | `{from}` (optional): end an ask to a person without an answer; returns the record; 409 if it is no longer open |
+| POST | `/v1/messages/{id}/undismiss` | reopen a dismissed ask whose asker has not been told; 409 otherwise |
+| POST | `/v1/messages/{id}/read` | `{from}` (optional): mark a message to a person read (`read_at`, `read_by`) |
 | GET | `/v1/usage` | daily totals, by host, by model |
-| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, attachments, files}`; routed (202 with `state` and `mode`) |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, offline, node_too_old, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at, held}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it, or the coordinator's for `held` messages |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
-Reading needs a `read` token; sending, asking, replying, promoting and
-cancelling need `operate`.
+Reading needs a `read` token; sending, asking, replying, promoting,
+cancelling, dismissing and marking read need `operate`.
 API tokens are managed with `POST /v1/tokens` (`{name, scope, ttl_seconds}`;
 the secret comes back once), `GET /v1/tokens` and `DELETE
 /v1/tokens/{id-or-name}`, all admin only. A request beyond a token's scope

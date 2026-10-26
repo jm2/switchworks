@@ -3,7 +3,8 @@
 The coordinator serves a web UI on its API port: `https://<coordinator>:7480/`.
 It is built for a phone first and works on a desktop browser too. It is plain
 HTML, CSS and JavaScript embedded in the `swk` binary: no build step, no
-framework, and nothing loaded from anywhere else.
+framework, and nothing loaded from anywhere else. A few pinned, vendored
+scripts render Markdown (see below).
 
 ![A session waiting for approval, on a desktop](img/web-ui.png)
 
@@ -42,12 +43,18 @@ system; the choice is kept per browser.
   (steers it into the running turn, or interrupts a session that cannot
   take one mid-turn) and **Cancel**, and when it expires undelivered
   ("expires 14:30", from a node that enforces it); it becomes the usual
-  message when its turn starts. Under a message from you (or another
+  message when its turn starts. A message sent **now** into a running
+  turn shows the same way, "Steered: the agent reads it at its next
+  step", until the harness takes it in (Codex reads a steer at its next
+  step, which can be a long tool call away). Under a message from you (or another
   person) a receipt says when it went into the session's input,
   "Delivered 14:02", and once the turn that carried it has finished,
   "Seen 14:05 · reply": **reply** scrolls to that turn's last agent
-  message. Messages queued by agents show as one row, "N queued from
-  agents", with **Clear** (an owner's browser only). Next to that menu,
+  message. Messages queued by agents fold into one row, "N queued from
+  agents", with **Clear**, which asks before it cancels them all; opened,
+  the row lists each one (sender, kind, text, expiry) with **Send now**
+  and **Cancel**, or only **Cancel** for one held while its host is
+  offline (an owner's browser only). Next to that menu,
   **Approvals** changes the session's approval policy (Ask first, Ask if needed, Never ask) for sessions whose harness
   can change it while running: Codex from its next turn, Goose and other
   ACP agents with session modes at once. Loosening it needs a browser
@@ -58,13 +65,54 @@ system; the choice is kept per browser.
   full size when tapped. The home composer takes images for the first
   prompt the same way.
 - **Inbox**: questions agents asked people (`fleet_ask` to `user:…`), with a
-  reply box each, and other messages addressed to people.
+  reply box each, and new notifies to people; the badge counts them. Beside
+  Send answer, **Dismiss** clears a question without an answer (the asker
+  is told none will come), with **Undo** in the toast for a few seconds,
+  and **Mark read** moves it under Earlier messages, where it can still be
+  answered or dismissed. **Mark all read** and **Dismiss all** act on what
+  each section shows. Read marks are kept by the coordinator, so they hold
+  on every device. Earlier messages lists the rest, dismissed asks among
+  them.
 - **Traffic**: every routed message, filterable, with its delivery state
-  (queued, delivered, seen, answered, expired...; hover it for the
-  delivered and seen times). The Inbox's earlier messages show it too.
+  (queued, delivered, seen, answered, dismissed, expired, superseded...; hover it for
+  the delivered and seen times, or when it expired). A message sent with a
+  `supersedes` key shows the key, and a superseded one says which newer
+  message replaced it; the transcript says "replaced by a newer one" when
+  the session's node drops it from the queue. The Inbox's earlier
+  messages show the same.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.
 - **New session**: every spawn option.
+
+## Markdown
+
+Agents' replies, messages routed from other sessions, and agents' messages
+in the Inbox and Traffic are rendered as Markdown; what people type is shown
+as typed. Supported:
+
+- GitHub-style Markdown: headings, emphasis, ~~strikethrough~~, lists,
+  task lists (`- [x]`), tables (with column alignment; wide ones scroll
+  sideways), blockquotes, rules, links and bare URLs (opened in a new tab),
+  and footnotes (`[^1]`).
+- Emoji shortcodes such as `:tada:`.
+- Code blocks highlighted by language (or guessed), each with a Copy
+  button.
+- Math with KaTeX: `$…$` or `\(…\)` inline, `$$…$$` or `\[…\]` as a
+  block. An inline `$` needs no space just inside it and no digit after
+  the closing one, so "$5 and $10" and `$HOME` stay text.
+- Mermaid diagrams in ```` ```mermaid ```` blocks, drawn once the message
+  stops changing and shown as an image (click for full size); a diagram
+  that fails to draw shows its source and the error.
+
+Raw HTML stays text, Markdown images show as links (the page loads images
+only from the coordinator), and everything is sanitized, all under the
+page's Content Security Policy. The scripts (markdown-it with its emoji and
+footnote plugins, DOMPurify, highlight.js, KaTeX and Mermaid) are pinned and
+fetched by `internal/web/vendor.sh`, which checks each against the npm
+registry's integrity hash; versions and licenses are in
+`internal/web/assets/vendor`. The coordinator serves them under a URL that
+names their content, cached for good and gzipped; Mermaid (5.5 MB) loads
+only when a message has a diagram.
 
 The UI embeds its fonts (Onest and JetBrains Mono, both SIL OFL 1.1; see
 `internal/web/assets/fonts`) and loads nothing from the internet.

@@ -259,6 +259,7 @@ type SessionMessage struct {
 	Text        string             `json:"text"`
 	Mode        string             `json:"mode"`
 	From        string             `json:"from"`
+	Supersedes  string             `json:"supersedes,omitempty"`  // see fleet.SendArgs
 	Attachments []model.Attachment `json:"attachments,omitempty"` // images
 	Files       []model.Attachment `json:"files,omitempty"`       // text files
 }
@@ -287,6 +288,7 @@ type PostMessage struct {
 	Text        string   `json:"text"`
 	Mode        string   `json:"mode,omitempty"`
 	TTLSeconds  int      `json:"ttl_seconds,omitempty"`
+	Supersedes  string   `json:"supersedes,omitempty"`   // notify and broadcast only; see fleet.SendArgs
 	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
@@ -368,6 +370,31 @@ func (c *Client) Message(ctx context.Context, id string) (model.Message, error) 
 func (c *Client) Reply(ctx context.Context, askID, text, from string) (fleet.ReplyResult, error) {
 	var out fleet.ReplyResult
 	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(askID)+"/reply", map[string]string{"text": text, "from": from}, &out)
+}
+
+// Promote delivers a queued message now: steered into the running turn,
+// or with mode interrupt, cancelling it.
+func (c *Client) Promote(ctx context.Context, id, mode string) (SendResult, error) {
+	var out SendResult
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/promote", map[string]string{"mode": mode}, &out)
+}
+
+// CancelMessage takes a queued message out of its target's queue.
+func (c *Client) CancelMessage(ctx context.Context, id string) error {
+	return c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
+// Dismiss ends an ask to a person without an answer; its asker is told
+// none will come.
+func (c *Client) Dismiss(ctx context.Context, askID, from string) (model.Message, error) {
+	var out model.Message
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(askID)+"/dismiss", map[string]string{"from": from}, &out)
+}
+
+// MarkRead marks a message to a person read, for every client.
+func (c *Client) MarkRead(ctx context.Context, id, from string) (model.Message, error) {
+	var out model.Message
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/read", map[string]string{"from": from}, &out)
 }
 
 // UsageReport aggregates token use.

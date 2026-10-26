@@ -7,7 +7,7 @@
 pkgname=switchworks
 # The release workflow passes the tag (SWK_VERSION=v0.2.0-rc.1); pkgver
 # cannot hold "-", and "0.2.0rc.1" sorts before "0.2.0" as it should.
-_tag=${SWK_VERSION:-v0.1.5}
+_tag=${SWK_VERSION:-v0.1.6}
 pkgver=${_tag#v}
 pkgver=${pkgver//-/}
 pkgrel=1

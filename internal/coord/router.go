@@ -23,13 +23,16 @@ import (
 
 // Guards bound what agents can do to each other and to the budget.
 type Guards struct {
-	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 8)
+	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 0: no limit)
 	AskPerMinute      int   `json:"ask_per_minute,omitempty"`      // per sender -> target pair (default 10)
 	SendPerMinute     int   `json:"send_per_minute,omitempty"`     // per sender -> target pair (default 30)
 	OutPerMinute      int   `json:"out_per_minute,omitempty"`      // per sender, all messages (default 60)
 	MaxSpawnDepth     int   `json:"max_spawn_depth,omitempty"`     // sessions spawned by spawned sessions... (default 2)
 	MaxDailyTokens    int64 `json:"max_daily_tokens,omitempty"`    // fleet-wide; refuses fleet_spawn once reached (0 = off)
 	DefaultTTLSeconds int   `json:"default_ttl_seconds,omitempty"` // undelivered messages expire (default 24h)
+	// AgentNotifyTTLSeconds is the default expiry of an agent's notify
+	// (default 2h); it may ask for longer, up to DefaultTTLSeconds.
+	AgentNotifyTTLSeconds int `json:"agent_notify_ttl_seconds,omitempty"`
 
 	// What agents may spawn. A child always inherits its parent's approval
 	// policy and sandbox.
@@ -51,10 +54,12 @@ type Guards struct {
 	AllowUnapprovedSpawn bool `json:"allow_unapproved_spawn,omitempty"`
 }
 
+// overHops reports whether a message at this hop count would pass
+// max_hops. With none set, agents may keep messaging each other until they
+// are stopped, held back only by the rate limits and the token budget.
+func (g Guards) overHops(hops int) bool { return g.MaxHops > 0 && hops > g.MaxHops }
+
 func (g Guards) withDefaults() Guards {
-	if g.MaxHops <= 0 {
-		g.MaxHops = 8
-	}
 	if g.AskPerMinute <= 0 {
 		g.AskPerMinute = 10
 	}
@@ -66,6 +71,9 @@ func (g Guards) withDefaults() Guards {
 	}
 	if g.DefaultTTLSeconds <= 0 {
 		g.DefaultTTLSeconds = 24 * 3600
+	}
+	if g.AgentNotifyTTLSeconds <= 0 {
+		g.AgentNotifyTTLSeconds = 2 * 3600
 	}
 	if g.OutPerMinute <= 0 {
 		g.OutPerMinute = 60
@@ -84,6 +92,9 @@ var (
 	ErrHopLimit  = errors.New("hop limit reached: this message would extend a chain of agent-to-agent turns past the configured maximum")
 	ErrRateLimit = errors.New("rate limit: too many messages to this target; wait a minute")
 	ErrBudget    = errors.New("daily token budget reached; spawning is paused until tomorrow (UTC)")
+	// ErrAskClosed refuses a reply to an ask that was answered, or ended
+	// without an answer (dismissed, cancelled, expired or failed).
+	ErrAskClosed = errors.New("this ask can no longer be answered")
 )
 
 // sender is who a message is from: a session, a person, or Switchworks.
@@ -613,6 +624,13 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	if kind == model.MsgAsk && args.Broadcast {
 		return nil, errors.New("an ask goes to exactly one recipient")
 	}
+	supersedes := strings.TrimSpace(args.Supersedes)
+	switch {
+	case supersedes != "" && kind != model.MsgNotify:
+		return nil, errors.New("supersedes is for notifies, not asks")
+	case len(supersedes) > fleet.MaxSupersedesBytes || !utf8.ValidString(supersedes):
+		return nil, fmt.Errorf("supersedes must be UTF-8 text of at most %d bytes", fleet.MaxSupersedesBytes)
+	}
 	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
@@ -656,14 +674,19 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		}
 	}
 	hops := r.hopsFor(from)
-	if hops > r.guards.MaxHops {
+	if r.guards.overHops(hops) {
 		return nil, ErrHopLimit
 	}
 	// The default is also the longest a message may wait: one that never
-	// expires would be kept and rescanned forever.
+	// expires would be kept and rescanned forever. An agent's notify is
+	// mostly news that goes stale, so it waits less unless it asks.
 	ttl := time.Duration(args.TTLSeconds) * time.Second
-	if max := time.Duration(r.guards.DefaultTTLSeconds) * time.Second; ttl <= 0 || ttl > max {
-		ttl = max
+	longest := time.Duration(r.guards.DefaultTTLSeconds) * time.Second
+	if ttl <= 0 && from.sess != nil && kind == model.MsgNotify {
+		ttl = time.Duration(r.guards.AgentNotifyTTLSeconds) * time.Second
+	}
+	if ttl <= 0 || ttl > longest {
+		ttl = longest
 	}
 	group := ""
 	if len(targets) > 1 {
@@ -738,7 +761,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
-			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes}
 		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
@@ -752,9 +775,60 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		if err := r.put(m); err != nil {
 			return out, err
 		}
+		if supersedes != "" && m.ToSession != "" {
+			r.supersede(ctx, m) // before m goes, so the two never share a turn
+		}
 		out = append(out, r.deliver(ctx, m))
 	}
 	return out, nil
+}
+
+// supersede replaces the earlier messages m supersedes: those with its
+// key from the same sender (for a person, the same credential) to the
+// same session, still pending at the coordinator or queued at the
+// session's node, which is told to drop them. Each becomes superseded,
+// naming m. One that has gone into a turn, or that is being handed to
+// the node at this moment, is left as it is, as is one queued at a node
+// that is offline or older than 0.1.5.
+func (r *router) supersede(ctx context.Context, m model.Message) {
+	var queued []model.Message
+	for _, old := range r.s.store.Messages(store.MessageFilter{Session: m.ToSession}) {
+		if old.ID >= m.ID || old.Supersedes != m.Supersedes || old.ToSession != m.ToSession || old.Kind != model.MsgNotify ||
+			old.From != m.From || old.FromSession != m.FromSession || old.Via != m.Via || old.ViaToken != m.ViaToken {
+			continue
+		}
+		switch {
+		case old.State == model.MsgPending:
+			r.superseded(old.ID, m.ID, false)
+		case old.State == model.MsgDelivered && old.DeliveredAt.IsZero() && old.SeenAt.IsZero():
+			queued = append(queued, old)
+		}
+	}
+	sess, ok := r.s.store.Session(m.ToSession)
+	if !ok {
+		return
+	}
+	for _, old := range queued {
+		cmd := wire.Cmd{Op: wire.OpCancel, Queued: &wire.QueuedCmd{MessageID: old.ID, SupersededBy: m.ID}}
+		if _, err := r.s.queueCommand(ctx, sess, cmd); err == nil {
+			r.superseded(old.ID, m.ID, true)
+		}
+	}
+}
+
+// superseded marks a pending message (with queued, also one its node had
+// queued and has dropped) superseded by the message by, unless a delivery
+// of a pending one is under way. Its sender is not told: it sent the
+// newer one.
+func (r *router) superseded(id, by string, queued bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.s.store.Message(id)
+	if !ok || !(cur.State == model.MsgPending && !r.inflight[id] || queued && cur.State == model.MsgDelivered) {
+		return
+	}
+	cur.State, cur.SupersededBy = model.MsgSuperseded, by
+	_ = r.put(cur)
 }
 
 // steerMode is the mode a message to sess goes with: a session that does
@@ -1159,7 +1233,7 @@ func (r *router) notifySender(m model.Message, text string) {
 		return
 	}
 	n := model.Message{ID: ulid.New(), Kind: model.MsgSystem, From: model.SystemSender, To: sess.Path,
-		ToSession: sess.ID, ToPath: sess.Path, Text: text, Hops: m.Hops, State: model.MsgPending,
+		ToSession: sess.ID, ToPath: sess.Path, Text: text, Mode: r.steerMode(sender{}, sess, model.ModeAuto), Hops: m.Hops, State: model.MsgPending,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(n) == nil {
 		r.deliverLater(n)
@@ -1251,7 +1325,9 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 		}
 		opts = append(opts, func(m *model.Message) { m.HoldUntil = m.CreatedAt.Add(hold) })
 	}
-	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, TTLSeconds: args.TTLSeconds,
+	// An ask goes into the target's running turn like any send: one that
+	// waited for the turn to end would often outlive its asker's wait.
+	msgs, err := r.send(ctx, from, model.MsgAsk, fleet.SendArgs{To: args.To, Text: args.Text, Mode: model.ModeAuto, TTLSeconds: args.TTLSeconds,
 		Images: args.Images, Attachments: args.Attachments, Files: args.Files, FileAttachments: args.FileAttachments}, opts...)
 	if err != nil {
 		return fleet.AskResult{Status: fleet.AskFailed, Error: err.Error()}
@@ -1280,8 +1356,11 @@ func (r *router) ask(ctx context.Context, from sender, args fleet.AskArgs) fleet
 // returns the reply, or the ask itself if it failed.
 func (r *router) waitReply(ctx context.Context, askID string, d time.Duration) *model.Message {
 	r.mu.Lock()
-	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled) {
+	if ask, ok := r.s.store.Message(askID); ok && (ask.State == model.MsgFailed || ask.State == model.MsgCancelled || ask.State == model.MsgDismissed) {
 		r.mu.Unlock()
+		if ask.State == model.MsgDismissed {
+			r.dismissalSeen(askID)
+		}
 		return &ask
 	}
 	if ask, ok := r.s.store.Message(askID); ok && ask.ReplyID != "" {
@@ -1356,6 +1435,9 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 	case ask.FromSession != "":
 		if s, ok := r.s.store.Session(ask.FromSession); ok {
 			rep.ToSession, rep.ToPath = s.ID, s.Path
+			// Into the asker's running turn: it may have stopped waiting
+			// but still be working on what it asked about.
+			rep.Mode = r.steerMode(from, s, model.ModeAuto)
 		}
 	case strings.HasPrefix(ask.From, "user:"):
 		rep.ToUser, rep.ToPath = ask.From, ask.From
@@ -1366,12 +1448,12 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		switch {
 		case cur.ReplyID != "":
 			r.mu.Unlock()
-			return fleet.ReplyResult{}, errors.New("this ask has already been answered")
-		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed:
+			return fleet.ReplyResult{}, fmt.Errorf("%w: it has already been answered", ErrAskClosed)
+		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed, cur.State == model.MsgDismissed:
 			// Its sender was told it will not be answered (and a waiting
 			// fleet_ask has returned): an answer now would contradict that.
 			r.mu.Unlock()
-			return fleet.ReplyResult{}, fmt.Errorf("this ask is %s and can no longer be answered", cur.State)
+			return fleet.ReplyResult{}, fmt.Errorf("%w: it is %s", ErrAskClosed, cur.State)
 		}
 	}
 	ws := r.waiters[ask.ID]
@@ -1423,7 +1505,10 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 		}
 		t := &fleet.AskResult{Status: fleet.AskPending, MessageID: ask.ID, Target: ask.ToPath}
 		switch ask.State {
-		case model.MsgFailed, model.MsgExpired, model.MsgCancelled:
+		case model.MsgFailed, model.MsgExpired, model.MsgCancelled, model.MsgDismissed:
+			if ask.State == model.MsgDismissed {
+				r.dismissalSeen(ask.ID)
+			}
 			t.Status, t.Error = fleet.AskFailed, ask.Error
 		default:
 			wait := time.Duration(args.WaitSeconds) * time.Second
@@ -1550,10 +1635,10 @@ func clipInbox(text string) string {
 
 // onDelivered records the hops of a message that went into a session's
 // input (message.delivered, with the mode the node reports). A turn takes
-// the deepest hop count of everything it took in: the node reports each
-// message of a batch, and each steer into the running turn, one by one,
-// and none of them may lower the count. Only a message that starts a turn
-// after the last one ended (an idle session) starts it over.
+// the deepest hop count of the messages that started it: the node reports
+// each message of a batch one by one, and none of them may lower the
+// count. A steer into the running turn leaves it as it is, and a person's
+// message, however it went in, starts it over at 0.
 func (r *router) onDelivered(sessionID, messageID, mode string) {
 	m, ok := r.s.store.Message(messageID)
 	if !ok || m.ToSession != sessionID {
@@ -1574,10 +1659,17 @@ func (r *router) onDelivered(sessionID, messageID, mode string) {
 	defer r.mu.Unlock()
 	tr, ok := r.inbound[sessionID]
 	switch {
+	case strings.HasPrefix(m.From, "user:"):
+		// A person is in the loop: whatever the session does next is no
+		// longer an agents-only chain.
+		tr = trigger{}
 	case !ok || tr.idle && mode != model.ModeSteer:
 		tr = trigger{hops: m.Hops}
 	case contains(tr.msgs, m.ID):
 		return // reported again (a delivery retried after a busy harness)
+	case mode == model.ModeSteer:
+		// It only adds to a turn it did not start, which keeps the count
+		// of what started it.
 	default:
 		tr.hops = max(tr.hops, m.Hops)
 	}
@@ -1659,7 +1751,7 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 			return
 		}
 	}
-	if hops > r.guards.MaxHops {
+	if r.guards.overHops(hops) {
 		r.s.logf("router: not notifying %s that %s finished: hop limit", parent.Path, child.Path)
 		return
 	}
@@ -1677,7 +1769,7 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 	}
 	now := time.Now().UTC()
 	m := model.Message{ID: ulid.New(), Kind: model.MsgDone, From: child.Path, FromSession: child.ID, To: parent.Path,
-		ToSession: parent.ID, ToPath: parent.Path, Text: text, Hops: hops, State: model.MsgPending,
+		ToSession: parent.ID, ToPath: parent.Path, Text: text, Mode: r.steerMode(sender{sess: &child}, parent, model.ModeAuto), Hops: hops, State: model.MsgPending,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(r.guards.DefaultTTLSeconds) * time.Second)}
 	if r.put(m) == nil {
 		r.deliverLater(m)

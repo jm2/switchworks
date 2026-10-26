@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jm2/switchworks/internal/fleet"
 	"github.com/jm2/switchworks/internal/model"
@@ -83,5 +84,58 @@ func TestDeliverCarriesExpiry(t *testing.T) {
 	}
 	if n := noticesTo(s, a); len(n) != 1 || !strings.Contains(n[0].Text, "queue") {
 		t.Fatalf("notices %+v", n)
+	}
+}
+
+// #47: an agent's notify expires after agent_notify_ttl_seconds unless it
+// asks for longer (up to default_ttl_seconds); its asks, people's
+// messages and an agent's spawn prompt keep the full default.
+func TestAgentNotifyTTL(t *testing.T) {
+	s := testServer(t, Guards{})
+	a := addSession(t, s, "offbox", "a")
+	addSession(t, s, "offbox", "b")
+	ctx := context.Background()
+	ttl := func(m model.Message) time.Duration { return m.ExpiresAt.Sub(m.CreatedAt) }
+	send := func(from sender, kind string, args fleet.SendArgs) model.Message {
+		t.Helper()
+		args.To = "b"
+		msgs, err := s.router.send(ctx, from, kind, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return msgs[0]
+	}
+	if m := send(from(a), model.MsgNotify, fleet.SendArgs{Text: "x"}); ttl(m) != 2*time.Hour {
+		t.Fatalf("agent notify ttl %v", ttl(m))
+	}
+	if m := send(from(a), model.MsgBroadcast, fleet.SendArgs{Text: "x"}); ttl(m) != 2*time.Hour {
+		t.Fatalf("agent broadcast ttl %v", ttl(m))
+	}
+	if m := send(from(a), model.MsgNotify, fleet.SendArgs{Text: "x", TTLSeconds: 6 * 3600}); ttl(m) != 6*time.Hour {
+		t.Fatalf("agent notify asking for 6h: %v", ttl(m))
+	}
+	if m := send(from(a), model.MsgNotify, fleet.SendArgs{Text: "x", TTLSeconds: 72 * 3600}); ttl(m) != 24*time.Hour {
+		t.Fatalf("agent notify asking for 72h: %v", ttl(m))
+	}
+	if m := send(from(a), model.MsgAsk, fleet.SendArgs{Text: "x"}); ttl(m) != 24*time.Hour {
+		t.Fatalf("agent ask ttl %v", ttl(m))
+	}
+	person := sender{user: "user:web", via: "admin", owner: true}
+	if m := send(person, model.MsgNotify, fleet.SendArgs{Text: "x"}); ttl(m) != 24*time.Hour {
+		t.Fatalf("person's notify ttl %v", ttl(m))
+	}
+
+	// The guard is set, and never longer than the default.
+	s = testServer(t, Guards{DefaultTTLSeconds: 3600, AgentNotifyTTLSeconds: 7200})
+	a = addSession(t, s, "offbox", "a")
+	addSession(t, s, "offbox", "b")
+	if m := send(from(a), model.MsgNotify, fleet.SendArgs{Text: "x"}); ttl(m) != time.Hour {
+		t.Fatalf("agent notify ttl past the default: %v", ttl(m))
+	}
+	s = testServer(t, Guards{AgentNotifyTTLSeconds: 600})
+	a = addSession(t, s, "offbox", "a")
+	addSession(t, s, "offbox", "b")
+	if m := send(from(a), model.MsgNotify, fleet.SendArgs{Text: "x"}); ttl(m) != 10*time.Minute {
+		t.Fatalf("agent notify ttl %v with the guard at 600", ttl(m))
 	}
 }

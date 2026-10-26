@@ -43,7 +43,11 @@ Messages:
   swk ask <address> <question>   ask and wait for the answer
   swk inbox                      messages and open questions for people
   swk reply <ask-id> <answer>    answer an agent's question
+  swk messages dismiss <id>      clear a question without an answer
+  swk messages read <id>         mark a message to a person read
   swk messages [session]         the fleet's message traffic
+  swk messages promote|cancel <id>
+                                 send a queued message now, or cancel it
   swk usage                      token use by host, model and day
   swk ui-link [--scope S]        print a one-time sign-in link for the web UI
 

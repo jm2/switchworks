@@ -84,6 +84,34 @@ func TestHopsKeepTheDeepest(t *testing.T) {
 	}
 }
 
+// A deep steer into a running turn does not deepen it, and a person's
+// message, steered or not, starts the count over. Without max_hops agents
+// may keep messaging each other however deep the chain.
+func TestHopsPersonAndSteer(t *testing.T) {
+	s := testServer(t, Guards{MaxHops: 8})
+	r := s.router
+	b := addSession(t, s, "devbox", "b")
+	hops := func() int { t.Helper(); return r.hopsFor(from(b)) - 1 }
+
+	r.onDelivered(b.ID, storeMsg(t, s, b, 2).ID, "queue")
+	r.onDelivered(b.ID, storeMsg(t, s, b, 7).ID, model.ModeSteer)
+	if got := hops(); got != 2 {
+		t.Fatalf("after a deep steer: hops %d", got)
+	}
+	r.onDelivered(b.ID, storeMsg(t, s, b, 6).ID, "queue")
+	r.onDelivered(b.ID, storeMsg(t, s, b, 0, func(m *model.Message) { m.From = "user:jm" }).ID, model.ModeSteer)
+	if got := hops(); got != 0 {
+		t.Fatalf("after a person's steer: hops %d", got)
+	}
+
+	off := testServer(t, Guards{})
+	c := addSession(t, off, "devbox", "c")
+	off.router.onDelivered(c.ID, storeMsg(t, off, c, 500).ID, "queue")
+	if _, err := off.router.send(context.Background(), from(c), model.MsgNotify, fleet.SendArgs{To: "user:jm", Text: "x"}); err != nil {
+		t.Fatalf("hop 501 without max_hops: %v", err)
+	}
+}
+
 // A restart rebuilds each running chain's hops from the stored messages,
 // however long ago its turn started: the current turn's (entered, not yet
 // seen), or else the last completed turn's.

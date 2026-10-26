@@ -60,10 +60,13 @@ function clip(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function toast(msg) {
-  const t = h('div', {class: 'toast', role: 'status', text: msg});
+// toast shows msg for a few seconds (ms); with action ({label, fn}), a
+// button that runs fn while it shows.
+function toast(msg, action, ms) {
+  const t = h('div', {class: 'toast', role: 'status'}, h('span', {text: msg}),
+    action ? h('button', {type: 'button', class: 'link', text: action.label, onclick: () => { t.remove(); action.fn(); }}) : null);
   document.body.append(t);
-  setTimeout(() => t.remove(), 3500);
+  setTimeout(() => t.remove(), ms || 3500);
 }
 
 async function api(method, path, body) {
@@ -214,30 +217,6 @@ function imagePicker() {
   };
 }
 
-// A small subset of Markdown, built as DOM: fenced code, inline code, bold.
-function md(text) {
-  const out = document.createDocumentFragment();
-  const parts = (text || '').split(/```/);
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const nl = part.indexOf('\n');
-      const body = nl >= 0 && /^[\w+-]*$/.test(part.slice(0, nl)) ? part.slice(nl + 1) : part;
-      out.append(h('pre', {}, h('code', {text: body.replace(/\n$/, '')})));
-      return;
-    }
-    const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
-    let last = 0, m;
-    while ((m = re.exec(part)) !== null) {
-      if (m.index > last) out.append(part.slice(last, m.index));
-      const tok = m[0];
-      out.append(tok[0] === '`' ? h('code', {text: tok.slice(1, -1)}) : h('strong', {text: tok.slice(2, -2)}));
-      last = m.index + tok.length;
-    }
-    if (last < part.length) out.append(part.slice(last));
-  });
-  return out;
-}
-
 const statusLabel = {
   idle: 'idle', active: 'working', starting: 'starting', waiting_approval: 'needs approval',
   error: 'error', stopped: 'stopped', gone: 'gone', offline: 'offline',
@@ -274,11 +253,21 @@ const S = {hosts: new Map(), sessions: new Map(), messages: new Map(), live: fal
 let fleetES = null;
 let view = null; // the current view: {render(), update(type, data), close()}
 
-function openAsks() {
+// askOpen: an ask still waiting for an answer.
+function askOpen(m) {
+  return m.kind === 'ask' && (m.state === 'pending' || m.state === 'delivered');
+}
+
+// inboxNew: what the Inbox lists as new and its badge counts, open asks and
+// notifies to people, until they are answered, dismissed or marked read
+// (read_at, kept by the coordinator for every browser).
+function inboxNew(m) {
+  return !!m.to_user && !m.read_at && (askOpen(m) || m.kind === 'notify');
+}
+
+function inboxCount() {
   let n = 0;
-  for (const m of S.messages.values()) {
-    if (m.kind === 'ask' && m.to_user && (m.state === 'pending' || m.state === 'delivered')) n++;
-  }
+  for (const m of S.messages.values()) if (inboxNew(m)) n++;
   return n;
 }
 
@@ -288,7 +277,7 @@ function setConn(live) {
 }
 
 function refreshBadges() {
-  const n = openAsks();
+  const n = inboxCount();
   const waiting = [...S.sessions.values()].filter((s) => (s.approvals || []).length).length;
   document.title = (waiting + n ? `(${waiting + n}) ` : '') + 'Switchworks';
   renderSide();
@@ -447,7 +436,7 @@ function hostPicker() {
 function spawnHref(hostID) { return '#/spawn' + (hostID ? '/' + encodeURIComponent(hostID) : ''); }
 
 function renderSide() {
-  const asks = openAsks();
+  const asks = inboxCount();
   const nav = [['nav-inbox', 'inbox', 'Inbox', asks], ['nav-traffic', 'traffic', 'Traffic', 0], ['nav-usage', 'usage', 'Usage', 0]];
   for (const [id, ic, label, n] of nav) {
     const a = document.getElementById(id);
@@ -559,9 +548,9 @@ function crumb(...parts) {
 
 // Phone-only shortcuts on the top bar (on wide screens they are in the sidebar).
 function phoneActions() {
-  const asks = openAsks();
+  const asks = inboxCount();
   return h('span', {class: 'only-narrow'},
-    iconLink('inbox', asks ? `Inbox, ${asks} open` : 'Inbox', '#/inbox', asks ? h('span', {class: 'dot-badge'}) : null),
+    iconLink('inbox', asks ? `Inbox, ${asks} new` : 'Inbox', '#/inbox', asks ? h('span', {class: 'dot-badge'}) : null),
     iconBtn('settings', 'Settings', (e) => openMenu(e.currentTarget)));
 }
 
@@ -631,9 +620,12 @@ function attentionList() {
     if (n) out.push(h('a', {href: '#/s/' + s.id}, h('span', {class: 'mark waiting_approval'}),
       h('span', {class: 'grow', text: `${s.path} is waiting for your approval`}), h('span', {class: 'faint small', text: ago(s.updated_at)})));
   }
-  const asks = openAsks();
-  if (asks) out.push(h('a', {href: '#/inbox'}, h('span', {class: 'mark waiting_approval'}),
-    h('span', {class: 'grow', text: asks === 1 ? 'An agent asked you a question' : `Agents asked you ${asks} questions`})));
+  const fresh = [...S.messages.values()].filter(inboxNew);
+  const asks = fresh.filter((m) => m.kind === 'ask').length;
+  const notes = fresh.length - asks;
+  if (fresh.length) out.push(h('a', {href: '#/inbox'}, h('span', {class: 'mark waiting_approval'}),
+    h('span', {class: 'grow', text: asks === 1 ? 'An agent asked you a question' : asks ? `Agents asked you ${asks} questions`
+      : notes === 1 ? 'A new message for you' : `${notes} new messages for you`})));
   return out.length ? h('div', {class: 'attention'}, out) : null;
 }
 
@@ -862,8 +854,15 @@ function sessionView(id, full) {
   // Messages waiting in the session's queue: people's as dimmed bubbles,
   // agents' as one row. Kept below the transcript, rebuilt from the queue.
   const queuedBox = h('div', {class: 'queued-box'});
+  // People's messages on their way into the running turn: from Send until
+  // the harness takes them in (Codex reads a steer at its next step, which
+  // can be seconds or a long tool call away).
+  const sendingBox = h('div', {class: 'queued-box'});
+  const sending = []; // {el, foot, text, id}
+  const failedSends = new Set(); // ids that failed, perhaps before their send returned
   let queueTimer = null;
   let queueAsked = 0;
+  let agentsOpen = false; // the agents' queued row, kept open across refreshes
   const placeholder = h('p', {class: 'empty'});
   const items = new Map(); // item id -> {el, ...}
   // Receipts under people's messages: "Delivered 14:02", then "Seen 14:05
@@ -925,6 +924,7 @@ function sessionView(id, full) {
     }
     const attachments = picker.attachments();
     sendBtn.disabled = true;
+    const pend = mode.value === 'ask' ? null : sendingBubble(text, null, 'Sending…');
     try {
       let res;
       if (mode.value === 'ask') {
@@ -935,7 +935,15 @@ function sessionView(id, full) {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         // A Queued bubble while it waits: in the node's queue, or held by
         // the coordinator while the host is offline.
-        if (res.state === 'pending' || res.mode === 'queue') refreshQueue();
+        if (res.state === 'pending' || res.mode === 'queue') {
+          dropSending(pend);
+          refreshQueue();
+        } else if (failedSends.has(res.message_id)) {
+          dropSending(pend); // it failed before its send returned
+        } else if (pend.el.isConnected) {
+          pend.id = res.message_id;
+          pend.foot.textContent = 'Steered: the agent reads it at its next step';
+        }
       }
       picker.clear();
       input.value = '';
@@ -943,9 +951,37 @@ function sessionView(id, full) {
       mode.value = chosenMode; // only the person changes it
       follow = true;
     } catch (err) {
+      dropSending(pend);
       toast(err.message);
     } finally {
       sendBtn.disabled = false;
+    }
+  }
+
+  function sendingBubble(text, id, foot) {
+    const f = h('span', {text: foot});
+    const p = {el: h('div', {class: 'queued'}, h('div', {class: 'bubble', text}), h('div', {class: 'queued-foot'}, f)), foot: f, text, id};
+    sending.push(p);
+    sendingBox.append(p.el);
+    scroll();
+    return p;
+  }
+  function dropSending(p) {
+    if (!p) return;
+    p.el.remove();
+    const i = sending.indexOf(p);
+    if (i >= 0) sending.splice(i, 1);
+  }
+  // takenIn drops the bubbles of messages that are now in the transcript.
+  // takenIn drops, one for one and oldest first, the bubbles of the
+  // messages an input carries (a steer can carry several).
+  function takenIn(text) {
+    let rest = text;
+    for (const p of [...sending]) {
+      const i = rest.indexOf(p.text);
+      if (i < 0) continue;
+      rest = rest.slice(0, i) + rest.slice(i + p.text.length);
+      dropSending(p);
     }
   }
 
@@ -990,11 +1026,23 @@ function sessionView(id, full) {
           clock(m.expires_at) ? h('span', {title: 'Not delivered after this; Send now still sends it', text: `expires ${clock(m.expires_at)}`}) : null,
           h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
           h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)})))),
-      agents.length ? h('div', {class: 'queued-agents'}, icon('list'),
-        h('span', {text: `${agents.length} queued from agents`}),
-        h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
-          if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
-        }})) : null,
+      // Agents' messages fold into one row; opened, each can be sent now
+      // or cancelled on its own.
+      agents.length ? h('details', {class: 'queued-agents-box', open: agentsOpen, ontoggle: (e) => { agentsOpen = e.currentTarget.open; }},
+        h('summary', {class: 'queued-agents'}, icon('list'),
+          h('span', {text: `${agents.length} queued from agents`}),
+          h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
+            e.preventDefault(); // not a toggle of the row
+            if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
+          }})),
+        agents.map((m) => h('div', {class: 'queued-agent' + (m.held ? ' held' : ''), 'data-id': m.id},
+          h('div', {class: 'who'}, h('span', {text: m.from}), m.kind ? h('span', {class: 'kind ' + m.kind, text: m.kind}) : null),
+          h('div', {class: 'text', text: clip(m.text || 'A message', 280)}),
+          h('div', {class: 'queued-foot'},
+            h('span', {text: m.held ? `Waiting for ${s.host}` : m.position ? `${m.position} ahead` : 'Next'}),
+            clock(m.expires_at) ? h('span', {text: `expires ${clock(m.expires_at)}`}) : null,
+            m.held ? null : h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
+            h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)}))))) : null,
       // A node before 0.1.5 can't list its queue: say so rather than show
       // nothing for a message sent for the next turn.
       tooOld ? h('div', {class: 'queued-agents', title: 'Update swk on that host to see, send now or cancel queued messages'},
@@ -1198,7 +1246,13 @@ function sessionView(id, full) {
         queueSoon(); // its queued bubble, if any, goes
         // A spawn's first prompt (user:spawn) is no routed message: it has
         // no record to follow.
-        if ((p.from || '').startsWith('user:') && p.from !== 'user:spawn') placeReceipt(p, ev.ts);
+        if ((p.from || '').startsWith('user:') && p.from !== 'user:spawn') {
+          // A steer the harness has not taken in yet (also after a reload).
+          if (p.mode === 'steer' && p.text && !turnInputs.some((x) => x.text.includes(p.text)) && !sending.some((x) => x.id === p.message_id || (!x.id && x.text === p.text))) {
+            sendingBubble(p.text, p.message_id, 'Steered: the agent reads it at its next step');
+          }
+          placeReceipt(p, ev.ts);
+        }
         // Images arrive with the message that starts (or steers) a turn;
         // the event carries their metadata, the bytes come from the store.
         if ((p.attachments || []).length) {
@@ -1206,11 +1260,13 @@ function sessionView(id, full) {
         }
         break;
       case 'message.failed':
+        failedSends.add(p.message_id);
+        dropSending(sending.find((x) => x.id === p.message_id));
         add(h('div', {class: 'sys bad', text: `A message from ${p.from} failed: ${p.error}`}));
         queueSoon();
         break;
       case 'message.cancelled':
-        add(h('div', {class: 'sys', text: `A queued message from ${p.from} was cancelled`}));
+        add(h('div', {class: 'sys', text: p.superseded_by ? `A queued message from ${p.from} was replaced by a newer one` : `A queued message from ${p.from} was cancelled`}));
         queueSoon();
         break;
       case 'message.expired':
@@ -1265,7 +1321,7 @@ function sessionView(id, full) {
           const r = parseRouted(part);
           return r
             ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
-              h('div', {class: 'body'}, md(r.body)))
+              h('div', {class: 'body prose'}, md(r.body)))
             : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text: part}));
         });
         const el = parts.length === 1 ? parts[0] : h('div', {class: 'batch'}, parts);
@@ -1280,6 +1336,7 @@ function sessionView(id, full) {
           wrap.append(r.el);
         }
         turnInputs.push({wrap, text, receipt: r});
+        takenIn(text);
         break;
       }
       case 'agentMessage': {
@@ -1382,7 +1439,7 @@ function sessionView(id, full) {
   }
 
   function render() {
-    fill(main, info, log, queuedBox, dock);
+    fill(main, info, log, sendingBox, queuedBox, dock);
     renderHead();
     if (S.ready && !es) { connect(); queueSoon(); }
   }
@@ -1414,52 +1471,112 @@ function pageTop(title) {
 function inboxView() {
   const main = document.getElementById('main');
   const drafts = new Map(); // ask id -> text being typed, kept across re-renders
+  let focused = null; // the ask whose answer box had the focus
+
+  // act runs an Inbox action (dismiss, undismiss, read) on each message,
+  // and says what failed; it returns those that worked.
+  async function act(list, action, btn) {
+    if (btn) btn.disabled = true;
+    const done = [];
+    let why = '';
+    for (const m of list) {
+      try {
+        S.messages.set(m.id, await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/${action}`, {from: ME}));
+        done.push(m);
+      } catch (err) {
+        why = err.message;
+      }
+    }
+    if (done.length < list.length) toast(list.length === 1 ? why : `${list.length - done.length} of ${list.length} failed: ${why}`);
+    if (done.length) changed('all');
+    if (btn) btn.disabled = false;
+    return done;
+  }
+
+  // dismiss ends asks without an answer, with Undo while the toast shows
+  // (the coordinator holds back the notice to their askers a little
+  // longer, and refuses the undo once an asker has been told).
+  async function dismiss(list, btn) {
+    const done = await act(list, 'dismiss', btn);
+    if (!done.length) return;
+    toast(done.length === 1 ? 'Dismissed' : `Dismissed ${done.length} questions`, {label: 'Undo', fn: async () => {
+      if ((await act(done, 'undismiss')).length) toast('Dismissal undone');
+    }}, 6000);
+  }
+
+  function askItem(m) {
+    const box = h('textarea', {rows: 2, placeholder: 'Your answer', 'data-ask': m.id, 'aria-label': 'Answer'});
+    box.value = drafts.get(m.id) || '';
+    box.addEventListener('input', () => drafts.set(m.id, box.value));
+    const btn = h('button', {type: 'submit', class: 'primary', text: 'Send answer'});
+    const form = h('form', {class: 'reply-box', onsubmit: async (e) => {
+      e.preventDefault();
+      if (!box.value.trim()) return;
+      btn.disabled = true;
+      try {
+        await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/reply`, {text: box.value.trim(), from: ME});
+        drafts.delete(m.id);
+        toast('Answer sent to ' + m.from);
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false;
+      }
+    }}, box, h('div', {class: 'row'}, h('span', {class: 'grow'}),
+      m.read_at ? null : h('button', {type: 'button', class: 'link', text: 'Mark read', onclick: (e) => act([m], 'read', e.currentTarget)}),
+      h('button', {type: 'button', text: 'Dismiss', title: 'Clear it without an answer; the asker is told none will come',
+        onclick: (e) => dismiss([m], e.currentTarget)}), btn));
+    const el = h('div', {class: 'item'},
+      h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
+        h('span', {class: 'grow'}), m.read_at ? h('span', {class: 'faint', text: 'read'}) : null,
+        h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
+      h('div', {class: 'text prose'}, md(m.text)), thumbs(m.attachments), form);
+    if (focused === m.id) setTimeout(() => box.focus(), 0);
+    return el;
+  }
+
+  // noteItem is a new message to a person, with Mark read.
+  function noteItem(m) {
+    const el = messageItem(m);
+    el.append(h('div', {class: 'row foot'}, h('span', {class: 'grow'}),
+      h('button', {type: 'button', class: 'link', text: 'Mark read', onclick: (e) => { e.stopPropagation(); act([m], 'read', e.currentTarget); }})));
+    return el;
+  }
+
+  // section is a heading with its bulk actions on the right.
+  function section(title, ...actions) {
+    return h('div', {class: 'row section'}, h('h2', {class: 'grow', text: title}), actions);
+  }
+
   function render() {
     pageTop('Inbox');
     const all = [...S.messages.values()].filter((m) => m.to_user).sort((a, b) => b.created_at.localeCompare(a.created_at));
-    const open = all.filter((m) => m.kind === 'ask' && (m.state === 'pending' || m.state === 'delivered'));
-    const rest = all.filter((m) => !open.includes(m));
-    const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ask;
+    const asks = all.filter((m) => inboxNew(m) && m.kind === 'ask');
+    const notes = all.filter((m) => inboxNew(m) && m.kind !== 'ask');
+    const rest = all.filter((m) => !inboxNew(m));
+    focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ask;
+    const bulk = (text, fn) => h('button', {type: 'button', class: 'link', text, onclick: (e) => fn(e.currentTarget)});
     fill(main,
       h('h1', {text: 'Inbox'}),
-      h('h2', {text: 'Questions from agents'}),
-      open.length ? h('div', {class: 'list'}, open.map((m) => {
-        const box = h('textarea', {rows: 2, placeholder: 'Your answer', 'data-ask': m.id, 'aria-label': 'Answer'});
-        box.value = drafts.get(m.id) || '';
-        box.addEventListener('input', () => drafts.set(m.id, box.value));
-        const btn = h('button', {type: 'submit', class: 'primary', text: 'Send answer'});
-        const form = h('form', {class: 'reply-box', onsubmit: async (e) => {
-          e.preventDefault();
-          if (!box.value.trim()) return;
-          btn.disabled = true;
-          try {
-            await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/reply`, {text: box.value.trim(), from: ME});
-            drafts.delete(m.id);
-            toast('Answer sent to ' + m.from);
-          } catch (err) {
-            toast(err.message);
-            btn.disabled = false;
-          }
-        }}, box, h('div', {class: 'row'}, h('span', {class: 'grow'}), btn));
-        const el = h('div', {class: 'item'},
-          h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
-            h('span', {class: 'grow'}), h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
-          h('div', {class: 'text', text: m.text}), thumbs(m.attachments), form);
-        if (focused === m.id) setTimeout(() => box.focus(), 0);
-        return el;
-      })) : h('p', {class: 'empty', text: 'No questions waiting for you.'}),
+      section('Questions from agents', asks.length > 1 ? [bulk('Mark all read', (b) => act(asks, 'read', b)),
+        bulk('Dismiss all', (b) => dismiss(asks, b))] : null),
+      asks.length ? h('div', {class: 'list'}, asks.map(askItem)) : h('p', {class: 'empty', text: 'No questions waiting for you.'}),
+      notes.length ? [section('New messages', bulk(notes.length > 1 ? 'Mark all read' : 'Mark read', (b) => act(notes, 'read', b))),
+        h('div', {class: 'list'}, notes.map(noteItem))] : null,
       h('h2', {text: 'Earlier messages to people'}),
-      rest.length ? h('div', {class: 'list'}, rest.slice(0, 50).map(messageItem)) : h('p', {class: 'empty', text: 'None yet.'}));
+      // A read ask is still open: it can be answered or dismissed here.
+      rest.length ? h('div', {class: 'list'}, rest.slice(0, 50).map((m) => askOpen(m) ? askItem(m) : messageItem(m)))
+        : h('p', {class: 'empty', text: 'None yet.'}));
   }
   return {tab: 'inbox', render, update: (t) => { if (t === 'message' || t === 'all') render(); }};
 }
 
 // receiptTitle says when a message went into its target's input and when
-// the turn that carried it finished.
+// the turn that carried it finished, or when it expired undelivered.
 function receiptTitle(m) {
   const parts = [];
   if (clock(m.delivered_at)) parts.push(`Delivered ${clock(m.delivered_at)}`);
   if (clock(m.seen_at)) parts.push(`seen ${clock(m.seen_at)}`);
+  if (m.state === 'expired' && clock(m.expires_at)) parts.push(`Expired ${clock(m.expires_at)}`);
   return parts.join(', ') || null;
 }
 
@@ -1469,18 +1586,30 @@ function msgState(m) {
   return m.state === 'delivered' && m.to_session && !clock(m.delivered_at) ? 'queued' : m.state;
 }
 
+// replacedBy says which newer message replaced a superseded one.
+function replacedBy(m) {
+  if (!m.superseded_by) return null;
+  const by = S.messages.get(m.superseded_by);
+  const text = by ? `Replaced by a newer message (${clock(by.created_at)}): ${clip(by.text, 160)}` : `Replaced by message ${m.superseded_by}`;
+  return h('div', {class: 'small faint', text});
+}
+
 function messageItem(m) {
   const el = h('div', {class: 'item clip', onclick: () => el.classList.toggle('clip')},
     h('div', {class: 'head'},
       h('span', {class: 'kind-tag ' + m.kind, text: m.kind}),
+      m.supersedes ? h('span', {class: 'faint mono', title: 'Supersedes key: a newer message with it replaces this one while it waits', text: m.supersedes}) : null,
       sessionLink(m.from, m.from_session), h('span', {class: 'faint', text: 'to'}),
       sessionLink(m.to_path || m.to, m.to_session),
       h('span', {class: 'grow'}),
       h('span', {class: 'state ' + msgState(m), title: receiptTitle(m), text: msgState(m) + (m.inline ? ', inline' : '')}),
       h('span', {class: 'faint', text: ago(m.created_at)})),
-    h('div', {class: 'text', text: m.text}),
+    // An agent's text as Markdown; a person's as typed.
+    (m.from || '').startsWith('user:') ? h('div', {class: 'text', text: m.text}) : h('div', {class: 'text prose'}, md(m.text)),
     thumbs(m.attachments),
-    m.error ? h('div', {class: 'small error', text: m.error}) : null);
+    replacedBy(m),
+    // A dismissal is no error: who dismissed it, quietly.
+    m.error ? h('div', {class: 'small ' + (m.state === 'dismissed' ? 'faint' : 'error'), text: m.error}) : null);
   return el;
 }
 
@@ -1494,7 +1623,7 @@ function trafficView() {
   function refill() {
     const q = filter.value.toLowerCase();
     const msgs = [...S.messages.values()].sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .filter((m) => !q || [m.kind, m.from, m.to, m.to_path, m.text, m.state].join(' ').toLowerCase().includes(q));
+      .filter((m) => !q || [m.kind, m.from, m.to, m.to_path, m.text, m.state, m.supersedes].join(' ').toLowerCase().includes(q));
     fill(list, ...(msgs.length ? msgs.slice(0, 200).map(messageItem) : [h('p', {class: 'empty', text: q ? 'No messages match.' : 'No messages between agents yet.'})]));
   }
   function render() {
