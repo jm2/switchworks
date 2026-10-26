@@ -272,3 +272,56 @@ func TestQueuedMessageTokenReuse(t *testing.T) {
 		t.Fatalf("an old-style record sent after the token was made: %d", code)
 	}
 }
+
+// #63: asks, replies, completion notices and Switchworks's notices go in
+// mode auto like sends, so they reach a running turn; a session that does
+// not accept steering still gets them queued.
+func TestEveryKindSteers(t *testing.T) {
+	ctx := context.Background()
+	for _, accept := range []bool{true, false} {
+		s := testServer(t, Guards{})
+		r := s.router
+		lead := addSession(t, s, "devbox", "lead", func(x *model.Session) { x.AcceptSteer = &accept })
+		peer := addSession(t, s, "devbox", "peer", func(x *model.Session) { x.AcceptSteer = &accept })
+		child := addSession(t, s, "devbox", "child", func(x *model.Session) { x.Parent = lead.ID })
+		want := model.ModeAuto
+		if !accept {
+			want = model.ModeQueue
+		}
+		mode := func(sess model.Session, kind string) string {
+			t.Helper()
+			for _, m := range s.store.Messages(store.MessageFilter{Session: sess.ID}) {
+				if m.Kind == kind && m.ToSession == sess.ID {
+					return m.Mode
+				}
+			}
+			t.Fatalf("no %s to %s", kind, sess.Path)
+			return ""
+		}
+
+		zero := 0
+		res := r.ask(ctx, from(lead), fleet.AskArgs{To: peer.ID, Text: "status?", WaitSeconds: &zero})
+		if res.Status == fleet.AskFailed {
+			t.Fatal(res.Error)
+		}
+		if _, err := r.reply(ctx, from(peer), fleet.ReplyArgs{MessageID: res.MessageID, Text: "fine"}); err != nil {
+			t.Fatal(err)
+		}
+		r.onSettled(child, model.Settled{TurnStatus: "completed"})
+		r.notifySender(model.Message{ID: ulid.New(), Kind: model.MsgNotify, FromSession: peer.ID, To: "x"}, "your message expired")
+
+		for _, c := range []struct {
+			to   model.Session
+			kind string
+		}{
+			{peer, model.MsgAsk},
+			{lead, model.MsgReply},
+			{lead, model.MsgDone},
+			{peer, model.MsgSystem},
+		} {
+			if got := mode(c.to, c.kind); got != want {
+				t.Errorf("accept_steer %v: %s to %s has mode %q, want %q", accept, c.kind, c.to.Path, got, want)
+			}
+		}
+	}
+}

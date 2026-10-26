@@ -428,8 +428,9 @@ it runs this version.
   | `steer` | into that turn, even if the session does not accept steering (for people, and an agent's own children) | starts a turn |
   | `interrupt` | goes to the head of the queue and cancels the turn | starts a turn |
 
-  Asks, replies, completion notices and Switchworks's notices are queued.
-  The returned mode says what happened (`steer` or `queue`). Harnesses that
+  Asks, replies, completion notices and Switchworks's notices go in mode
+  `auto` too, so they reach a running turn rather than wait it out. The
+  returned mode says what happened (`steer` or `queue`). Harnesses that
   cannot steer (agy, ACP agents) queue instead, and a session spawned with
   `accept_steer: false` (`swk spawn --no-steer`) gets `auto` messages, and
   other agents' steers, queued: for a long build that must not be
@@ -731,6 +732,8 @@ swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
 swk reply <ask-id> "yes, go ahead"
 swk messages [session]                           # traffic log
+swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
+swk messages cancel <id>                         # take it out of the queue
 swk usage                                        # tokens by host, model, day
 ```
 

@@ -370,6 +370,18 @@ func (c *Client) Reply(ctx context.Context, askID, text, from string) (fleet.Rep
 	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(askID)+"/reply", map[string]string{"text": text, "from": from}, &out)
 }
 
+// Promote delivers a queued message now: steered into the running turn,
+// or with mode interrupt, cancelling it.
+func (c *Client) Promote(ctx context.Context, id, mode string) (SendResult, error) {
+	var out SendResult
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/promote", map[string]string{"mode": mode}, &out)
+}
+
+// CancelMessage takes a queued message out of its target's queue.
+func (c *Client) CancelMessage(ctx context.Context, id string) error {
+	return c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
 // UsageReport aggregates token use.
 type UsageReport struct {
 	Today          string                 `json:"today"`

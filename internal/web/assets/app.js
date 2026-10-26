@@ -862,8 +862,15 @@ function sessionView(id, full) {
   // Messages waiting in the session's queue: people's as dimmed bubbles,
   // agents' as one row. Kept below the transcript, rebuilt from the queue.
   const queuedBox = h('div', {class: 'queued-box'});
+  // People's messages on their way into the running turn: from Send until
+  // the harness takes them in (Codex reads a steer at its next step, which
+  // can be seconds or a long tool call away).
+  const sendingBox = h('div', {class: 'queued-box'});
+  const sending = []; // {el, foot, text, id}
+  const failedSends = new Set(); // ids that failed, perhaps before their send returned
   let queueTimer = null;
   let queueAsked = 0;
+  let agentsOpen = false; // the agents' queued row, kept open across refreshes
   const placeholder = h('p', {class: 'empty'});
   const items = new Map(); // item id -> {el, ...}
   // Receipts under people's messages: "Delivered 14:02", then "Seen 14:05
@@ -925,6 +932,7 @@ function sessionView(id, full) {
     }
     const attachments = picker.attachments();
     sendBtn.disabled = true;
+    const pend = mode.value === 'ask' ? null : sendingBubble(text, null, 'Sending…');
     try {
       let res;
       if (mode.value === 'ask') {
@@ -935,7 +943,15 @@ function sessionView(id, full) {
         res = await api('POST', `/v1/sessions/${encodeURIComponent(id)}/messages`, {text, mode: mode.value, from: ME, attachments});
         // A Queued bubble while it waits: in the node's queue, or held by
         // the coordinator while the host is offline.
-        if (res.state === 'pending' || res.mode === 'queue') refreshQueue();
+        if (res.state === 'pending' || res.mode === 'queue') {
+          dropSending(pend);
+          refreshQueue();
+        } else if (failedSends.has(res.message_id)) {
+          dropSending(pend); // it failed before its send returned
+        } else if (pend.el.isConnected) {
+          pend.id = res.message_id;
+          pend.foot.textContent = 'Steered: the agent reads it at its next step';
+        }
       }
       picker.clear();
       input.value = '';
@@ -943,9 +959,37 @@ function sessionView(id, full) {
       mode.value = chosenMode; // only the person changes it
       follow = true;
     } catch (err) {
+      dropSending(pend);
       toast(err.message);
     } finally {
       sendBtn.disabled = false;
+    }
+  }
+
+  function sendingBubble(text, id, foot) {
+    const f = h('span', {text: foot});
+    const p = {el: h('div', {class: 'queued'}, h('div', {class: 'bubble', text}), h('div', {class: 'queued-foot'}, f)), foot: f, text, id};
+    sending.push(p);
+    sendingBox.append(p.el);
+    scroll();
+    return p;
+  }
+  function dropSending(p) {
+    if (!p) return;
+    p.el.remove();
+    const i = sending.indexOf(p);
+    if (i >= 0) sending.splice(i, 1);
+  }
+  // takenIn drops the bubbles of messages that are now in the transcript.
+  // takenIn drops, one for one and oldest first, the bubbles of the
+  // messages an input carries (a steer can carry several).
+  function takenIn(text) {
+    let rest = text;
+    for (const p of [...sending]) {
+      const i = rest.indexOf(p.text);
+      if (i < 0) continue;
+      rest = rest.slice(0, i) + rest.slice(i + p.text.length);
+      dropSending(p);
     }
   }
 
@@ -990,11 +1034,23 @@ function sessionView(id, full) {
           clock(m.expires_at) ? h('span', {title: 'Not delivered after this; Send now still sends it', text: `expires ${clock(m.expires_at)}`}) : null,
           h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
           h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)})))),
-      agents.length ? h('div', {class: 'queued-agents'}, icon('list'),
-        h('span', {text: `${agents.length} queued from agents`}),
-        h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
-          if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
-        }})) : null,
+      // Agents' messages fold into one row; opened, each can be sent now
+      // or cancelled on its own.
+      agents.length ? h('details', {class: 'queued-agents-box', open: agentsOpen, ontoggle: (e) => { agentsOpen = e.currentTarget.open; }},
+        h('summary', {class: 'queued-agents'}, icon('list'),
+          h('span', {text: `${agents.length} queued from agents`}),
+          h('button', {type: 'button', class: 'link', text: 'Clear', onclick: (e) => {
+            e.preventDefault(); // not a toggle of the row
+            if (confirm(`Cancel the ${agents.length} queued message${agents.length === 1 ? '' : 's'} from agents? They will not be delivered.`)) cancelQueued(agents, e.currentTarget);
+          }})),
+        agents.map((m) => h('div', {class: 'queued-agent' + (m.held ? ' held' : ''), 'data-id': m.id},
+          h('div', {class: 'who'}, h('span', {text: m.from}), m.kind ? h('span', {class: 'kind ' + m.kind, text: m.kind}) : null),
+          h('div', {class: 'text', text: clip(m.text || 'A message', 280)}),
+          h('div', {class: 'queued-foot'},
+            h('span', {text: m.held ? `Waiting for ${s.host}` : m.position ? `${m.position} ahead` : 'Next'}),
+            clock(m.expires_at) ? h('span', {text: `expires ${clock(m.expires_at)}`}) : null,
+            m.held ? null : h('button', {type: 'button', class: 'link', text: 'Send now', onclick: (e) => promote(m, e.currentTarget)}),
+            h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)}))))) : null,
       // A node before 0.1.5 can't list its queue: say so rather than show
       // nothing for a message sent for the next turn.
       tooOld ? h('div', {class: 'queued-agents', title: 'Update swk on that host to see, send now or cancel queued messages'},
@@ -1198,7 +1254,13 @@ function sessionView(id, full) {
         queueSoon(); // its queued bubble, if any, goes
         // A spawn's first prompt (user:spawn) is no routed message: it has
         // no record to follow.
-        if ((p.from || '').startsWith('user:') && p.from !== 'user:spawn') placeReceipt(p, ev.ts);
+        if ((p.from || '').startsWith('user:') && p.from !== 'user:spawn') {
+          // A steer the harness has not taken in yet (also after a reload).
+          if (p.mode === 'steer' && p.text && !turnInputs.some((x) => x.text.includes(p.text)) && !sending.some((x) => x.id === p.message_id || (!x.id && x.text === p.text))) {
+            sendingBubble(p.text, p.message_id, 'Steered: the agent reads it at its next step');
+          }
+          placeReceipt(p, ev.ts);
+        }
         // Images arrive with the message that starts (or steers) a turn;
         // the event carries their metadata, the bytes come from the store.
         if ((p.attachments || []).length) {
@@ -1206,6 +1268,8 @@ function sessionView(id, full) {
         }
         break;
       case 'message.failed':
+        failedSends.add(p.message_id);
+        dropSending(sending.find((x) => x.id === p.message_id));
         add(h('div', {class: 'sys bad', text: `A message from ${p.from} failed: ${p.error}`}));
         queueSoon();
         break;
@@ -1280,6 +1344,7 @@ function sessionView(id, full) {
           wrap.append(r.el);
         }
         turnInputs.push({wrap, text, receipt: r});
+        takenIn(text);
         break;
       }
       case 'agentMessage': {
@@ -1382,7 +1447,7 @@ function sessionView(id, full) {
   }
 
   function render() {
-    fill(main, info, log, queuedBox, dock);
+    fill(main, info, log, sendingBox, queuedBox, dock);
     renderHead();
     if (S.ready && !es) { connect(); queueSoon(); }
   }

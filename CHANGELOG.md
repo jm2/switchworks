@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Queued agents' messages one by one** — The web UI's "queued from agents" row opens into each
+  message, with its sender, kind, text and expiry, and Send now and Cancel; Clear still asks first.
+  `swk messages promote <id>` and `swk messages cancel <id>` do the same from the CLI.
+- **Steered messages show at once** — A message sent Now (steer) shows as a pending bubble from Send
+  until the agent takes it in at its next step, instead of appearing only seconds later.
+
 ### Changed
 
 - **No hop limit by default** — Agents can keep messaging each other, like Claude Code sessions,
@@ -23,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stopped node shown as running** — `swk service status` and the tray no longer report a node or
   coordinator as running for up to a minute after it was killed (as `swk service stop` does on
   Windows) or crashed: a status file whose process has exited counts as stopped.
+- **Asks, replies and notices steer** — Asks, replies, completion notices and Switchworks's notices
+  go in mode auto like other messages, so they reach a running turn instead of waiting for it to
+  end. Sessions spawned with `--no-steer`, and harnesses that cannot steer, still get them queued.
 
 ## [0.1.5] — 2026-10-22
 
