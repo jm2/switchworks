@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Markdown in the web UI** — Agents' messages render as full Markdown: tables, task lists,
+  strikethrough, footnotes, autolinks, `:emoji:` shortcodes, highlighted code with a Copy button,
+  KaTeX math and Mermaid diagrams, sanitized and under the page's CSP. The scripts are pinned,
+  integrity-checked and embedded (`internal/web/vendor.sh`); Mermaid loads only when needed.
+
 ### Fixed
 
 - **Hop limit with fast agents** — A node sends a session's events ahead of that session's fleet

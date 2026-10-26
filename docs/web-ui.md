@@ -3,7 +3,8 @@
 The coordinator serves a web UI on its API port: `https://<coordinator>:7480/`.
 It is built for a phone first and works on a desktop browser too. It is plain
 HTML, CSS and JavaScript embedded in the `swk` binary: no build step, no
-framework, and nothing loaded from anywhere else.
+framework, and nothing loaded from anywhere else. A few pinned, vendored
+scripts render Markdown (see below).
 
 ![A session waiting for approval, on a desktop](img/web-ui.png)
 
@@ -65,6 +66,36 @@ system; the choice is kept per browser.
 - **Usage**: today against the daily budget, the last 14 days, and totals
   by host, model and session.
 - **New session**: every spawn option.
+
+## Markdown
+
+Agents' replies, messages routed from other sessions, and agents' messages
+in the Inbox and Traffic are rendered as Markdown; what people type is shown
+as typed. Supported:
+
+- GitHub-style Markdown: headings, emphasis, ~~strikethrough~~, lists,
+  task lists (`- [x]`), tables (with column alignment; wide ones scroll
+  sideways), blockquotes, rules, links and bare URLs (opened in a new tab),
+  and footnotes (`[^1]`).
+- Emoji shortcodes such as `:tada:`.
+- Code blocks highlighted by language (or guessed), each with a Copy
+  button.
+- Math with KaTeX: `$…$` or `\(…\)` inline, `$$…$$` or `\[…\]` as a
+  block. An inline `$` needs no space just inside it and no digit after
+  the closing one, so "$5 and $10" and `$HOME` stay text.
+- Mermaid diagrams in ```` ```mermaid ```` blocks, drawn once the message
+  stops changing and shown as an image (click for full size); a diagram
+  that fails to draw shows its source and the error.
+
+Raw HTML stays text, Markdown images show as links (the page loads images
+only from the coordinator), and everything is sanitized, all under the
+page's Content Security Policy. The scripts (markdown-it with its emoji and
+footnote plugins, DOMPurify, highlight.js, KaTeX and Mermaid) are pinned and
+fetched by `internal/web/vendor.sh`, which checks each against the npm
+registry's integrity hash; versions and licenses are in
+`internal/web/assets/vendor`. The coordinator serves them under a URL that
+names their content, cached for good and gzipped; Mermaid (5.5 MB) loads
+only when a message has a diagram.
 
 The UI embeds its fonts (Onest and JetBrains Mono, both SIL OFL 1.1; see
 `internal/web/assets/fonts`) and loads nothing from the internet.
