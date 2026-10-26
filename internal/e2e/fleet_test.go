@@ -222,12 +222,12 @@ func TestFleetMessaging(t *testing.T) {
 }
 
 // TestFleetHopLimit checks that two agents that keep answering each other
-// are stopped by the hop limit.
+// are stopped by the hop limit, when one is set (there is none by default).
 func TestFleetHopLimit(t *testing.T) {
 	ctx := context.Background()
 	coordDir := t.TempDir()
 	work := t.TempDir()
-	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0")
+	co := startCoordinator(t, coordDir, "127.0.0.1:0", "127.0.0.1:0", func(c *coord.Config) { c.Guards.MaxHops = 8 })
 	defer co.stop()
 	c := apiClient(t, coordDir)
 	_, _, nd := enrollHost(t, c, "devbox")

@@ -578,7 +578,7 @@ Set in the coordinator's `coordinator.json` under `"guards"`:
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `max_hops` | 8 | longest chain of message-triggered turns; a send that would exceed it is refused |
+| `max_hops` | 0 (no limit) | longest chain of message-triggered turns; a send that would exceed it is refused. Off by default, so agents can keep messaging each other until they are stopped |
 | `send_per_minute` | 30 | per sender → target pair (all `user:` recipients count as one target) |
 | `out_per_minute` | 60 | per agent, all its messages together |
 | `ask_per_minute` | 10 | per sender → target pair |
@@ -602,15 +602,18 @@ the attachment store, under its own limits); past that the oldest
 delivered (answered or not), failed or expired ones are dropped first, and
 stay dropped across a restart.
 
-People are not rate limited. Hops count from the messages that started the
-sender's current work: a person's message is hop 0, the agent's message to
-another agent is hop 1, and so on. A turn that takes in several messages
-(a batch from the queue, or steers into the running turn) counts from the
-deepest of them, so a shallow message cannot shorten a long chain; the
-count starts over only with the next turn after the session goes idle.
-After a coordinator restart it is rebuilt from the stored messages. A
-spawn counts as a hop too, so a loop of spawns and completion notices ends
-at `max_hops`.
+People are not rate limited. With `max_hops` set, hops count from the
+messages that started the sender's current work: a person's message is hop
+0, the agent's message to another agent is hop 1, and so on. A turn that
+starts with several messages (a batch from the queue) counts from the
+deepest of them, so a shallow message cannot shorten a long chain. A steer
+into a running turn does not change its count (it did not start the turn),
+and a person's message, steered or not, starts it over at 0. After a
+coordinator restart it is rebuilt from the stored messages. A spawn counts
+as a hop too, so a loop of spawns and completion notices ends at
+`max_hops`. Without `max_hops` (the default), agents' messages are limited
+only by the per-minute rate limits and `max_daily_tokens`, like Claude
+Code's sessions messaging each other.
 
 A session an agent spawns always inherits the agent's approval policy and
 sandbox setting, but only Codex and agy enforce a sandbox: ACP agents such

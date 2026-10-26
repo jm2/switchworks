@@ -35,7 +35,7 @@ by the tools you already use, under your own sign-ins.
 | Approval prompts relayed to the web UI and CLI | ✅ Codex, Goose and other ACP agents |
 | Steer a running turn | ✅ Codex; other harnesses queue the message for the next turn |
 | Change a running session's approval policy (`swk policy`, the composer's Approvals menu) | ✅ Codex (from its next turn), Goose and ACP agents with session modes; not agy |
-| Agent-to-agent messaging across machines (`fleet_ask`, `fleet_send`, `fleet_spawn`, ...) | ✅ Hop limits, rate limits, spawn depth and a daily token budget |
+| Agent-to-agent messaging across machines (`fleet_ask`, `fleet_send`, `fleet_spawn`, ...) | ✅ Rate limits, spawn depth, a daily token budget and an optional hop limit |
 | Questions from agents to you, with an inbox | ✅ |
 | Images in messages and prompts (screenshots between agents, from the CLI and web UI) | ✅ Codex and Goose (ACP agents that advertise image prompts); agy is text only |
 | Web UI for desktop and phone | ✅ Dark by default, with Light and Match-system themes |

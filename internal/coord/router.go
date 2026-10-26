@@ -23,7 +23,7 @@ import (
 
 // Guards bound what agents can do to each other and to the budget.
 type Guards struct {
-	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 8)
+	MaxHops           int   `json:"max_hops,omitempty"`            // longest chain of message-triggered turns (default 0: no limit)
 	AskPerMinute      int   `json:"ask_per_minute,omitempty"`      // per sender -> target pair (default 10)
 	SendPerMinute     int   `json:"send_per_minute,omitempty"`     // per sender -> target pair (default 30)
 	OutPerMinute      int   `json:"out_per_minute,omitempty"`      // per sender, all messages (default 60)
@@ -51,10 +51,12 @@ type Guards struct {
 	AllowUnapprovedSpawn bool `json:"allow_unapproved_spawn,omitempty"`
 }
 
+// overHops reports whether a message at this hop count would pass
+// max_hops. With none set, agents may keep messaging each other until they
+// are stopped, held back only by the rate limits and the token budget.
+func (g Guards) overHops(hops int) bool { return g.MaxHops > 0 && hops > g.MaxHops }
+
 func (g Guards) withDefaults() Guards {
-	if g.MaxHops <= 0 {
-		g.MaxHops = 8
-	}
 	if g.AskPerMinute <= 0 {
 		g.AskPerMinute = 10
 	}
@@ -656,7 +658,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 		}
 	}
 	hops := r.hopsFor(from)
-	if hops > r.guards.MaxHops {
+	if r.guards.overHops(hops) {
 		return nil, ErrHopLimit
 	}
 	// The default is also the longest a message may wait: one that never
@@ -1550,10 +1552,10 @@ func clipInbox(text string) string {
 
 // onDelivered records the hops of a message that went into a session's
 // input (message.delivered, with the mode the node reports). A turn takes
-// the deepest hop count of everything it took in: the node reports each
-// message of a batch, and each steer into the running turn, one by one,
-// and none of them may lower the count. Only a message that starts a turn
-// after the last one ended (an idle session) starts it over.
+// the deepest hop count of the messages that started it: the node reports
+// each message of a batch one by one, and none of them may lower the
+// count. A steer into the running turn leaves it as it is, and a person's
+// message, however it went in, starts it over at 0.
 func (r *router) onDelivered(sessionID, messageID, mode string) {
 	m, ok := r.s.store.Message(messageID)
 	if !ok || m.ToSession != sessionID {
@@ -1574,10 +1576,17 @@ func (r *router) onDelivered(sessionID, messageID, mode string) {
 	defer r.mu.Unlock()
 	tr, ok := r.inbound[sessionID]
 	switch {
+	case strings.HasPrefix(m.From, "user:"):
+		// A person is in the loop: whatever the session does next is no
+		// longer an agents-only chain.
+		tr = trigger{}
 	case !ok || tr.idle && mode != model.ModeSteer:
 		tr = trigger{hops: m.Hops}
 	case contains(tr.msgs, m.ID):
 		return // reported again (a delivery retried after a busy harness)
+	case mode == model.ModeSteer:
+		// It only adds to a turn it did not start, which keeps the count
+		// of what started it.
 	default:
 		tr.hops = max(tr.hops, m.Hops)
 	}
@@ -1659,7 +1668,7 @@ func (r *router) onSettled(child model.Session, p model.Settled) {
 			return
 		}
 	}
-	if hops > r.guards.MaxHops {
+	if r.guards.overHops(hops) {
 		r.s.logf("router: not notifying %s that %s finished: hop limit", parent.Path, child.Path)
 		return
 	}
