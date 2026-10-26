@@ -217,30 +217,6 @@ function imagePicker() {
   };
 }
 
-// A small subset of Markdown, built as DOM: fenced code, inline code, bold.
-function md(text) {
-  const out = document.createDocumentFragment();
-  const parts = (text || '').split(/```/);
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const nl = part.indexOf('\n');
-      const body = nl >= 0 && /^[\w+-]*$/.test(part.slice(0, nl)) ? part.slice(nl + 1) : part;
-      out.append(h('pre', {}, h('code', {text: body.replace(/\n$/, '')})));
-      return;
-    }
-    const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
-    let last = 0, m;
-    while ((m = re.exec(part)) !== null) {
-      if (m.index > last) out.append(part.slice(last, m.index));
-      const tok = m[0];
-      out.append(tok[0] === '`' ? h('code', {text: tok.slice(1, -1)}) : h('strong', {text: tok.slice(2, -2)}));
-      last = m.index + tok.length;
-    }
-    if (last < part.length) out.append(part.slice(last));
-  });
-  return out;
-}
-
 const statusLabel = {
   idle: 'idle', active: 'working', starting: 'starting', waiting_approval: 'needs approval',
   error: 'error', stopped: 'stopped', gone: 'gone', offline: 'offline',
@@ -1345,7 +1321,7 @@ function sessionView(id, full) {
           const r = parseRouted(part);
           return r
             ? h('div', {class: 'routed'}, h('div', {class: 'who'}, icon('reply'), h('span', {text: r.from}), h('span', {class: 'kind ' + r.kind, text: r.kind})),
-              h('div', {class: 'body'}, md(r.body)))
+              h('div', {class: 'body prose'}, md(r.body)))
             : h('div', {class: 'user-msg'}, h('div', {class: 'bubble', text: part}));
         });
         const el = parts.length === 1 ? parts[0] : h('div', {class: 'batch'}, parts);
@@ -1553,7 +1529,7 @@ function inboxView() {
       h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
         h('span', {class: 'grow'}), m.read_at ? h('span', {class: 'faint', text: 'read'}) : null,
         h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
-      h('div', {class: 'text', text: m.text}), thumbs(m.attachments), form);
+      h('div', {class: 'text prose'}, md(m.text)), thumbs(m.attachments), form);
     if (focused === m.id) setTimeout(() => box.focus(), 0);
     return el;
   }
@@ -1628,7 +1604,8 @@ function messageItem(m) {
       h('span', {class: 'grow'}),
       h('span', {class: 'state ' + msgState(m), title: receiptTitle(m), text: msgState(m) + (m.inline ? ', inline' : '')}),
       h('span', {class: 'faint', text: ago(m.created_at)})),
-    h('div', {class: 'text', text: m.text}),
+    // An agent's text as Markdown; a person's as typed.
+    (m.from || '').startsWith('user:') ? h('div', {class: 'text', text: m.text}) : h('div', {class: 'text prose'}, md(m.text)),
     thumbs(m.attachments),
     replacedBy(m),
     // A dismissal is no error: who dismissed it, quietly.

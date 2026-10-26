@@ -8,7 +8,9 @@ SwitchYard is an older integration framework, so it became Switchworks
 
 **Standard library only.** The build environment could not reach the Go
 module proxy, so the module has zero third-party dependencies. That also fits
-the lean, static-binary goal. Two design choices changed because of it:
+the lean, static-binary goal. (The web UI's Markdown scripts are vendored
+browser files, fetched and checked by `internal/web/vendor.sh`, not Go
+dependencies.) Two design choices changed because of it:
 
 - **Storage: file store instead of SQLite.** `internal/store.Store` is an
   interface. `FileStore` keeps metadata in an atomically rewritten
