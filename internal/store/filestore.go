@@ -80,7 +80,8 @@ type tokenRec struct {
 }
 
 type snapshot struct {
-	// Version 1: sessions carry ProjectedSeq.
+	// Version 1: sessions carry ProjectedSeq. Version 2: messages to
+	// people carry read marks (see markReadOnUpgrade).
 	Version     int              `json:"version,omitempty"`
 	Hosts       []model.Host     `json:"hosts"`
 	Sessions    []*model.Session `json:"sessions"`
@@ -102,7 +103,10 @@ const retiredTTL = 365 * 24 * time.Hour
 // call rewriting state.json once.
 const retireBatch = 200
 
-const snapshotVersion = 1
+const snapshotVersion = 2
+
+// upgradeReader is the read_by of the marks markReadOnUpgrade sets.
+const upgradeReader = "switchworks (upgrade)"
 
 // maxEventsRead bounds the bytes one Events call reads.
 const maxEventsRead = 16 << 20
@@ -156,11 +160,15 @@ func OpenFileStore(dir string) (*FileStore, error) {
 		msgs: map[string]*model.Message{},
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
+	// The version of the store as found: -1 for none (a new store, or one
+	// with messages only, from before state.json was first written).
+	found := -1
 	if b, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
 		var snap snapshot
 		if err := json.Unmarshal(b, &snap); err != nil {
 			return nil, fmt.Errorf("state.json: %w", err)
 		}
+		found = snap.Version
 		for _, h := range snap.Hosts {
 			h.Connected = false
 			s.hosts[h.ID] = h
@@ -202,6 +210,11 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	}
 	if err := s.openMessages(); err != nil {
 		return nil, fmt.Errorf("messages: %w", err)
+	}
+	if found < 2 && (found >= 0 || len(s.msgs) > 0) {
+		if err := s.markReadOnUpgrade(); err != nil {
+			return nil, fmt.Errorf("messages: %w", err)
+		}
 	}
 	// Recover each log's last seq from its tail; logs are indexed when
 	// first used.
@@ -249,6 +262,34 @@ func OpenFileStore(dir string) (*FileStore, error) {
 	}
 	go s.flusher()
 	return s, nil
+}
+
+// markReadOnUpgrade marks read the messages to people a store from before
+// read marks holds, all but the asks still open (they need an answer), so
+// that they do not all show as new in the Inbox at once. It writes the
+// marks, then the snapshot at the current version, so it runs only once.
+func (s *FileStore) markReadOnUpgrade() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, m := range s.msgs {
+		if m.ToUser == "" || !m.ReadAt.IsZero() || (m.Kind == model.MsgAsk && (m.State == model.MsgPending || m.Accepted())) {
+			continue
+		}
+		cp := *m
+		cp.ReadAt, cp.ReadBy = cp.DeliveredAt, upgradeReader
+		if cp.ReadAt.IsZero() {
+			cp.ReadAt = cp.CreatedAt
+		}
+		s.msgs[m.ID] = &cp
+		n++
+	}
+	if n > 0 {
+		if err := s.compactMessagesLocked(); err != nil {
+			return err
+		}
+	}
+	return s.saveLocked()
 }
 
 // tailBytes is how much of a log's end tailSeq reads.
@@ -624,7 +665,8 @@ const maxMessageBytes = 256 << 20
 // its images and files among it. Their bytes are in the attachment store,
 // under that store's own limits, and are not counted twice here.
 func messageBytes(m *model.Message) int {
-	n := len(m.Text) + len(m.Error) + len(m.From) + len(m.To) + len(m.ToPath) + len(m.Via) + len(m.SeenTurn) + len(m.SeenItem)
+	n := len(m.Text) + len(m.Error) + len(m.From) + len(m.To) + len(m.ToPath) + len(m.Via) + len(m.SeenTurn) + len(m.SeenItem) +
+		len(m.ReadBy) + len(m.DismissedBy)
 	for _, list := range [][]model.Attachment{m.Attachments, m.Files} {
 		for _, a := range list {
 			n += len(a.Name) + len(a.MIME) + len(a.SHA256) + len(a.Data) + 32

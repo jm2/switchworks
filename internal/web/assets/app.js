@@ -60,10 +60,13 @@ function clip(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function toast(msg) {
-  const t = h('div', {class: 'toast', role: 'status', text: msg});
+// toast shows msg for a few seconds (ms); with action ({label, fn}), a
+// button that runs fn while it shows.
+function toast(msg, action, ms) {
+  const t = h('div', {class: 'toast', role: 'status'}, h('span', {text: msg}),
+    action ? h('button', {type: 'button', class: 'link', text: action.label, onclick: () => { t.remove(); action.fn(); }}) : null);
   document.body.append(t);
-  setTimeout(() => t.remove(), 3500);
+  setTimeout(() => t.remove(), ms || 3500);
 }
 
 async function api(method, path, body) {
@@ -274,11 +277,21 @@ const S = {hosts: new Map(), sessions: new Map(), messages: new Map(), live: fal
 let fleetES = null;
 let view = null; // the current view: {render(), update(type, data), close()}
 
-function openAsks() {
+// askOpen: an ask still waiting for an answer.
+function askOpen(m) {
+  return m.kind === 'ask' && (m.state === 'pending' || m.state === 'delivered');
+}
+
+// inboxNew: what the Inbox lists as new and its badge counts, open asks and
+// notifies to people, until they are answered, dismissed or marked read
+// (read_at, kept by the coordinator for every browser).
+function inboxNew(m) {
+  return !!m.to_user && !m.read_at && (askOpen(m) || m.kind === 'notify');
+}
+
+function inboxCount() {
   let n = 0;
-  for (const m of S.messages.values()) {
-    if (m.kind === 'ask' && m.to_user && (m.state === 'pending' || m.state === 'delivered')) n++;
-  }
+  for (const m of S.messages.values()) if (inboxNew(m)) n++;
   return n;
 }
 
@@ -288,7 +301,7 @@ function setConn(live) {
 }
 
 function refreshBadges() {
-  const n = openAsks();
+  const n = inboxCount();
   const waiting = [...S.sessions.values()].filter((s) => (s.approvals || []).length).length;
   document.title = (waiting + n ? `(${waiting + n}) ` : '') + 'Switchworks';
   renderSide();
@@ -447,7 +460,7 @@ function hostPicker() {
 function spawnHref(hostID) { return '#/spawn' + (hostID ? '/' + encodeURIComponent(hostID) : ''); }
 
 function renderSide() {
-  const asks = openAsks();
+  const asks = inboxCount();
   const nav = [['nav-inbox', 'inbox', 'Inbox', asks], ['nav-traffic', 'traffic', 'Traffic', 0], ['nav-usage', 'usage', 'Usage', 0]];
   for (const [id, ic, label, n] of nav) {
     const a = document.getElementById(id);
@@ -559,9 +572,9 @@ function crumb(...parts) {
 
 // Phone-only shortcuts on the top bar (on wide screens they are in the sidebar).
 function phoneActions() {
-  const asks = openAsks();
+  const asks = inboxCount();
   return h('span', {class: 'only-narrow'},
-    iconLink('inbox', asks ? `Inbox, ${asks} open` : 'Inbox', '#/inbox', asks ? h('span', {class: 'dot-badge'}) : null),
+    iconLink('inbox', asks ? `Inbox, ${asks} new` : 'Inbox', '#/inbox', asks ? h('span', {class: 'dot-badge'}) : null),
     iconBtn('settings', 'Settings', (e) => openMenu(e.currentTarget)));
 }
 
@@ -631,9 +644,12 @@ function attentionList() {
     if (n) out.push(h('a', {href: '#/s/' + s.id}, h('span', {class: 'mark waiting_approval'}),
       h('span', {class: 'grow', text: `${s.path} is waiting for your approval`}), h('span', {class: 'faint small', text: ago(s.updated_at)})));
   }
-  const asks = openAsks();
-  if (asks) out.push(h('a', {href: '#/inbox'}, h('span', {class: 'mark waiting_approval'}),
-    h('span', {class: 'grow', text: asks === 1 ? 'An agent asked you a question' : `Agents asked you ${asks} questions`})));
+  const fresh = [...S.messages.values()].filter(inboxNew);
+  const asks = fresh.filter((m) => m.kind === 'ask').length;
+  const notes = fresh.length - asks;
+  if (fresh.length) out.push(h('a', {href: '#/inbox'}, h('span', {class: 'mark waiting_approval'}),
+    h('span', {class: 'grow', text: asks === 1 ? 'An agent asked you a question' : asks ? `Agents asked you ${asks} questions`
+      : notes === 1 ? 'A new message for you' : `${notes} new messages for you`})));
   return out.length ? h('div', {class: 'attention'}, out) : null;
 }
 
@@ -1479,42 +1495,101 @@ function pageTop(title) {
 function inboxView() {
   const main = document.getElementById('main');
   const drafts = new Map(); // ask id -> text being typed, kept across re-renders
+  let focused = null; // the ask whose answer box had the focus
+
+  // act runs an Inbox action (dismiss, undismiss, read) on each message,
+  // and says what failed; it returns those that worked.
+  async function act(list, action, btn) {
+    if (btn) btn.disabled = true;
+    const done = [];
+    let why = '';
+    for (const m of list) {
+      try {
+        S.messages.set(m.id, await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/${action}`, {from: ME}));
+        done.push(m);
+      } catch (err) {
+        why = err.message;
+      }
+    }
+    if (done.length < list.length) toast(list.length === 1 ? why : `${list.length - done.length} of ${list.length} failed: ${why}`);
+    if (done.length) changed('all');
+    if (btn) btn.disabled = false;
+    return done;
+  }
+
+  // dismiss ends asks without an answer, with Undo while the toast shows
+  // (the coordinator holds back the notice to their askers a little
+  // longer, and refuses the undo once an asker has been told).
+  async function dismiss(list, btn) {
+    const done = await act(list, 'dismiss', btn);
+    if (!done.length) return;
+    toast(done.length === 1 ? 'Dismissed' : `Dismissed ${done.length} questions`, {label: 'Undo', fn: async () => {
+      if ((await act(done, 'undismiss')).length) toast('Dismissal undone');
+    }}, 6000);
+  }
+
+  function askItem(m) {
+    const box = h('textarea', {rows: 2, placeholder: 'Your answer', 'data-ask': m.id, 'aria-label': 'Answer'});
+    box.value = drafts.get(m.id) || '';
+    box.addEventListener('input', () => drafts.set(m.id, box.value));
+    const btn = h('button', {type: 'submit', class: 'primary', text: 'Send answer'});
+    const form = h('form', {class: 'reply-box', onsubmit: async (e) => {
+      e.preventDefault();
+      if (!box.value.trim()) return;
+      btn.disabled = true;
+      try {
+        await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/reply`, {text: box.value.trim(), from: ME});
+        drafts.delete(m.id);
+        toast('Answer sent to ' + m.from);
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false;
+      }
+    }}, box, h('div', {class: 'row'}, h('span', {class: 'grow'}),
+      m.read_at ? null : h('button', {type: 'button', class: 'link', text: 'Mark read', onclick: (e) => act([m], 'read', e.currentTarget)}),
+      h('button', {type: 'button', text: 'Dismiss', title: 'Clear it without an answer; the asker is told none will come',
+        onclick: (e) => dismiss([m], e.currentTarget)}), btn));
+    const el = h('div', {class: 'item'},
+      h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
+        h('span', {class: 'grow'}), m.read_at ? h('span', {class: 'faint', text: 'read'}) : null,
+        h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
+      h('div', {class: 'text', text: m.text}), thumbs(m.attachments), form);
+    if (focused === m.id) setTimeout(() => box.focus(), 0);
+    return el;
+  }
+
+  // noteItem is a new message to a person, with Mark read.
+  function noteItem(m) {
+    const el = messageItem(m);
+    el.append(h('div', {class: 'row foot'}, h('span', {class: 'grow'}),
+      h('button', {type: 'button', class: 'link', text: 'Mark read', onclick: (e) => { e.stopPropagation(); act([m], 'read', e.currentTarget); }})));
+    return el;
+  }
+
+  // section is a heading with its bulk actions on the right.
+  function section(title, ...actions) {
+    return h('div', {class: 'row section'}, h('h2', {class: 'grow', text: title}), actions);
+  }
+
   function render() {
     pageTop('Inbox');
     const all = [...S.messages.values()].filter((m) => m.to_user).sort((a, b) => b.created_at.localeCompare(a.created_at));
-    const open = all.filter((m) => m.kind === 'ask' && (m.state === 'pending' || m.state === 'delivered'));
-    const rest = all.filter((m) => !open.includes(m));
-    const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ask;
+    const asks = all.filter((m) => inboxNew(m) && m.kind === 'ask');
+    const notes = all.filter((m) => inboxNew(m) && m.kind !== 'ask');
+    const rest = all.filter((m) => !inboxNew(m));
+    focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ask;
+    const bulk = (text, fn) => h('button', {type: 'button', class: 'link', text, onclick: (e) => fn(e.currentTarget)});
     fill(main,
       h('h1', {text: 'Inbox'}),
-      h('h2', {text: 'Questions from agents'}),
-      open.length ? h('div', {class: 'list'}, open.map((m) => {
-        const box = h('textarea', {rows: 2, placeholder: 'Your answer', 'data-ask': m.id, 'aria-label': 'Answer'});
-        box.value = drafts.get(m.id) || '';
-        box.addEventListener('input', () => drafts.set(m.id, box.value));
-        const btn = h('button', {type: 'submit', class: 'primary', text: 'Send answer'});
-        const form = h('form', {class: 'reply-box', onsubmit: async (e) => {
-          e.preventDefault();
-          if (!box.value.trim()) return;
-          btn.disabled = true;
-          try {
-            await api('POST', `/v1/messages/${encodeURIComponent(m.id)}/reply`, {text: box.value.trim(), from: ME});
-            drafts.delete(m.id);
-            toast('Answer sent to ' + m.from);
-          } catch (err) {
-            toast(err.message);
-            btn.disabled = false;
-          }
-        }}, box, h('div', {class: 'row'}, h('span', {class: 'grow'}), btn));
-        const el = h('div', {class: 'item'},
-          h('div', {class: 'head'}, sessionLink(m.from, m.from_session), h('span', {text: 'asks ' + m.to_user.replace(/^user:/, '')}),
-            h('span', {class: 'grow'}), h('span', {class: 'faint', text: ago(m.created_at) + ' ago'})),
-          h('div', {class: 'text', text: m.text}), thumbs(m.attachments), form);
-        if (focused === m.id) setTimeout(() => box.focus(), 0);
-        return el;
-      })) : h('p', {class: 'empty', text: 'No questions waiting for you.'}),
+      section('Questions from agents', asks.length > 1 ? [bulk('Mark all read', (b) => act(asks, 'read', b)),
+        bulk('Dismiss all', (b) => dismiss(asks, b))] : null),
+      asks.length ? h('div', {class: 'list'}, asks.map(askItem)) : h('p', {class: 'empty', text: 'No questions waiting for you.'}),
+      notes.length ? [section('New messages', bulk(notes.length > 1 ? 'Mark all read' : 'Mark read', (b) => act(notes, 'read', b))),
+        h('div', {class: 'list'}, notes.map(noteItem))] : null,
       h('h2', {text: 'Earlier messages to people'}),
-      rest.length ? h('div', {class: 'list'}, rest.slice(0, 50).map(messageItem)) : h('p', {class: 'empty', text: 'None yet.'}));
+      // A read ask is still open: it can be answered or dismissed here.
+      rest.length ? h('div', {class: 'list'}, rest.slice(0, 50).map((m) => askOpen(m) ? askItem(m) : messageItem(m)))
+        : h('p', {class: 'empty', text: 'None yet.'}));
   }
   return {tab: 'inbox', render, update: (t) => { if (t === 'message' || t === 'all') render(); }};
 }
@@ -1556,7 +1631,8 @@ function messageItem(m) {
     h('div', {class: 'text', text: m.text}),
     thumbs(m.attachments),
     replacedBy(m),
-    m.error ? h('div', {class: 'small error', text: m.error}) : null);
+    // A dismissal is no error: who dismissed it, quietly.
+    m.error ? h('div', {class: 'small ' + (m.state === 'dismissed' ? 'faint' : 'error'), text: m.error}) : null);
   return el;
 }
 

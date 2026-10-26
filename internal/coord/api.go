@@ -72,6 +72,9 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
 		{"POST /v1/messages/{id}/promote", scopeOperate, s.handlePromote},
 		{"POST /v1/messages/{id}/cancel", scopeOperate, s.handleCancel},
+		{"POST /v1/messages/{id}/dismiss", scopeOperate, s.handleDismiss},
+		{"POST /v1/messages/{id}/undismiss", scopeOperate, s.handleUndismiss},
+		{"POST /v1/messages/{id}/read", scopeOperate, s.handleMarkRead},
 
 		// admin: change who is in the fleet and who may use it, and erase
 		// history.
@@ -404,7 +407,7 @@ func routeStatus(err error) int {
 	switch {
 	case errors.Is(err, ErrRateLimit):
 		return 429
-	case errors.Is(err, ErrHopLimit), errors.Is(err, ErrBudget):
+	case errors.Is(err, ErrHopLimit), errors.Is(err, ErrBudget), errors.Is(err, ErrAskClosed):
 		return 409
 	}
 	return 400
@@ -518,7 +521,7 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.router.reply(r.Context(), from, fleet.ReplyArgs{MessageID: r.PathValue("id"), Text: body.Text})
 	if err != nil {
-		writeErr(w, 400, err)
+		writeErr(w, routeStatus(err), err)
 		return
 	}
 	writeJSON(w, 200, res)

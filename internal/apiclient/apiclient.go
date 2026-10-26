@@ -384,6 +384,19 @@ func (c *Client) CancelMessage(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/cancel", nil, nil)
 }
 
+// Dismiss ends an ask to a person without an answer; its asker is told
+// none will come.
+func (c *Client) Dismiss(ctx context.Context, askID, from string) (model.Message, error) {
+	var out model.Message
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(askID)+"/dismiss", map[string]string{"from": from}, &out)
+}
+
+// MarkRead marks a message to a person read, for every client.
+func (c *Client) MarkRead(ctx context.Context, id, from string) (model.Message, error) {
+	var out model.Message
+	return out, c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/read", map[string]string{"from": from}, &out)
+}
+
 // UsageReport aggregates token use.
 type UsageReport struct {
 	Today          string                 `json:"today"`

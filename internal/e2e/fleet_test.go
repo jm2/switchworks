@@ -159,6 +159,29 @@ func TestFleetMessaging(t *testing.T) {
 	}
 	i = wl.waitFor(t, "person's answer", i, agentSaidAll("kind=reply", "from=user:cli", "yes, ship it"))
 
+	// A person dismisses an ask the agent is waiting on: fleet_ask returns
+	// at once, and a late answer is refused.
+	say(lead, call("fleet_ask", map[string]any{"to": "user:jm", "text": "merge it?", "wait_seconds": 60}))
+	var asked model.Message
+	for deadline := time.Now().Add(30 * time.Second); asked.ID == "" && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		inbox, _ := c.Messages(ctx, apiclient.MessageQuery{Inbox: true})
+		for _, m := range inbox {
+			if m.Text == "merge it?" && m.State == model.MsgDelivered {
+				asked = m
+			}
+		}
+	}
+	if asked.ID == "" {
+		t.Fatal("the second ask to a person never reached the inbox")
+	}
+	if _, err := c.Dismiss(ctx, asked.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	i = wl.waitFor(t, "dismissed ask", i, agentSaidAll("tool fleet_ask:", `"status": "failed"`, "dismissed without an answer by user:cli"))
+	if _, err := c.Reply(ctx, asked.ID, "yes", ""); err == nil || !strings.Contains(err.Error(), "dismissed") {
+		t.Fatalf("a reply to a dismissed ask: %v", err)
+	}
+
 	// A person asks an agent and waits for the answer.
 	// The helper answers through a fresh `swk mcp` process, which can be
 	// slow under the race detector on a busy CI runner.

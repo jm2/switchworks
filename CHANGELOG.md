@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+<<<<<<< HEAD
 - **Queued agents' messages one by one** — The web UI's "queued from agents" row opens into each
   message, with its sender, kind, text and expiry, and Send now and Cancel; Clear still asks first.
   `swk messages promote <id>` and `swk messages cancel <id>` do the same from the CLI.
@@ -41,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Asks, replies and notices steer** — Asks, replies, completion notices and Switchworks's notices
   go in mode auto like other messages, so they reach a running turn instead of waiting for it to
   end. Sessions spawned with `--no-steer`, and harnesses that cannot steer, still get them queued.
+=======
+- **Dismiss an ask** — Dismiss in the web Inbox (or `swk messages dismiss`) ends an ask to a person
+  as `dismissed`, with who and when; a waiting `fleet_ask` or `swk ask` returns at once, an asker
+  whose wait ended gets a notice after a short Undo window, and a late reply gets 409.
+- **Mark read** — Asks and notifies to people can be marked read (web Inbox, `swk messages read`),
+  leaving the badge without ending an ask; the coordinator keeps the mark, so it holds on every
+  device. Mark all read and Dismiss all act on a whole Inbox section.
+>>>>>>> inbox-dismiss
 
 ## [0.1.5] — 2026-10-22
 

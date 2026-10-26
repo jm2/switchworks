@@ -246,6 +246,9 @@ func printMessages(stdout io.Writer, msgs []model.Message) {
 		if m.Inline {
 			state += " (inline)"
 		}
+		if !m.ReadAt.IsZero() && m.State != model.MsgDismissed {
+			state += " (read)"
+		}
 		// The 60-rune limit is the text's; the attachments are shown whole.
 		text := oneLine(m.Text, 60)
 		if atts := append(append([]model.Attachment{}, m.Attachments...), m.Files...); len(atts) > 0 {
@@ -284,7 +287,7 @@ func cmdInbox(args []string, stdout, stderr io.Writer) int {
 	}
 	open := 0
 	for _, m := range msgs {
-		if m.Kind == model.MsgAsk && m.State != model.MsgAnswered && m.State != model.MsgExpired && m.State != model.MsgFailed {
+		if m.Kind == model.MsgAsk && (m.State == model.MsgPending || m.Accepted()) {
 			open++
 			fmt.Fprintf(stdout, "? %s asks (%s ago) [%s]:\n", m.From, ago(m.CreatedAt), m.ID)
 			for _, line := range strings.Split(m.Text, "\n") {
@@ -293,7 +296,7 @@ func cmdInbox(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if open > 0 {
-		fmt.Fprintf(stdout, "answer with: swk reply <id> <answer>\n\n")
+		fmt.Fprintf(stdout, "answer with: swk reply <id> <answer>, or clear without one: swk messages dismiss <id>\n\n")
 	}
 	printMessages(stdout, msgs)
 	return 0
@@ -303,13 +306,16 @@ func cmdMessages(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "promote" || args[0] == "cancel") {
 		return cmdQueued(args[0], args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && (args[0] == "dismiss" || args[0] == "read") {
+		return cmdInboxAction(args[0], args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("messages", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	limit := fs.Int("n", 50, "how many messages")
 	asJSON := fs.Bool("json", false, "print JSON")
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) > 1 {
-		fmt.Fprintln(stderr, "usage: swk messages [-n 50] [--json] [session]")
+		fmt.Fprintln(stderr, "usage: swk messages [-n 50] [--json] [session]\n       swk messages dismiss|read <id>...\n       swk messages promote|cancel <id>")
 		return 2
 	}
 	c, ok := client(stderr)
@@ -390,6 +396,48 @@ func cmdQueued(op string, args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s: %s\n", pos[0], how)
 	return 0
+}
+
+// cmdInboxAction is swk messages dismiss (end asks to people without an
+// answer) and swk messages read (mark messages to people read).
+func cmdInboxAction(action string, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("messages "+action, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	from := fs.String("from", "", "who does it (default user:cli)")
+	pos, err := interleave(fs, args)
+	if err != nil || len(pos) == 0 {
+		fmt.Fprintf(stderr, "usage: swk messages %s [--from user:<name>] <id>...\n", action)
+		return 2
+	}
+	c, ok := client(stderr)
+	if !ok {
+		return 1
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	code := 0
+	for _, id := range pos {
+		var m model.Message
+		if action == "dismiss" {
+			m, err = c.Dismiss(ctx, id, *from)
+		} else {
+			m, err = c.MarkRead(ctx, id, *from)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "swk: %s: %v\n", id, err)
+			code = 1
+			continue
+		}
+		switch {
+		case action == "dismiss" && m.Inline:
+			fmt.Fprintf(stdout, "%s: dismissed; the waiting asker was told\n", m.ID)
+		case action == "dismiss":
+			fmt.Fprintf(stdout, "%s: dismissed\n", m.ID)
+		default:
+			fmt.Fprintf(stdout, "%s: read\n", m.ID)
+		}
+	}
+	return code
 }
 
 func cmdUsage(args []string, stdout, stderr io.Writer) int {

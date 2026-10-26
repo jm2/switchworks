@@ -539,12 +539,14 @@ refused. An older coordinator refuses `supersedes` ("unknown field").
 | `failed` | could not be delivered, or an ask whose target stopped |
 | `cancelled` | taken out of the queue before delivery |
 | `superseded` | replaced before delivery by a newer message with the same `supersedes` key (`superseded_by`); see [Superseding](#superseding) |
+| `dismissed` | an ask to a person that a person cleared without an answer (`dismissed_by`, `dismissed_at`); see [Asks to people](#asks-to-people) |
 
 `delivered` (for a message that is not an ask), `seen` (likewise),
-`answered`, `expired`, `failed`, `cancelled` and `superseded` are final. An ask moves on
-from `delivered` or `seen` to `answered`, or to `failed` if its target
-stops first; a `fleet_reply` to an ask that is `cancelled`, `expired` or
-`failed` (its sender has been told it will not be answered) is refused.
+`answered`, `expired`, `failed`, `cancelled`, `superseded` and `dismissed`
+are final. An ask moves on from `delivered` or `seen` to `answered`, or to
+`failed` if its target stops first; a `fleet_reply` to an ask that is
+`cancelled`, `expired`, `failed` or `dismissed` (its sender has been told it
+will not be answered), or already answered, is refused (409 through the API).
 A delivery the node reports again, or only after the message was seen,
 changes neither its state nor its `delivered_at`.
 
@@ -595,6 +597,36 @@ Unanswered asks are kept 14 days, like finished messages.
 
 A person can ask an agent (`swk ask <address> <question>`) and an agent
 can ask a person (`fleet_ask` to `user:<name>`).
+
+### Asks to people
+
+A person answers an ask in the web UI's Inbox or with `swk reply`, or
+clears it without an answer:
+
+- **Dismiss** (`swk messages dismiss <id>`, `POST
+  /v1/messages/{id}/dismiss`) ends the ask as `dismissed`, recording who
+  (`dismissed_by`: the name and credential) and when. An asker still
+  waiting (`fleet_ask`, `swk ask`, a ticket wait) gets `failed`
+  "dismissed without an answer by …" at once, and the ask is marked
+  `inline`. An asker whose wait has ended gets a `system` notice
+  (`notice_id`) that no answer will come; it is held back for 8 seconds,
+  and until the ask's hold window closes (its `swk mcp` may still collect
+  the dismissal with its ticket, and then needs no notice). A later reply
+  gets 409.
+- **Undo** (`POST /v1/messages/{id}/undismiss`) reopens a dismissed ask
+  only while its asker has not been told: no waiting asker was woken, it
+  has not checked its ticket, and the notice has not gone out (it is
+  withdrawn, `cancelled`). Otherwise it gets 409. The web UI offers Undo
+  for 6 seconds after a dismissal.
+- **Mark read** (`swk messages read <id>`, `POST /v1/messages/{id}/read`)
+  takes an ask or a notify to a person out of the Inbox's new items and
+  badge count, without ending an ask: a read ask can still be answered or
+  dismissed. The mark is kept on the message by the coordinator
+  (`read_at`, `read_by`), so every browser and client sees it. Each
+  message to people has one mark, its recipient's, whoever set it.
+  A coordinator upgraded from 0.1.5 or earlier marks the messages to
+  people it already holds read (`read_by` "switchworks (upgrade)"), all
+  but the asks still open, so they do not all show as new at once.
 
 ## Completion notices
 
@@ -764,6 +796,8 @@ swk send --file 0001-fix.patch linuxbox/ci "git am this and push"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
 swk reply <ask-id> "yes, go ahead"
+swk messages dismiss <ask-id>                    # clear a question without an answer
+swk messages read <id>                           # mark a message to a person read
 swk messages [session]                           # traffic log
 swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
 swk messages cancel <id>                         # take it out of the queue
@@ -777,7 +811,10 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` not for asks |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen; `supersedes`, and `superseded_by` once superseded |
-| POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask |
+| POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask; 409 if it was answered or ended (dismissed, cancelled, expired, failed) |
+| POST | `/v1/messages/{id}/dismiss` | `{from}` (optional): end an ask to a person without an answer; returns the record; 409 if it is no longer open |
+| POST | `/v1/messages/{id}/undismiss` | reopen a dismissed ask whose asker has not been told; 409 otherwise |
+| POST | `/v1/messages/{id}/read` | `{from}` (optional): mark a message to a person read (`read_at`, `read_by`) |
 | GET | `/v1/usage` | daily totals, by host, by model |
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
@@ -786,8 +823,8 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
 
-Reading needs a `read` token; sending, asking, replying, promoting and
-cancelling need `operate`.
+Reading needs a `read` token; sending, asking, replying, promoting,
+cancelling, dismissing and marking read need `operate`.
 API tokens are managed with `POST /v1/tokens` (`{name, scope, ttl_seconds}`;
 the secret comes back once), `GET /v1/tokens` and `DELETE
 /v1/tokens/{id-or-name}`, all admin only. A request beyond a token's scope
