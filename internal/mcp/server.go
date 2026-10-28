@@ -2,10 +2,10 @@
 
 // Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
-// fleet_inbox, fleet_spawn, fleet_status, fleet_stop). The harness starts it
-// inside the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by
-// the node; every call is forwarded to the node's local API and from there
-// to the coordinator.
+// fleet_inbox, fleet_spawn, fleet_status, fleet_stop, fleet_remind). The
+// harness starts it inside the session with SWK_NODE_URL, SWK_SESSION and
+// SWK_TOKEN set by the node; every call is forwarded to the node's local
+// API and from there to the coordinator.
 package mcp
 
 import (
@@ -158,7 +158,8 @@ var Tools = []Tool{
 		}, "to", "text")},
 	{Name: "fleet_ask", Title: "Ask and wait for an answer",
 		Description: "Ask another agent session (or a person) a question and wait for the answer, for up to wait_seconds (default 600, max 1800). " + addressHelp +
-			" The recipient answers with fleet_reply. If no answer arrives in time you get a ticket instead: the answer will arrive later as a message in this session, or check it with fleet_inbox(ticket).",
+			" The recipient answers with fleet_reply. If no answer arrives in time you get a ticket instead: the answer will arrive later as a message in this session, or check it with fleet_inbox(ticket)." +
+			" A person may take a long while: ask them with wait_seconds 0 and carry on with other work, or end your turn; the answer starts a turn when it comes.",
 		InputSchema: obj(map[string]any{
 			"to":           str("Recipient address."),
 			"text":         str("The question."),
@@ -202,9 +203,24 @@ var Tools = []Tool{
 	{Name: "fleet_stop", Title: "Stop a session", Annotations: map[string]bool{"destructiveHint": true},
 		Description: "Stop a session you spawned (its history is kept).",
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
+	{Name: "fleet_remind", Title: "Remind yourself later",
+		Description: "Have Switchworks send you a reminder after in_seconds (60 to 86400): text comes back as a kind=system message that starts a turn if you are idle (or joins your running turn). " +
+			"Use it to wait for something slow (CI, a long build on another host, a person) instead of polling or sleeping in a turn: set a reminder, then end your turn; each check in a turn costs a model call over your whole context. " +
+			`Give it an id (e.g. "ci:123") to re-arm it: a new reminder with the id of a pending one replaces it. {cancel: id} cancels one. ` +
+			"Reminders survive a coordinator restart and are dropped if this session stops.",
+		InputSchema: obj(map[string]any{
+			"in_seconds": map[string]any{"type": "integer", "minimum": fleet.MinRemindSeconds, "maximum": fleet.MaxRemindSeconds, "description": "Seconds from now (60 to 86400)."},
+			"text":       map[string]any{"type": "string", "maxLength": fleet.MaxRemindTextBytes, "description": "What to remind you of, e.g. \"check CI on PR 123; merge if green\"."},
+			"id":         map[string]any{"type": "string", "maxLength": fleet.MaxRemindIDBytes, "description": "Your name for it; a pending reminder with this id is replaced (default: a new id)."},
+			"cancel":     str("Cancel the pending reminder with this id instead (pass nothing else)."),
+		})},
 }
 
 const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.`
+
+// waitInstructions are added to instructions: how to wait without
+// burning a model call per check.
+const waitInstructions = ` To wait for something slow (CI, a long build on another host, a person), do not poll or sleep in a turn: every check resends your whole context. Set a fleet_remind and end your turn; the reminder, like any message, starts a new one. Ask people with fleet_ask wait_seconds 0 (a ticket) and carry on, or end your turn: the answer arrives as a message. Keep acknowledgements quiet: do not send a message only to say you got one or will look at it; if one is needed, send it with fleet_send's quiet option where that is offered, so it does not start the recipient's turn.`
 
 // Server serves MCP on one connection.
 type Server struct {
@@ -284,7 +300,7 @@ func (s *Server) HandleRequest(id json.RawMessage, method string, params json.Ra
 			"protocolVersion": ver,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": version.Bin, "title": version.Name + " fleet tools", "version": version.Version},
-			"instructions":    instructions,
+			"instructions":    instructions + waitInstructions,
 		})
 	case "ping":
 		_ = s.conn.Reply(id, map[string]any{})
@@ -459,6 +475,12 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 			return "", nil, err
 		}
 		op, args = "stop", a
+	case "fleet_remind":
+		a, err := decode[fleet.RemindArgs](raw)
+		if err != nil {
+			return "", nil, err
+		}
+		op, args = "remind", a
 	default:
 		return "", nil, fmt.Errorf("unknown tool %q", name)
 	}

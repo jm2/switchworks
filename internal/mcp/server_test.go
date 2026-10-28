@@ -150,7 +150,7 @@ func TestProtocol(t *testing.T) {
 			t.Errorf("tool %s: bad definition", tool.Name)
 		}
 	}
-	for _, n := range []string{"fleet_list", "fleet_send", "fleet_ask", "fleet_reply", "fleet_inbox", "fleet_spawn", "fleet_status", "fleet_stop"} {
+	for _, n := range []string{"fleet_list", "fleet_send", "fleet_ask", "fleet_reply", "fleet_inbox", "fleet_spawn", "fleet_status", "fleet_stop", "fleet_remind"} {
 		if !names[n] {
 			t.Errorf("missing tool %s", n)
 		}
@@ -233,5 +233,68 @@ func TestAskTwoPhase(t *testing.T) {
 	defer node.mu.Unlock()
 	if len(node.bodies["inbox"]) != 2 {
 		t.Fatalf("inbox calls: %d", len(node.bodies["inbox"]))
+	}
+}
+
+// fleet_remind is listed, the instructions say to wait with it rather
+// than poll, and a call goes to the node's remind op as given.
+func TestRemindTool(t *testing.T) {
+	node := &stubNode{}
+	c := startServer(t, node)
+	ctx := context.Background()
+	var init struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := c.Call(ctx, "initialize", map[string]any{"protocolVersion": "2025-06-18"}, &init); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"fleet_remind", "end your turn", "wait_seconds 0", "acknowledgements quiet"} {
+		if !strings.Contains(init.Instructions, want) {
+			t.Errorf("instructions lack %q", want)
+		}
+	}
+	var tl struct {
+		Tools []Tool `json:"tools"`
+	}
+	if err := c.Call(ctx, "tools/list", map[string]any{}, &tl); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range tl.Tools {
+		if tool.Name == "fleet_remind" {
+			found = true
+			props := tool.InputSchema["properties"].(map[string]any)
+			for _, p := range []string{"in_seconds", "text", "id", "cancel"} {
+				if props[p] == nil {
+					t.Errorf("fleet_remind has no %s", p)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("fleet_remind not listed")
+	}
+	if res := callTool(t, c, "fleet_remind", map[string]any{"in_seconds": 600, "text": "check CI on #123", "id": "ci:123"}); res.IsError {
+		t.Fatalf("fleet_remind: %+v", res)
+	}
+	if res := callTool(t, c, "fleet_remind", map[string]any{"cancel": "ci:123"}); res.IsError {
+		t.Fatalf("fleet_remind cancel: %+v", res)
+	}
+	if res := callTool(t, c, "fleet_remind", map[string]any{"in_seconds": "soon"}); !res.IsError {
+		t.Fatalf("bad arguments accepted: %+v", res)
+	}
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	bodies := node.bodies["remind"]
+	if len(bodies) != 2 {
+		t.Fatalf("remind calls %d", len(bodies))
+	}
+	var a fleet.RemindArgs
+	if err := json.Unmarshal(bodies[0], &a); err != nil || a != (fleet.RemindArgs{InSeconds: 600, Text: "check CI on #123", ID: "ci:123"}) {
+		t.Fatalf("forwarded %s (%v)", bodies[0], err)
+	}
+	var c2 fleet.RemindArgs
+	if err := json.Unmarshal(bodies[1], &c2); err != nil || c2 != (fleet.RemindArgs{Cancel: "ci:123"}) {
+		t.Fatalf("forwarded %s (%v)", bodies[1], err)
 	}
 }
