@@ -65,6 +65,9 @@ type Config struct {
 		// but denies reads of credentials. Without it they get codex's
 		// legacy workspace-write sandbox, which ignores profiles.
 		Permissions string `json:"permissions,omitempty"`
+		// SessionEnv sets variables, and adds PATH directories, for the
+		// commands sessions run (see SessionEnv).
+		SessionEnv SessionEnv `json:"session_env,omitzero"`
 	} `json:"codex"`
 	Agy struct {
 		Bin  string   `json:"bin,omitempty"`
