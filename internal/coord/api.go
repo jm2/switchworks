@@ -58,6 +58,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"GET /v1/usage", scopeRead, s.handleUsage},
 		{"GET /v1/attachments/{sha256}", scopeRead, s.handleAttachment},
 		{"GET /v1/stream", scopeRead, s.handleFleetStream},
+		{"GET /v1/locks", scopeRead, s.handleLocks},
 		// A sign-in link carries the minting credential's scope, never more.
 		{"POST /v1/ui-links", scopeRead, s.handleUILink},
 
@@ -75,6 +76,9 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/messages/{id}/dismiss", scopeOperate, s.handleDismiss},
 		{"POST /v1/messages/{id}/undismiss", scopeOperate, s.handleUndismiss},
 		{"POST /v1/messages/{id}/read", scopeOperate, s.handleMarkRead},
+		// Breaking a lock also needs the owner's credential or admin
+		// scope (handleBreakLock).
+		{"DELETE /v1/locks/{name...}", scopeOperate, s.handleBreakLock},
 
 		// admin: change who is in the fleet and who may use it, and erase
 		// history.

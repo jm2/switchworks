@@ -132,6 +132,24 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 			return nil, err
 		}
 		return s.fleetStop(ctx, from, a)
+	case wire.ReqLock:
+		a, err := decodeArgs[fleet.LockArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return s.fleetLock(ctx, from, a)
+	case wire.ReqUnlock:
+		a, err := decodeArgs[fleet.UnlockArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return s.fleetUnlock(from, a)
+	case wire.ReqLocks:
+		a, err := decodeArgs[fleet.LocksArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return fleet.LocksResult{Locks: s.lockTab().list(a.Prefix)}, nil
 	}
 	return nil, fmt.Errorf("unknown operation %q", op)
 }

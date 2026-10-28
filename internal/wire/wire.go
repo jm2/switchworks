@@ -239,6 +239,9 @@ const (
 	ReqSpawn  = "fleet.spawn"
 	ReqStatus = "fleet.status"
 	ReqStop   = "fleet.stop"
+	ReqLock   = "fleet.lock"
+	ReqUnlock = "fleet.unlock"
+	ReqLocks  = "fleet.locks"
 )
 
 // NodeReq is a node-initiated request.

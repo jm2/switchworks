@@ -2,10 +2,10 @@
 
 // Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
-// fleet_inbox, fleet_spawn, fleet_status, fleet_stop). The harness starts it
-// inside the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by
-// the node; every call is forwarded to the node's local API and from there
-// to the coordinator.
+// fleet_inbox, fleet_spawn, fleet_status, fleet_stop, and the lock tools in
+// locks.go). The harness starts it inside the session with SWK_NODE_URL,
+// SWK_SESSION and SWK_TOKEN set by the node; every call is forwarded to the
+// node's local API and from there to the coordinator.
 package mcp
 
 import (
@@ -284,7 +284,7 @@ func (s *Server) HandleRequest(id json.RawMessage, method string, params json.Ra
 			"protocolVersion": ver,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": version.Bin, "title": version.Name + " fleet tools", "version": version.Version},
-			"instructions":    instructions,
+			"instructions":    instructions + lockInstructions,
 		})
 	case "ping":
 		_ = s.conn.Reply(id, map[string]any{})
@@ -460,6 +460,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 		}
 		op, args = "stop", a
 	default:
+		if text, structured, ok, err := s.lockCall(ctx, name, raw); ok {
+			return text, structured, err
+		}
 		return "", nil, fmt.Errorf("unknown tool %q", name)
 	}
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
