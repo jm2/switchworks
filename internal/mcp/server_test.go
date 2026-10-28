@@ -30,6 +30,9 @@ type stubNode struct {
 	fail   int // answer this many calls with a transient error first
 	ask    func(args fleet.AskArgs) fleet.AskResult
 	inbox  func(args fleet.InboxArgs) fleet.InboxResult
+	// slow, if set, holds each inbox call this long (or until the client
+	// gives up) before answering.
+	slow func(args fleet.InboxArgs) time.Duration
 }
 
 func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +70,13 @@ func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "inbox":
 		var a fleet.InboxArgs
 		_ = json.Unmarshal(body, &a)
+		if s.slow != nil {
+			select {
+			case <-time.After(s.slow(a)):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		data = s.inbox(a)
 	case "send":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "rate limit: too many messages"})

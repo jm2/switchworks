@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the queue until the turn's next step, when the agent reads steered input anyway, so it can be
   cancelled until then; Codex cannot take input back once it is in. Its pending bubble no longer
   sticks until a reload: it goes once the turn that carried it ends.
+- **`fleet_inbox` with a ticket waits as long as asked** — `fleet_inbox(ticket, wait_seconds)` gave
+  up after 3 minutes with "context deadline exceeded"; it now gets its `wait_seconds` (at most 1800)
+  plus a minute, and an ask still unanswered when the wait ends comes back as pending, "Not answered
+  yet", not as an error.
+- **"cannot reach the swk node: EOF"** — Each fleet tool call left its connection to the node's
+  local API open and idle for 2 minutes, so a busy host could fill the node's connection cap, and
+  then every call failed with EOF for as long as the retries lasted. `swk mcp` now opens a new
+  connection per call and the node closes it after answering. The node logs failed local API
+  requests and refused connections, which before left nothing in its log.
 - **Clearer fleet errors** — The hop-limit error names the `max_hops` guard (off by default since
   0.1.6) and says that a person's message, or the session going idle, starts the chain over.
   `fleet_reply` to a notify says it is a notify, which cannot be replied to, and to use

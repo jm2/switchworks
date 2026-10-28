@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,11 +88,11 @@ func (n *Node) startLocal() error {
 		return err
 	}
 	l := &localAPI{ln: ln, secret: secret, url: "http://" + ln.Addr().String()}
-	ln = capListener(ln, maxLocalConns)
+	ln = capListener(ln, maxLocalConns, n.logf)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/fleet/{op}", n.handleLocal)
 	l.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
-		MaxHeaderBytes: 64 << 10}
+		MaxHeaderBytes: 64 << 10, ErrorLog: log.New(logfWriter(n.logf), "local API: ", 0)}
 	go func() { _ = l.srv.Serve(ln) }()
 	n.local = l
 
@@ -120,10 +122,24 @@ func (n *Node) mcpFor(sessionID, path string) *adapter.MCPServer {
 		}}
 }
 
-func writeLocal(w http.ResponseWriter, status int, r LocalResponse) {
+// writeLocal answers a local API request. Failures are logged (not
+// errors the coordinator answered, such as a rate limit): the caller
+// sees them only in a tool result inside its session.
+func (n *Node) writeLocal(w http.ResponseWriter, req *http.Request, status int, r LocalResponse) {
+	if status != http.StatusOK {
+		n.logf("local API: %s (session %q): HTTP %d: %s", req.URL.Path, req.Header.Get("X-Swk-Session"), status, r.Error)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(r)
+}
+
+// logfWriter writes log lines to a logf.
+type logfWriter func(string, ...any)
+
+func (f logfWriter) Write(p []byte) (int, error) {
+	f("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
 }
 
 func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +149,12 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 		tok = tok[7:]
 	}
 	if id == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(n.local.token(id))) != 1 {
-		writeLocal(w, 401, LocalResponse{Error: "invalid session credential"})
+		n.writeLocal(w, r, 401, LocalResponse{Error: "invalid session credential"})
 		return
 	}
 	s, err := n.session(id)
 	if err != nil {
-		writeLocal(w, 404, LocalResponse{Error: err.Error()})
+		n.writeLocal(w, r, 404, LocalResponse{Error: err.Error()})
 		return
 	}
 	s.mu.Lock()
@@ -148,12 +164,12 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if stopped {
-		writeLocal(w, 409, LocalResponse{Error: "session is stopped"})
+		n.writeLocal(w, r, 409, LocalResponse{Error: "session is stopped"})
 		return
 	}
 	if busy {
 		// One session's waiting asks cannot use up the host's share.
-		writeLocal(w, 429, LocalResponse{Error: fmt.Sprintf("this session already has %d fleet operations in progress", maxSessionReqs), Transient: true})
+		n.writeLocal(w, r, 429, LocalResponse{Error: fmt.Sprintf("this session already has %d fleet operations in progress", maxSessionReqs), Transient: true})
 		return
 	}
 	defer func() {
@@ -163,17 +179,17 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 	}()
 	op, ok := localOps[r.PathValue("op")]
 	if !ok {
-		writeLocal(w, 404, LocalResponse{Error: "unknown operation"})
+		n.writeLocal(w, r, 404, LocalResponse{Error: "unknown operation"})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			writeLocal(w, 413, LocalResponse{Error: "request body over 1 MiB"})
+			n.writeLocal(w, r, 413, LocalResponse{Error: "request body over 1 MiB"})
 			return
 		}
-		writeLocal(w, 400, LocalResponse{Error: err.Error()})
+		n.writeLocal(w, r, 400, LocalResponse{Error: err.Error()})
 		return
 	}
 	if len(body) == 0 {
@@ -189,20 +205,23 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 			extra = append(extra, filesArg)
 		}
 		if body, err = n.resolveImages(s, body, extra...); err != nil {
-			writeLocal(w, 200, LocalResponse{Error: err.Error()})
+			n.writeLocal(w, r, 200, LocalResponse{Error: err.Error()})
 			return
 		}
 	}
 	res, err := n.request(r.Context(), op, id, body)
+	if err != nil && r.Context().Err() != nil {
+		err = fmt.Errorf("the caller went away: %w", err)
+	}
 	switch {
 	case errors.Is(err, errNoCoordinator):
-		writeLocal(w, 503, LocalResponse{Error: err.Error(), Transient: true})
+		n.writeLocal(w, r, 503, LocalResponse{Error: err.Error(), Transient: true})
 	case err != nil:
-		writeLocal(w, 502, LocalResponse{Error: err.Error()})
+		n.writeLocal(w, r, 502, LocalResponse{Error: err.Error()})
 	case !res.OK:
-		writeLocal(w, 200, LocalResponse{Error: res.Error})
+		n.writeLocal(w, r, 200, LocalResponse{Error: res.Error})
 	default:
-		writeLocal(w, 200, LocalResponse{OK: true, Data: res.Data})
+		n.writeLocal(w, r, 200, LocalResponse{OK: true, Data: res.Data})
 	}
 }
 
@@ -289,14 +308,31 @@ const maxLocalConns = 512
 // maxSessionReqs bounds one session's fleet operations in progress.
 const maxSessionReqs = 8
 
-// capListener closes new connections at once while limit are open.
-func capListener(ln net.Listener, limit int) net.Listener {
-	return &cappedListener{Listener: ln, sem: make(chan struct{}, limit)}
+// capListener closes new connections at once while limit are open,
+// logging that it did (at most once a minute).
+func capListener(ln net.Listener, limit int, logf func(string, ...any)) net.Listener {
+	return &cappedListener{Listener: ln, sem: make(chan struct{}, limit), logf: logf}
 }
 
 type cappedListener struct {
 	net.Listener
-	sem chan struct{}
+	sem  chan struct{}
+	logf func(string, ...any)
+
+	mu      sync.Mutex
+	lastLog time.Time
+	refused int // since lastLog
+}
+
+func (l *cappedListener) refuse() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.refused++
+	if time.Since(l.lastLog) < time.Minute {
+		return
+	}
+	l.logf("local API: %d connections open, the most allowed; refused %d new ones (their fleet tools get EOF)", cap(l.sem), l.refused)
+	l.lastLog, l.refused = time.Now(), 0
 }
 
 func (l *cappedListener) Accept() (net.Conn, error) {
@@ -310,6 +346,7 @@ func (l *cappedListener) Accept() (net.Conn, error) {
 			return &cappedConn{Conn: c, release: func() { <-l.sem }}, nil
 		default:
 			_ = c.Close()
+			l.refuse()
 		}
 	}
 }

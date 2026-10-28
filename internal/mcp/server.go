@@ -60,6 +60,15 @@ type errTransient struct{ msg string }
 
 func (e *errTransient) Error() string { return e.msg }
 
+// localHTTP is the client for the node's local API. Keep-alives are off:
+// a new loopback connection per call costs nothing, and the server closes
+// it once it has answered. Before, each call made its own transport and
+// left its connection idle until the node's 2-minute idle timeout, so a
+// busy host could fill the node's connection cap (maxLocalConns) and every
+// call got EOF ("cannot reach the swk node: EOF"); and a kept-alive
+// connection the node closed for idleness could be reused just as it went.
+var localHTTP = &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+
 // Do performs one fleet operation ("list", "send", ...).
 func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessage, error) {
 	b, err := json.Marshal(args)
@@ -75,7 +84,7 @@ func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessa
 	req.Header.Set("X-Swk-Session", c.Session)
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Transport: &http.Transport{Proxy: nil}}
+		hc = localHTTP
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -167,13 +176,13 @@ var Tools = []Tool{
 			"files":        filesProp,
 		}, "to", "text")},
 	{Name: "fleet_reply", Title: "Answer a question",
-		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id.`,
+		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id. Only asks can be answered (fleet_inbox marks them replyable); answer a notify with fleet_send.`,
 		InputSchema: obj(map[string]any{
 			"message_id": str("The id of the ask you are answering."),
 			"text":       str("Your answer."),
 		}, "message_id", "text")},
 	{Name: "fleet_inbox", Title: "Unread messages",
-		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re}, text cut at 2,000 bytes. " +
+		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re, replyable}, text cut at 2,000 bytes. " +
 			"You rarely need this: every message already arrives as a turn of its own, and those count as seen. Do not poll it. " +
 			"all: true shows recent messages to and from this session, seen or not, with the state, delivered_at and seen_at of those you sent; verbose: true gives full records. " +
 			"With ticket (an ask id returned by fleet_ask), report only whether that ask has been answered, waiting up to wait_seconds for it.",
@@ -437,6 +446,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 		if err != nil {
 			return "", nil, err
 		}
+		if a.Ticket != "" {
+			return s.inboxTicket(ctx, a)
+		}
 		op, args = "inbox", a
 	case "fleet_spawn":
 		a, err := decode[fleet.SpawnArgs](raw)
@@ -462,7 +474,7 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 	default:
 		return "", nil, fmt.Errorf("unknown tool %q", name)
 	}
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	data, err := s.do(cctx, op, args)
 	if err != nil {
@@ -470,6 +482,44 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 	}
 	text, structured := pretty(data)
 	return text, structured, nil
+}
+
+// callTimeout bounds one fleet tool call, except a wait for an answer
+// (fleet_ask, fleet_inbox with a ticket), which gets its wait plus
+// waitMargin. Variables for tests.
+var (
+	callTimeout = 3 * time.Minute
+	waitMargin  = time.Minute
+)
+
+// inboxTicket is fleet_inbox(ticket): it may wait up to wait_seconds (at
+// most fleet.MaxAskWait) for the answer, and reports an ask still not
+// answered when the wait ends as pending, not as an error.
+func (s *Server) inboxTicket(ctx context.Context, a fleet.InboxArgs) (string, any, error) {
+	wait := min(max(time.Duration(a.WaitSeconds)*time.Second, 0), fleet.MaxAskWait)
+	a.WaitSeconds = int(wait.Seconds())
+	cctx, cancel := context.WithTimeout(ctx, max(callTimeout, wait+waitMargin))
+	defer cancel()
+	data, err := s.do(cctx, "inbox", a)
+	res := fleet.InboxResult{Messages: []fleet.InboxMessage{}}
+	switch {
+	case err == nil:
+		if json.Unmarshal(data, &res) != nil || res.Ticket == nil {
+			text, structured := pretty(data)
+			return text, structured, nil
+		}
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		// The node or coordinator did not end the wait in time: as far
+		// as anyone knows, it is still unanswered.
+		res.Ticket = &fleet.AskResult{Status: fleet.AskPending, MessageID: a.Ticket}
+	default:
+		return "", nil, err
+	}
+	if t := res.Ticket; t.Status == fleet.AskPending && t.Note == "" {
+		t.Note = "Not answered yet. The answer will arrive as a message in this session; or check again with fleet_inbox(ticket=" + a.Ticket + ")."
+	}
+	b, _ := json.MarshalIndent(res, "", "  ")
+	return string(b), res, nil
 }
 
 // ask sends the question at once (getting a ticket), then waits for the
@@ -503,7 +553,7 @@ func (s *Server) ask(ctx context.Context, a fleet.AskArgs) (string, any, error) 
 	deadline := time.Now().Add(wait)
 	for res.Status == fleet.AskPending && time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
-		wctx, cancel := context.WithTimeout(ctx, remaining+time.Minute)
+		wctx, cancel := context.WithTimeout(ctx, remaining+waitMargin)
 		data, err := s.node.Do(wctx, "inbox", fleet.InboxArgs{Ticket: res.MessageID, WaitSeconds: int(remaining.Seconds()), Limit: 1})
 		cancel()
 		if ctx.Err() != nil {
