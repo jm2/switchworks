@@ -132,6 +132,12 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 			return nil, err
 		}
 		return s.fleetStop(ctx, from, a)
+	case wire.ReqRemind:
+		a, err := decodeArgs[fleet.RemindArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return s.router.remind(from, a)
 	}
 	return nil, fmt.Errorf("unknown operation %q", op)
 }

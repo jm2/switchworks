@@ -64,6 +64,7 @@ func (l *localAPI) token(sessionID string) string {
 var localOps = map[string]string{
 	"list": wire.ReqList, "send": wire.ReqSend, "ask": wire.ReqAsk, "reply": wire.ReqReply,
 	"inbox": wire.ReqInbox, "spawn": wire.ReqSpawn, "status": wire.ReqStatus, "stop": wire.ReqStop,
+	"remind": wire.ReqRemind,
 }
 
 // LocalResponse is the local API's reply.

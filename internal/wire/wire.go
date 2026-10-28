@@ -239,6 +239,8 @@ const (
 	ReqSpawn  = "fleet.spawn"
 	ReqStatus = "fleet.status"
 	ReqStop   = "fleet.stop"
+	// ReqRemind (from 0.1.7) sets or cancels a reminder for the caller.
+	ReqRemind = "fleet.remind"
 )
 
 // NodeReq is a node-initiated request.

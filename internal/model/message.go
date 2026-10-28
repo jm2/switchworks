@@ -95,8 +95,12 @@ type Message struct {
 	// HoldUntil (asks): the asker collects the reply itself until then, so
 	// a reply that arrives earlier is held rather than delivered as a turn.
 	HoldUntil time.Time `json:"hold_until,omitempty"`
-	// NotBefore (held replies): not delivered as a message before this.
+	// NotBefore (held replies, reminders, dismissal notices): not
+	// delivered as a message before this.
 	NotBefore time.Time `json:"not_before,omitempty"`
+	// Reminder (system messages a session set with fleet_remind) is the
+	// reminder's id: one pending reminder per id per session.
+	Reminder  string    `json:"reminder,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	// DeliveredAt is when the message went into its target's input: at
