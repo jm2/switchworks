@@ -254,7 +254,7 @@ func TestResumeAcrossAdapters(t *testing.T) {
 
 	a2 := newFake(t, state)
 	col := &collector{}
-	h2, err := a2.Resume(ctx, ref, adapter.StartSpec{Cwd: "/work"}, col.sink)
+	h2, err := a2.Resume(ctx, ref, adapter.StartSpec{Cwd: "/work", ApprovalPolicy: "untrusted"}, col.sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +265,15 @@ func TestResumeAcrossAdapters(t *testing.T) {
 		t.Fatal(err)
 	}
 	col.waitFor(t, 0, "reply", completedText("echo: resumed"))
+	// thread/resume set the policy: the turn after it does not resend it.
+	col.waitFor(t, 0, "turn.completed", kind(model.KindTurnCompleted))
+	for h2.Status() != model.StatusIdle {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := h2.Deliver(ctx, adapter.Input{Text: "POLICY"}, adapter.DeliverQueue); err != nil {
+		t.Fatal(err)
+	}
+	col.waitFor(t, 0, "the resumed policy, not resent", completedText("policy: untrusted override: none"))
 
 	if _, err := a2.Resume(ctx, model.NativeRef{Harness: "codex", ID: "no-such-thread"}, adapter.StartSpec{}, col.sink); err == nil {
 		t.Fatal("resuming an unknown thread must fail")
@@ -427,13 +436,17 @@ func TestSetApprovalPolicy(t *testing.T) {
 		}
 		return i
 	}
+	// The thread has the spawn policy from thread/start: turns do not
+	// resend it, which app-server would apply as a thread settings update.
 	i := turn(0)
-	col.waitFor(t, 0, "the spawn policy on the first turn", completedText("policy: untrusted"))
+	col.waitFor(t, 0, "the spawn policy on the first turn", completedText("policy: untrusted override: none"))
 	if err := h.(adapter.PolicySetter).SetApprovalPolicy(ctx, "never"); err != nil {
 		t.Fatal(err)
 	}
+	i = turn(i + 1)
+	col.waitFor(t, 0, "the new policy on the next turn", completedText("policy: never override: never"))
 	turn(i + 1)
-	col.waitFor(t, i+1, "the new policy on the next turn", completedText("policy: never"))
+	col.waitFor(t, i+1, "the new policy kept, not resent", completedText("policy: never override: none"))
 }
 
 // TestPermissionProfile checks that workspace-write sessions run under the

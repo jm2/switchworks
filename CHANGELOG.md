@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codex turns resend the approval policy only when it changes** — Every `turn/start` carried the
+  session's approval policy, which app-server applies as a thread settings update and records as
+  `thread_settings_applied`, once per turn. It now goes only with the first turn after a change.
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
   of its ask quoted under the header, and `fleet_inbox` lists it as `re_text`, so an agent with
   several questions out can tell "1. yes" to one apart from another without looking it up.

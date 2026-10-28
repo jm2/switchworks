@@ -170,6 +170,17 @@ does a `null` value. Overrides apply to every Codex session on the node
 and take precedence over `config.toml`; restart the node after changing
 them.
 
+A turn carries the session's approval policy (`turn/start`'s
+`approvalPolicy`) only when it differs from the thread's: after a policy
+change (`swk policy`, the web UI's Approvals menu), not on every turn.
+app-server applies any `turn/start` override as a thread settings update
+and records a `thread_settings_applied` event for it; with the same policy
+each time, that was one per turn. `thread/start` and `thread/resume` still
+carry the policy, the sandbox (or permission profile) and the fleet tools'
+MCP config, since the node checks the sandbox the thread reports and a
+restarted node gives the tools a new address and credential; Codex records
+its settings once at every resume whatever it is sent.
+
 When app-server fails to start, the node log has the end of what it
 wrote to stderr, which usually says why (an unknown argument, a
 `config.toml` error). The full output is in `logs/harness.log` in the

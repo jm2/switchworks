@@ -442,6 +442,11 @@ type handle struct {
 	provider   string
 	home       string
 	closed     bool
+	// threadPolicy is the approval policy the thread runs with, as
+	// thread/start or thread/resume reported it or the last turn/start
+	// that carried one set it ("" if not known). A turn carries the
+	// policy only when it differs (see Deliver).
+	threadPolicy string
 	// readOnly: the thread's effective sandbox, as app-server last
 	// reported it, is read-only (Caps.ReadOnly).
 	readOnly bool
@@ -592,6 +597,7 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	h.home = c.Info.CodexHome
 	h.activeTurn = ""
 	h.readOnly = ro
+	h.threadPolicy = reportedPolicy(resp.ApprovalPolicy)
 	h.mu.Unlock()
 	early := h.a.register(h)
 	// Stop marks the handle closed before it unregisters, so a Stop that
@@ -621,6 +627,17 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 		h.onNote(n.method, n.params)
 	}
 	return nil
+}
+
+// reportedPolicy is the approval policy a thread/start or thread/resume
+// response reports, if it is one of the named ones ("" otherwise: a
+// granular policy, or none reported).
+func reportedPolicy(raw json.RawMessage) string {
+	var p string
+	if json.Unmarshal(raw, &p) != nil {
+		return ""
+	}
+	return p
 }
 
 func (h *handle) isClosed() bool {
@@ -1029,6 +1046,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	active := h.activeTurn
 	status := h.status
 	policy := h.spec.ApprovalPolicy
+	if policy == h.threadPolicy {
+		policy = "" // the thread has it already
+	}
 	h.mu.Unlock()
 	switch mode {
 	case adapter.DeliverSteer:
@@ -1053,8 +1073,11 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		if err != nil {
 			return err
 		}
-		// Every turn carries the policy, so a change (SetApprovalPolicy)
-		// takes effect with the next one.
+		// A turn carries the policy only when it differs from the thread's
+		// (a change made with SetApprovalPolicy): app-server applies any
+		// override on turn/start as a thread settings update, recorded as
+		// thread_settings_applied, so sending the same one every turn would
+		// churn the thread's settings for nothing.
 		resp, err := c.TurnStart(ctx, codex.TurnStartParams{
 			ThreadID: h.threadID, Input: input, ClientUserMessageID: in.ClientMessageID,
 			ApprovalPolicy: policy,
@@ -1067,6 +1090,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		// fast turn can complete before the turn/start response is read
 		// here), so only adopt it if it has not finished.
 		h.mu.Lock()
+		if policy != "" {
+			h.threadPolicy = policy
+		}
 		if resp.Turn.Status == codex.TurnInProgress && h.activeTurn == "" && !containsStr(h.doneTurns, resp.Turn.ID) {
 			h.activeTurn = resp.Turn.ID
 			h.turnSince = time.Now()
