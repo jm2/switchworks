@@ -5,6 +5,8 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -538,5 +540,38 @@ func TestGitSSHRemoteRewritten(t *testing.T) {
 	// Other ssh forms are mapped to https by httpsURL.
 	if u, err := httpsURL("git@github.com:jm2/x.git", false); err != nil || u != "https://github.com/jm2/x.git" {
 		t.Fatalf("httpsURL: %q %v", u, err)
+	}
+}
+
+// The local API runs the git op on the node, for the calling session,
+// without a coordinator.
+func TestGitLocalAPI(t *testing.T) {
+	f := newGitFixture(t)
+	f.n.local = &localAPI{secret: []byte("secret")}
+	f.n.sessions = map[string]*session{"s1": f.s}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/fleet/{op}", f.n.handleLocal)
+	call := func(tok, body string) LocalResponse {
+		req := httptest.NewRequest("POST", "/v1/fleet/git", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("X-Swk-Session", "s1")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		var r LocalResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
+			t.Fatalf("%s: %v", w.Body, err)
+		}
+		return r
+	}
+	r := call(f.n.local.token("s1"), `{"op":"status"}`)
+	var res GitResult
+	if !r.OK || json.Unmarshal(r.Data, &res) != nil || res.Status == nil || res.Status.Branch != "main" {
+		t.Fatalf("status: %+v", r)
+	}
+	if r := call("wrong", `{"op":"status"}`); r.OK || !strings.Contains(r.Error, "credential") {
+		t.Fatalf("bad token: %+v", r)
+	}
+	if r := call(f.n.local.token("s1"), `{"op":"push","branch":"main"}`); r.OK || !strings.Contains(r.Error, "never pushes main") {
+		t.Fatalf("push main: %+v", r)
 	}
 }

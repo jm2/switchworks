@@ -2,10 +2,11 @@
 
 // Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
-// fleet_inbox, fleet_spawn, fleet_status, fleet_stop). The harness starts it
-// inside the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by
-// the node; every call is forwarded to the node's local API and from there
-// to the coordinator.
+// fleet_inbox, fleet_spawn, fleet_status, fleet_stop), and workspace_git.
+// The harness starts it inside the session with SWK_NODE_URL, SWK_SESSION
+// and SWK_TOKEN set by the node; every call is forwarded to the node's
+// local API, and fleet calls from there to the coordinator. workspace_git
+// is run by the node itself, outside the sandbox.
 package mcp
 
 import (
@@ -202,9 +203,30 @@ var Tools = []Tool{
 	{Name: "fleet_stop", Title: "Stop a session", Annotations: map[string]bool{"destructiveHint": true},
 		Description: "Stop a session you spawned (its history is kept).",
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
+	{Name: "workspace_git", Title: "Git for your repository",
+		Description: "Run git on your own repository (the one your working directory is in), done by the Switchworks node outside your sandbox, so it works where shell git cannot: on Windows (read-only .git, sh.exe failing) and where .git/config is read-only. " +
+			"Use op sync before you start work and whenever main has moved; use commit and push through this tool whenever shell git fails, and always on Windows. GitHub ssh remotes are reached over https with the host's agent token. " +
+			`Ops: "status" (branch, upstream, ahead/behind, changed files); ` +
+			`"sync" (fetch, then bring your branch onto remote/branch, default its upstream or the remote's default branch: strategy "rebase" (default) rebases your local commits, aborting and reporting if that conflicts; "ff-only" refuses when diverged. Uncommitted and untracked changes are saved (git stash list, and a patch whose path is reported) and reapplied; on a conflict the files get conflict markers and are listed); ` +
+			`"commit" (message; paths, default all changes; new_branch to create or switch to a branch first); ` +
+			`"push" (branch, default the current one, to its remote with upstream set; never forced, and never main, master or the remote's default branch: push a branch of your own and open a PR); ` +
+			`"branch_delete" (branch; delete_remote also deletes it on the remote if this tool pushed it). Hooks and other repository-configured commands never run.`,
+		InputSchema: obj(map[string]any{
+			"op":            map[string]any{"type": "string", "enum": []string{"status", "sync", "commit", "push", "branch_delete"}},
+			"path":          str("A directory inside your working directory, in the same repository (default: your working directory). Other repositories are refused."),
+			"remote":        str(`sync: the remote (default: the branch's upstream remote, else "origin").`),
+			"branch":        str("sync: the remote branch to sync onto; push: the branch to push (default the current one); branch_delete: the branch."),
+			"strategy":      map[string]any{"type": "string", "enum": []string{"rebase", "ff-only"}, "description": "sync: rebase (default) or ff-only."},
+			"message":       str("commit: the commit message."),
+			"paths":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "commit: only these files or directories (relative to your working directory); default: all changes, untracked files included."},
+			"new_branch":    str("commit: create this branch (or switch to it if it exists) and commit there."),
+			"delete_remote": map[string]any{"type": "boolean", "description": "branch_delete: also delete the branch on its remote (only one this tool pushed)."},
+		}, "op")},
 }
 
-const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.`
+const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.
+
+For git, use workspace_git: run it with op "sync" before you start work and whenever main has moved, so you work on the latest code. Commit and push through it (op "commit", then "push" of a branch of your own, never main) whenever shell git fails, and always on Windows, where shell git cannot write .git.`
 
 // Server serves MCP on one connection.
 type Server struct {
@@ -459,6 +481,21 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 			return "", nil, err
 		}
 		op, args = "stop", a
+	case "workspace_git":
+		// The node checks the arguments; it runs git under its own time
+		// limit for each op (at most 5 minutes).
+		var a map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &a); err != nil || a == nil {
+			return "", nil, errors.New("bad arguments: an object with op is required")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		data, err := s.do(cctx, "git", a)
+		if err != nil {
+			return "", nil, err
+		}
+		text, structured := pretty(data)
+		return text, structured, nil
 	default:
 		return "", nil, fmt.Errorf("unknown tool %q", name)
 	}

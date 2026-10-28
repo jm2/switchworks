@@ -150,7 +150,7 @@ func TestProtocol(t *testing.T) {
 			t.Errorf("tool %s: bad definition", tool.Name)
 		}
 	}
-	for _, n := range []string{"fleet_list", "fleet_send", "fleet_ask", "fleet_reply", "fleet_inbox", "fleet_spawn", "fleet_status", "fleet_stop"} {
+	for _, n := range []string{"fleet_list", "fleet_send", "fleet_ask", "fleet_reply", "fleet_inbox", "fleet_spawn", "fleet_status", "fleet_stop", "workspace_git"} {
 		if !names[n] {
 			t.Errorf("missing tool %s", n)
 		}
@@ -165,6 +165,17 @@ func TestProtocol(t *testing.T) {
 	res = callTool(t, c, "fleet_send", map[string]any{"to": "b", "text": "x"})
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "rate limit") {
 		t.Fatalf("fleet_send: %+v", res)
+	}
+	// workspace_git goes to the node's own git op.
+	res = callTool(t, c, "workspace_git", map[string]any{"op": "status"})
+	node.mu.Lock()
+	gitBodies := node.bodies["git"]
+	node.mu.Unlock()
+	if res.IsError || len(gitBodies) != 1 || !strings.Contains(string(gitBodies[0]), `"op":"status"`) {
+		t.Fatalf("workspace_git: %+v %s", res, gitBodies)
+	}
+	if !strings.Contains(init.Instructions, "workspace_git") {
+		t.Fatal("instructions do not mention workspace_git")
 	}
 	res = callTool(t, c, "fleet_nope", map[string]any{})
 	if !res.IsError {
