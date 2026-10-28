@@ -324,3 +324,70 @@ type StopResult struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
 }
+
+// Lock limits: a lease lasts DefaultLockTTL unless the holder asks for
+// another TTL (at most MaxLockTTL), and a waiting fleet_lock waits at most
+// MaxLockWait.
+const (
+	DefaultLockTTL   = 30 * time.Minute
+	MaxLockTTL       = 6 * time.Hour
+	MaxLockWait      = 30 * time.Minute
+	MaxLockNameBytes = 200
+	MaxLockNoteBytes = 500
+)
+
+// LockArgs asks for a fleet-wide lease on a named resource
+// ("host:macmini-m1:gpu", "port:192.168.1.10:28960").
+type LockArgs struct {
+	Name        string `json:"name"`
+	TTLSeconds  int    `json:"ttl_seconds,omitempty"`  // default 1800, at most 21600
+	WaitSeconds int    `json:"wait_seconds,omitempty"` // 0: try once; at most 1800
+	Note        string `json:"note,omitempty"`         // what it is for, shown to others
+}
+
+// Lock statuses.
+const (
+	LockHeld = "held"
+	LockBusy = "busy"
+)
+
+// LockInfo is a held lock.
+type LockInfo struct {
+	Name    string `json:"name"`
+	LeaseID string `json:"lease_id,omitempty"` // only to its holder
+	Holder  string `json:"holder"`             // the holding session's path
+	// HolderID is the holding session's id.
+	HolderID string    `json:"holder_id"`
+	Note     string    `json:"note,omitempty"`
+	Since    time.Time `json:"since"`
+	Expires  time.Time `json:"expires"`
+	// Waiting counts the fleet_lock calls queued for it.
+	Waiting int `json:"waiting,omitempty"`
+}
+
+// LockResult is fleet_lock's answer: held (the lease is the caller's) or
+// busy (Lock says who holds it).
+type LockResult struct {
+	Status  string   `json:"status"`
+	Renewed bool     `json:"renewed,omitempty"` // the caller held it already
+	Lock    LockInfo `json:"lock"`
+}
+
+type UnlockArgs struct {
+	Name string `json:"name"`
+}
+
+type UnlockResult struct {
+	Name     string `json:"name"`
+	Released bool   `json:"released"`
+	// Next is the session the lock went to, if one was waiting.
+	Next string `json:"next,omitempty"`
+}
+
+type LocksArgs struct {
+	Prefix string `json:"prefix,omitempty"` // only locks whose name starts with this
+}
+
+type LocksResult struct {
+	Locks []LockInfo `json:"locks"`
+}

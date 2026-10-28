@@ -1276,8 +1276,10 @@ func (r *router) onFailed(sessionID, messageID, why string) {
 }
 
 // failAsksTo fails the asks a session was given and will not answer, now
-// that it has stopped or gone, and tells their senders.
+// that it has stopped or gone, and tells their senders. It releases the
+// session's fleet locks too: every place a session ends comes here.
 func (r *router) failAsksTo(sess model.Session, why string) {
+	r.s.lockTab().releaseSession(sess.ID)
 	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
 		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || !m.Accepted() {
 			continue

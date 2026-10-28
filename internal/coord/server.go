@@ -60,6 +60,9 @@ type Server struct {
 	auth   authWatch  // ends open requests whose credential was revoked
 	blobs  *blobStore // image attachments (blobs.go)
 	usage  usageBook  // adapters' last usage totals (usage.go)
+	// locks are the fleet's resource leases (locks.go), made on first use.
+	locks     *lockTable
+	locksOnce sync.Once
 	// pendingLogs: event logs of deleted sessions not yet removed, as
 	// last reported (pruneSessions, on the router's goroutine).
 	pendingLogs int
@@ -1101,6 +1104,7 @@ func (s *Server) forgotten(id string) {
 	delete(s.acts, id)
 	s.mu.Unlock()
 	s.usage.forget(id)
+	s.lockTab().releaseSession(id)
 	s.fleetPublish("session_removed", map[string]string{"id": id})
 }
 

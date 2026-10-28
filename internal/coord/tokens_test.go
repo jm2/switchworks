@@ -62,6 +62,7 @@ func TestEveryRouteDeclaresScope(t *testing.T) {
 		"POST /v1/ui-links":             scopeRead,
 		"POST /v1/sessions":             scopeOperate,
 		"POST /v1/sessions/{id}/policy": scopeOperate,
+		"DELETE /v1/locks/{name...}":    scopeOperate, // and owner or admin, in the handler
 		"DELETE /v1/hosts/{id}":         scopeAdmin,
 		"POST /v1/enroll-tokens":        scopeAdmin,
 		"POST /v1/tokens":               scopeAdmin,
