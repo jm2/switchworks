@@ -303,7 +303,7 @@ func TestAppServerCrashFailsRunningTurn(t *testing.T) {
 	started := col.snapshot()[i].Payload.(model.TurnStarted)
 	col.waitFor(t, i, "failed turn", func(e adapter.Event) bool {
 		p, ok := e.Payload.(model.TurnCompleted)
-		return ok && p.TurnID == started.TurnID && p.Status == "failed" && p.Error != ""
+		return ok && p.TurnID == started.TurnID && p.Status == "failed" && p.Error != "" && p.HarnessExited
 	})
 }
 

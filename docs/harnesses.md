@@ -15,7 +15,7 @@ Steering is a Codex feature. For the others, a message sent to a running
 turn (the default mode, `auto`, or `--steer`) is queued for the next turn,
 together with any other waiting messages.
 
-## Turns cut off by a node restart
+## Turns cut off by a restart
 
 A turn running when the node goes down (an upgrade, a reboot, a crash)
 does not survive it: Codex records it as interrupted, and the resumed
@@ -32,9 +32,12 @@ starts a new turn:
 Your previous turn (id 019a…) was cut off when Switchworks restarted at 2026-10-28 03:12 UTC. Continue where you left off; check the state of anything you were running.
 ```
 
-It goes once per interruption, together with any messages that waited in
-the queue, and never to a stopped session or one whose harness still runs
-the turn. Set `"continue_interrupted": false` in `node.json` to turn it
+The same goes for a turn cut off while the node keeps running, when
+Codex's app-server crashes under it: the adapter restarts app-server and
+resumes the thread, and the message then says the turn "was cut off when
+Codex restarted". It goes once per interruption, together with any
+messages that waited in the queue, and never to a stopped session or one
+whose harness still runs the turn. Set `"continue_interrupted": false` in `node.json` to turn it
 off. A node upgraded from a version before 0.1.7 has no saved turn yet, so
 a turn its restart for the upgrade cut off is not continued.
 

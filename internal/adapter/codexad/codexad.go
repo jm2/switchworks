@@ -708,7 +708,7 @@ func (h *handle) lostClient() {
 		h.emit(model.KindApprovalResolved, model.ApprovalResolved{ApprovalID: aid, Decision: "cleared"})
 	}
 	if turn != "" {
-		h.emit(model.KindTurnCompleted, model.TurnCompleted{TurnID: turn, Status: "failed", Error: "codex app-server exited"})
+		h.emit(model.KindTurnCompleted, model.TurnCompleted{TurnID: turn, Status: "failed", Error: "codex app-server exited", HarnessExited: true})
 	}
 	h.setStatus(model.StatusError, "codex app-server exited; restarting")
 }
