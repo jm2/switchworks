@@ -226,7 +226,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Printf("load config (run `swk node enroll -` first): %v", err)
 		return 1
 	}
-	lock, err := runstatus.Lock(*dir)
+	lock, err := runstatus.LockWait(*dir, runstatus.RestartWait)
 	if err != nil {
 		logger.Print(err)
 		return 1

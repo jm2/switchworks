@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then every call failed with EOF for as long as the retries lasted. `swk mcp` now opens a new
   connection per call and the node closes it after answering. The node logs failed local API
   requests and refused connections, which before left nothing in its log.
+- **`swk service restart` no longer races the old process** — On Windows, stop returns only once
+  the old process has let go of its run lock, so restart cannot start the new one while the old one
+  is still saving its state and ending its harnesses; the new one used to fail with "already
+  running" and nothing started it again. On every OS the node and coordinator also wait up to 45 s
+  at startup for an old process that is shutting down.
 - **Clearer fleet errors** — The hop-limit error names the `max_hops` guard (off by default since
   0.1.6) and says that a person's message, or the session going idle, starts the chain over.
   `fleet_reply` to a notify says it is a notify, which cannot be replied to, and to use
