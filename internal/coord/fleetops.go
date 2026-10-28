@@ -150,6 +150,12 @@ func (s *Server) fleetOp(ctx context.Context, from sender, op string, raw json.R
 			return nil, err
 		}
 		return fleet.LocksResult{Locks: s.lockTab().list(a.Prefix)}, nil
+	case wire.ReqRemind:
+		a, err := decodeArgs[fleet.RemindArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return s.router.remind(from, a)
 	}
 	return nil, fmt.Errorf("unknown operation %q", op)
 }

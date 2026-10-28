@@ -48,6 +48,9 @@ Messages:
   swk messages [session]         the fleet's message traffic
   swk messages promote|cancel <id>
                                  send a queued message now, or cancel it
+  swk reminders <session>        reminders a session set itself (fleet_remind)
+  swk reminders cancel <session> <id>
+                                 cancel one (owners)
   swk usage                      token use by host, model and day
   swk locks [prefix]             resource locks agents hold (fleet_lock)
   swk locks break <name>         end a lock's lease (owner or admin)

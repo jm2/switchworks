@@ -47,6 +47,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_lock` | take a fleet-wide lease on a shared resource (`name`, `ttl_seconds` default 1800 and at most 21600, `wait_seconds` 0 to 1800, `note`): `held` with a `lease_id` and expiry, or `busy` with the holder, since when, its note and expiry (see [Locks](#locks)) |
 | `fleet_unlock` | release a lock you hold; the next waiter gets it |
 | `fleet_locks` | the locks held now, with holder, note, expiry and waiters (`prefix` to filter) |
+| `fleet_remind` | `{in_seconds (60–86400), text, id?}`: a `system` message with `text` comes back to this session after the delay, starting a turn if it is idle; a new one with a pending one's `id` replaces it; `{cancel: id}` cancels one (see [Reminders](#reminders)) |
 
 ## Addresses
 
@@ -676,6 +677,38 @@ gets a `system` notice that it no longer holds it.
 An older node does not forward the lock tools ("unknown operation"):
 upgrade the agent's host.
 
+## Reminders
+
+An agent that has to wait for something slow (CI, a long build on
+another host, a person) should not poll or sleep in a turn: each check
+resends its whole context to the model. It sets a reminder with
+`fleet_remind {in_seconds, text, id}` and ends its turn; the `swk mcp`
+instructions say so, and to ask people with `fleet_ask` `wait_seconds: 0`
+(a ticket; the answer arrives as a message) rather than holding a turn
+open for the answer.
+
+- The coordinator stores a reminder as a pending `system` message from
+  `swk` to the session that set it (`reminder` is its id, `not_before`
+  its due time) and delivers it then, in mode `auto`: into a running turn
+  if there is one, as a turn of its own otherwise. The text starts
+  `Reminder "<id>", which you set 10m ago with fleet_remind:`. Like any
+  pending message it survives a coordinator restart; one due while its
+  host is offline waits for the host until 24 hours (`default_ttl_seconds`)
+  past its due time, then expires.
+- One pending reminder per id per session: a new one with the id of a
+  pending one replaces it (that one becomes `superseded`), so an agent
+  can re-arm "check CI on #123" each time it looks. Without an id, each
+  reminder gets its own (its message id). A session may have 32 pending;
+  `in_seconds` is 60 to 86400; `text` at most 4 KiB, `id` 128 bytes.
+- `fleet_remind {cancel: id}` cancels one (`cancelled`). When the session
+  stops or goes, its pending reminders expire, with the reason.
+- `swk reminders <session>` and `GET /v1/sessions/{id}/reminders` (read)
+  list a session's pending reminders, soonest first. An owner can cancel
+  one, by its id or message id: `swk reminders cancel <session> <id>`,
+  `POST /v1/sessions/{id}/reminders/{rid}/cancel`. They are not in the
+  session's queue (`/queue`), and an older coordinator refuses the tool
+  ("unknown operation").
+
 ## Completion notices
 
 A node emits `session.settled` when a session's last turn has completed and
@@ -849,6 +882,8 @@ swk messages read <id>                           # mark a message to a person re
 swk messages [session]                           # traffic log
 swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
 swk messages cancel <id>                         # take it out of the queue
+swk reminders devbox/lead                        # reminders it set itself with fleet_remind
+swk reminders cancel devbox/lead ci:123          # cancel one (owners)
 swk usage                                        # tokens by host, model, day
 swk locks                                        # resource locks agents hold (fleet_lock)
 swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
@@ -874,6 +909,8 @@ swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, offline, node_too_old, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at, held}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it, or the coordinator's for `held` messages |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
+| GET | `/v1/sessions/{id}/reminders` | the session's pending reminders, soonest first: `{session, reminders: [{id, message_id, text, due_at, created_at, expires_at}]}` |
+| POST | `/v1/sessions/{id}/reminders/{rid}/cancel` | cancel a pending reminder by its id or message id; owners only (403 otherwise, 404 if none is pending) |
 
 Reading needs a `read` token; sending, asking, replying, promoting,
 cancelling, dismissing and marking read need `operate`.

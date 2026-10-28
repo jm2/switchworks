@@ -384,6 +384,27 @@ func (c *Client) CancelMessage(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/cancel", nil, nil)
 }
 
+// Reminders is a session's pending reminders (GET
+// /v1/sessions/{id}/reminders), soonest first.
+type Reminders struct {
+	Session   string           `json:"session"`
+	Reminders []fleet.Reminder `json:"reminders"`
+}
+
+// Reminders lists the reminders a session has set itself with
+// fleet_remind that are still to come.
+func (c *Client) Reminders(ctx context.Context, sessionID string) (Reminders, error) {
+	var out Reminders
+	return out, c.do(ctx, "GET", "/v1/sessions/"+url.PathEscape(sessionID)+"/reminders", nil, &out)
+}
+
+// CancelReminder cancels one of a session's pending reminders, by its id
+// or its message id (owners only).
+func (c *Client) CancelReminder(ctx context.Context, sessionID, id string) (fleet.RemindResult, error) {
+	var out fleet.RemindResult
+	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(sessionID)+"/reminders/"+url.PathEscape(id)+"/cancel", nil, &out)
+}
+
 // Dismiss ends an ask to a person without an answer; its asker is told
 // none will come.
 func (c *Client) Dismiss(ctx context.Context, askID, from string) (model.Message, error) {

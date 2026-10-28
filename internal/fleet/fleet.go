@@ -391,3 +391,46 @@ type LocksArgs struct {
 type LocksResult struct {
 	Locks []LockInfo `json:"locks"`
 }
+
+// Reminder limits.
+const (
+	MinRemindSeconds   = 60
+	MaxRemindSeconds   = 24 * 3600
+	MaxRemindTextBytes = 4 << 10
+	MaxRemindIDBytes   = 128
+	// MaxReminders bounds a session's pending reminders.
+	MaxReminders = 32
+)
+
+// RemindArgs sets a reminder: Text comes back to the calling session as a
+// system message after InSeconds. A new reminder with the ID of a pending
+// one replaces it. With Cancel (a reminder id) and nothing else, it
+// cancels that reminder instead.
+type RemindArgs struct {
+	InSeconds int    `json:"in_seconds,omitempty"`
+	Text      string `json:"text,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Cancel    string `json:"cancel,omitempty"`
+}
+
+// RemindResult answers fleet_remind.
+type RemindResult struct {
+	ID        string    `json:"id"`
+	MessageID string    `json:"message_id,omitempty"`
+	DueAt     time.Time `json:"due_at,omitzero"`
+	// Replaced is the message id of the pending reminder with the same id
+	// that this one replaced.
+	Replaced  string `json:"replaced,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+}
+
+// Reminder is one pending reminder, as GET /v1/sessions/{id}/reminders
+// lists it.
+type Reminder struct {
+	ID        string    `json:"id"`
+	MessageID string    `json:"message_id"`
+	Text      string    `json:"text"`
+	DueAt     time.Time `json:"due_at"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}

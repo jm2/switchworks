@@ -242,6 +242,8 @@ const (
 	ReqLock   = "fleet.lock"
 	ReqUnlock = "fleet.unlock"
 	ReqLocks  = "fleet.locks"
+	// ReqRemind (from 0.1.7) sets or cancels a reminder for the caller.
+	ReqRemind = "fleet.remind"
 )
 
 // NodeReq is a node-initiated request.

@@ -161,6 +161,9 @@ type router struct {
 	inbound  map[string]trigger              // session id -> what started its current work
 	buckets  map[string]*bucket
 	inflight map[string]bool
+	// remindMu serializes setting, cancelling and dropping reminders
+	// (taken before mu).
+	remindMu sync.Mutex
 
 	wake     chan struct{}
 	stop     chan struct{}
@@ -1277,9 +1280,11 @@ func (r *router) onFailed(sessionID, messageID, why string) {
 
 // failAsksTo fails the asks a session was given and will not answer, now
 // that it has stopped or gone, and tells their senders. It releases the
-// session's fleet locks too: every place a session ends comes here.
+// session's fleet locks too, and its pending reminders expire: every place
+// a session ends comes here.
 func (r *router) failAsksTo(sess model.Session, why string) {
 	r.s.lockTab().releaseSession(sess.ID)
+	r.dropReminders(sess, why)
 	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
 		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || !m.Accepted() {
 			continue
@@ -1291,12 +1296,18 @@ func (r *router) failAsksTo(sess model.Session, why string) {
 }
 
 // failOrphanedAsks fails the unanswered asks of sessions that ended before
-// asks were failed when their session ended.
+// asks were failed when their session ended, and expires the reminders of
+// sessions that ended while the coordinator was down.
 func (r *router) failOrphanedAsks() {
 	ended := map[string]model.Session{}
 	for _, sess := range r.s.store.Sessions() {
 		if !live(sess) {
 			ended[sess.ID] = sess
+		}
+	}
+	for _, m := range r.s.store.PendingMessages() {
+		if sess, ok := ended[m.ToSession]; ok && m.Reminder != "" {
+			r.dropReminders(sess, "its session "+sess.Status)
 		}
 	}
 	seen := map[string]bool{}
