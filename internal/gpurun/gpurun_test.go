@@ -73,6 +73,33 @@ func abs(p string) string {
 	return p
 }
 
+func TestRealPath(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := RealPath(dir); got != real {
+		t.Errorf("RealPath(%q) = %q, want %q", dir, got, real)
+	}
+	if got, want := RealPath(filepath.Join(dir, "no", "such")), filepath.Join(real, "no", "such"); got != want {
+		t.Errorf("missing: %q, want %q", got, want)
+	}
+	if RealPath("") != "" {
+		t.Error("empty")
+	}
+	// A workspace resolved from the unresolved home is found inside it.
+	ws := filepath.Join(dir, "src")
+	os.Mkdir(ws, 0o755)
+	rws, _ := filepath.EvalSymlinks(ws)
+	if CheckWorkspace(rws, RealPath(dir), nil, nil) != nil {
+		t.Error("home check misses with resolved paths")
+	}
+	if rhome, _ := filepath.EvalSymlinks(dir); CheckWorkspace(rhome, RealPath(dir), nil, nil) == nil {
+		t.Error("home as workspace accepted")
+	}
+}
+
 func TestCheckWorkspace(t *testing.T) {
 	home := abs("/home/u")
 	deny := []string{abs("/home/u/.ssh"), abs("/home/u/secret")}

@@ -119,11 +119,16 @@ func (n *Node) gpuPlan(s *session, body []byte) (gpurun.Plan, error) {
 	if err != nil {
 		return gpurun.Plan{}, fmt.Errorf("the session's working directory: %w", err)
 	}
+	// Every path compared with ws is resolved as ws is: on macOS a temp or
+	// home path under /var is /private/var resolved, on Windows a short
+	// name (RUNNER~1) is expanded, and an unresolved home would never be
+	// found inside a resolved workspace.
 	pol := n.attachPolicy()
-	deny := append(append([]string{}, pol.Deny...), pol.Own...)
+	home := gpurun.RealPath(pol.Home)
+	deny := gpurun.RealPaths(append(append([]string{}, pol.Deny...), pol.Own...))
 	// (A workspace holding the profiles folder holds home too.)
-	system := gpurun.SystemDirs(os.Getenv, pol.Home)
-	if err := gpurun.CheckWorkspace(ws, pol.Home, deny, system); err != nil {
+	system := gpurun.RealPaths(gpurun.SystemDirs(os.Getenv, pol.Home))
+	if err := gpurun.CheckWorkspace(ws, home, deny, system); err != nil {
 		return gpurun.Plan{}, err
 	}
 	runCwd, err := gpurun.ResolveCwd(ws, req.Cwd)
@@ -139,7 +144,7 @@ func (n *Node) gpuPlan(s *session, body []byte) (gpurun.Plan, error) {
 	if prog, err = filepath.EvalSymlinks(prog); err != nil {
 		return gpurun.Plan{}, fmt.Errorf("%s: %w", req.Argv[0], err)
 	}
-	if err := gpurun.CheckProgramDir(prog, ws, gpurun.SystemDirs(os.Getenv, "")); err != nil {
+	if err := gpurun.CheckProgramDir(prog, ws, gpurun.RealPaths(gpurun.SystemDirs(os.Getenv, ""))); err != nil {
 		return gpurun.Plan{}, err
 	}
 	ro, hidden := gpurun.Protected(ws, deny)

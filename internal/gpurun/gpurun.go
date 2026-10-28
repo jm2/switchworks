@@ -170,6 +170,38 @@ func (r Request) Timeout() time.Duration {
 	return time.Duration(r.TimeoutSeconds) * time.Second
 }
 
+// RealPath is p with symlinks resolved (and, on Windows, short names
+// expanded), as filepath.EvalSymlinks gives the workspace, so the two
+// compare. A path that does not exist yet is resolved up to its deepest
+// existing directory and the rest appended. "" stays "".
+func RealPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = filepath.Clean(p)
+	rest := ""
+	for {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return filepath.Join(p, rest)
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// RealPaths is RealPath of each of ps.
+func RealPaths(ps []string) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = RealPath(p)
+	}
+	return out
+}
+
 // ResolveCwd returns the run's working directory: cwd (relative to ws, or
 // absolute) with symlinks resolved, which must be ws or below it. ws must
 // already be resolved.

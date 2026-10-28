@@ -138,6 +138,21 @@ func TestGPURunPlan(t *testing.T) {
 	if _, lr := gpuPost(t, n, tok, `{"argv":["./tool"]}`); !strings.Contains(lr.Error, "home directory") {
 		t.Errorf("home as workspace: %+v", lr)
 	}
+	// HOME through a symlink, as macOS's /var is /private/var and a Windows
+	// runner's TEMP has a short name: the workspace is resolved, so home
+	// must be too.
+	link := filepath.Join(t.TempDir(), "home-link")
+	if os.Symlink(home, link) == nil {
+		t.Setenv("HOME", link)
+		t.Setenv("USERPROFILE", link)
+		real, _ := filepath.EvalSymlinks(home)
+		s.rec.Spec.Cwd = real
+		if _, lr := gpuPost(t, n, tok, `{"argv":["./tool"]}`); !strings.Contains(lr.Error, "home directory") {
+			t.Errorf("home through a symlink as workspace: %+v", lr)
+		}
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+	}
 	s.rec.Spec.Cwd = ws
 
 	// One run per session at a time.
