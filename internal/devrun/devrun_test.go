@@ -36,7 +36,7 @@ func TestMainFiltersAgentText(t *testing.T) {
 	t.Setenv("SWK_FAKE_STATE", t.TempDir())
 	rec := filepath.Join(t.TempDir(), "rec.jsonl")
 	var out, errb bytes.Buffer
-	code := Main([]string{"-codex-bin", os.Args[0], "-record", rec, "-cwd", t.TempDir(), spoof}, &out, &errb)
+	code := Main([]string{"-no-node-config", "-codex-bin", os.Args[0], "-record", rec, "-cwd", t.TempDir(), spoof}, &out, &errb)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}

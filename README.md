@@ -672,11 +672,15 @@ Responses API and the Anthropic Messages API, scripted by the prompt:
 
 ```bash
 swk dev mock-provider --codex-home /tmp/mock-home &
-swk dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
+swk dev run --no-node-config --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 ```
 
 `swk dev run` drives one turn of any harness directly, without a node or
-coordinator: a quick check that a harness works on a machine. With
+coordinator: a quick check that a harness works on a machine. Codex gets
+the codex settings of the node's `node.json` (`bin`, `args`, `config`,
+`lean`, `permissions`, `home`) when there is one, so it runs in the
+sandbox the node's sessions get; the `--codex-*` flags override them and
+`--no-node-config` leaves them out. With
 `--record FILE` it captures the raw protocol stream, in a file only you
 can read (0600; on Windows the file takes its folder's permissions, so
 keep it in your profile). Like the fleet commands, it strips terminal escapes and

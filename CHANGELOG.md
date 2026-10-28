@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is still saving its state and ending its harnesses; the new one used to fail with "already
   running" and nothing started it again. On every OS the node and coordinator also wait up to 45 s
   at startup for an old process that is shutting down.
+- **`swk dev run` uses the node's Codex settings** — It started Codex without `node.json`'s
+  `codex.args` or `codex.config`, so it tested a different sandbox than sessions get (on Windows,
+  read-only and "degraded" while the sessions were fine). It now builds Codex's options from
+  `node.json` as the node does, says so, and takes `--node-dir` and `--no-node-config`.
 - **Clearer fleet errors** — The hop-limit error names the `max_hops` guard (off by default since
   0.1.6) and says that a person's message, or the session going idle, starts the chain over.
   `fleet_reply` to a notify says it is a notify, which cannot be replied to, and to use
