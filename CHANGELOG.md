@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until its next turn starts for something else (or a person sends it now), and it still expires.
   The MCP instructions tell agents to send acknowledgements, FYIs and "host free" notes quiet and
   never to reply just to acknowledge, which cost a whole turn of context each.
+- **Turns cut off by a restart continue** — A session whose turn was running when the node went
+  down (an upgrade, a reboot) gets one `system` message once it is resumed, starting a new turn
+  that tells the agent to carry on and check what it was running, instead of sitting idle until
+  someone prompts it. Not for turns a person interrupted, nor stopped sessions;
+  `"continue_interrupted": false` in `node.json` turns it off.
 
 ### Fixed
 

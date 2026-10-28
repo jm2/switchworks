@@ -91,6 +91,13 @@ type Config struct {
 		Args     []string `json:"args,omitempty"`    // default: ["mcp"]
 	} `json:"mcp"`
 
+	// ContinueInterrupted (default true): when the node starts again after
+	// going down during a session's turn (an upgrade, a reboot, a crash),
+	// it gives the session a system message that starts a new turn, saying
+	// its previous turn was cut off, so the agent carries on instead of
+	// sitting idle until someone prompts it. false turns that off.
+	ContinueInterrupted *bool `json:"continue_interrupted,omitempty"`
+
 	// FilesDir is where files received with messages are written for the
 	// sessions to read (default: <user cache dir>/switchworks/files; see
 	// files.go). Keep it out of the directories a sandbox profile denies.
@@ -218,6 +225,11 @@ type record struct {
 	Seen      []string     `json:"seen,omitempty"`
 	Stopped   bool         `json:"stopped,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
+	// ActiveTurn is the turn running when the record was saved: saved as
+	// a turn starts and cleared as it completes, or as a person interrupts
+	// it. Set when the node starts, the turn was cut off by the node going
+	// down (see Config.ContinueInterrupted).
+	ActiveTurn string `json:"active_turn,omitempty"`
 }
 
 type session struct {
@@ -637,6 +649,9 @@ func (s *session) sink(ev adapter.Event) {
 	case model.KindTurnStarted:
 		if p, ok := ev.Payload.(model.TurnStarted); ok {
 			s.activeTurn, s.busy = p.TurnID, true
+			if s.rec.ActiveTurn != p.TurnID {
+				s.rec.ActiveTurn, save = p.TurnID, true
+			}
 			// The turn the node's last delivery started.
 			s.carriedLocked(p.TurnID, s.nextTurn)
 			s.nextTurn = nil
@@ -645,6 +660,11 @@ func (s *session) sink(ev adapter.Event) {
 		if p, ok := ev.Payload.(model.TurnCompleted); ok {
 			if s.activeTurn == p.TurnID {
 				s.activeTurn = ""
+			}
+			// A turn that ends because the node is shutting down (its
+			// harness stopped) stays recorded: it was cut off.
+			if s.rec.ActiveTurn != "" && !s.n.isClosing() {
+				s.rec.ActiveTurn, save = "", true
 			}
 			s.lastTurn, s.lastStatus = p.TurnID, p.Status
 			s.seenLocked(p)
@@ -690,6 +710,16 @@ func (s *session) sink(ev adapter.Event) {
 		go s.n.stepSteers(s)
 	}
 	s.n.wakeSender()
+}
+
+// isClosing reports whether the node is shutting down.
+func (n *Node) isClosing() bool {
+	select {
+	case <-n.closing:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *session) hasAtStepLocked() bool {
@@ -882,7 +912,61 @@ func (n *Node) resume(s *session) {
 	s.mu.Unlock()
 	n.wakeSender()
 	n.logf("session %s resumed (%s %s)", rec.Path, rec.Harness, rec.NativeRef.ID)
+	n.continueInterrupted(s, h, time.Now())
 	go n.tryDeliver(s)
+}
+
+// continueInterrupted queues a system message for a resumed session whose
+// turn the node's going down cut off (record.ActiveTurn), so a new turn
+// carries on with it, unless Config.ContinueInterrupted is false or the
+// harness kept the turn running. The record's turn is cleared in the same
+// save, so each interruption gets one message.
+func (n *Node) continueInterrupted(s *session, h adapter.Handle, now time.Time) {
+	s.mu.Lock()
+	turn := s.rec.ActiveTurn
+	s.mu.Unlock()
+	if turn == "" {
+		return
+	}
+	on := n.cfg.ContinueInterrupted == nil || *n.cfg.ContinueInterrupted
+	if on && s.turnRunning(h) {
+		on = false // the harness still runs it: nothing was cut off
+	}
+	s.mu.Lock()
+	if s.rec.Stopped || s.rec.ActiveTurn != turn {
+		s.mu.Unlock()
+		return
+	}
+	s.rec.ActiveTurn = ""
+	var msg queuedMsg
+	if on {
+		msg = queuedMsg{ID: ulid.New(), From: model.SystemSender, Kind: model.MsgSystem,
+			Text: fmt.Sprintf("Your previous turn (id %s) was cut off when Switchworks restarted at %s. Continue where you left off; check the state of anything you were running.",
+				turn, now.UTC().Format("2006-01-02 15:04 UTC"))}
+		s.rec.Queue = enqueue(s.rec.Queue, msg, false)
+		s.reportQueueLocked()
+	}
+	path := s.rec.Path
+	s.mu.Unlock()
+	n.persist()
+	if on {
+		n.logf("session %s: its turn %s was cut off by the restart; queued a message to continue it", path, turn)
+		s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeQueue})
+	}
+}
+
+// interrupt cancels the session's running turn on purpose (a person's
+// interrupt, or a message sent with it): the record no longer holds it as
+// active, so a restart before the turn ends does not continue it.
+func (n *Node) interrupt(ctx context.Context, s *session, h adapter.Handle) error {
+	s.mu.Lock()
+	had := s.rec.ActiveTurn != ""
+	s.rec.ActiveTurn = ""
+	s.mu.Unlock()
+	if had {
+		n.persist()
+	}
+	return h.Interrupt(ctx)
 }
 
 func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, error) {
@@ -1588,7 +1672,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	}
 	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: queued, Attachments: msg.Attachments})
 	if interrupt {
-		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+		if err := n.interrupt(ctx, s, h); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
 		}
 	}
@@ -2291,7 +2375,7 @@ func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json
 	}
 	s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: mode})
 	if mode == model.ModeInterrupt {
-		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+		if err := n.interrupt(ctx, s, h); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
 		}
 	}
@@ -2492,7 +2576,7 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 			if err != nil {
 				return err
 			}
-			return h.Interrupt(ctx)
+			return n.interrupt(ctx, s, h)
 		case wire.OpResolve:
 			if cmd.Resolve == nil {
 				return errors.New("resolve: missing body")

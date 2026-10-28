@@ -15,6 +15,29 @@ Steering is a Codex feature. For the others, a message sent to a running
 turn (the default mode, `auto`, or `--steer`) is queued for the next turn,
 together with any other waiting messages.
 
+## Turns cut off by a node restart
+
+A turn running when the node goes down (an upgrade, a reboot, a crash)
+does not survive it: Codex records it as interrupted, and the resumed
+session would sit idle until someone prompted it. The node saves each
+session's running turn in `state.json` as it starts, and clears it as the
+turn ends or as a person interrupts it (Stop in the web UI, `swk
+interrupt`, a message sent with `interrupt`). A turn that ends because the
+node is shutting down stays saved. When the node starts again and has
+resumed such a session, it queues one `system` message from `swk`, which
+starts a new turn:
+
+```
+[switchworks msg=01M40… from=swk kind=system]
+Your previous turn (id 019a…) was cut off when Switchworks restarted at 2026-10-28 03:12 UTC. Continue where you left off; check the state of anything you were running.
+```
+
+It goes once per interruption, together with any messages that waited in
+the queue, and never to a stopped session or one whose harness still runs
+the turn. Set `"continue_interrupted": false` in `node.json` to turn it
+off. A node upgraded from a version before 0.1.7 has no saved turn yet, so
+a turn its restart for the upgrade cut off is not continued.
+
 ## Models without a translation proxy
 
 DeepSeek and Xiaomi MiMo work in both Codex and goose without a proxy.

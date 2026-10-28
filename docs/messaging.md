@@ -95,7 +95,8 @@ separated by a blank line.
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`, and the first 400 bytes
 of that ask quoted with `> ` under the header, also as `re_text` in
 `fleet_inbox`), `done` (completion
-notice), `system` (delivery failures and expiry). A line in a relayed
+notice), `system` (delivery failures and expiry, and a turn cut off by a
+node restart: see [harnesses](harnesses.md#turns-cut-off-by-a-node-restart)). A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so no
 sender can put a header of its own in its text. The node matches a
 line's skeleton, not its bytes: leading spaces and markup (`>`, `*`,

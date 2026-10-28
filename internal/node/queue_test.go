@@ -20,8 +20,11 @@ import (
 	"github.com/jm2/switchworks/internal/wire"
 )
 
-// queueAdapter starts one queueHandle.
-type queueAdapter struct{ h *queueHandle }
+// queueAdapter starts one queueHandle; with resumable, it resumes it too.
+type queueAdapter struct {
+	h         *queueHandle
+	resumable bool
+}
 
 func (a *queueAdapter) Name() string { return "fake" }
 func (a *queueAdapter) Start(_ context.Context, _ adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
@@ -30,8 +33,12 @@ func (a *queueAdapter) Start(_ context.Context, _ adapter.StartSpec, sink adapte
 	sink(adapter.Event{Kind: model.KindSessionStatus, Payload: model.SessionStatus{Status: a.h.Status()}})
 	return a.h, nil
 }
-func (a *queueAdapter) Resume(context.Context, model.NativeRef, adapter.StartSpec, adapter.Sink) (adapter.Handle, error) {
-	return nil, os.ErrNotExist
+func (a *queueAdapter) Resume(_ context.Context, _ model.NativeRef, _ adapter.StartSpec, sink adapter.Sink) (adapter.Handle, error) {
+	if !a.resumable {
+		return nil, os.ErrNotExist
+	}
+	a.h.sink = sink
+	return a.h, nil
 }
 func (a *queueAdapter) Close() error { return nil }
 
