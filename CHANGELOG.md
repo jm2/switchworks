@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CCACHE_DIR` pointing at it unless you set them. `ccache` and `gh` work in the sandbox, and no
   agent can write another's cache. It is removed when the session stops or is forgotten;
   `session_cache` moves or disables it.
+- **Git for agents: `workspace_git`** — A fleet tool the session's own node runs outside the
+  sandbox, on the session's repository only, so agents can sync, commit and push where shell git
+  fails (on Windows, and where `.git/config` is read-only). `sync` fetches and rebases or
+  fast-forwards onto the upstream, saving uncommitted and untracked work (a stash entry and a patch
+  under the node directory) and reapplying it, with conflict markers on a conflict; `commit` takes
+  a message, paths and a new branch; `push` never forces and refuses main, master and the remote's
+  default branch; `branch_delete` removes only branches it pushed from the remote. Pushes use a
+  scoped agent token through `gh` (`git.gh_config_dir` in `node.json`; `git.push_branch_prefixes`
+  can restrict branch names), never the owner's credentials or ssh keys: GitHub ssh remotes go over
+  https. Hooks, fsmonitor and other repository-configured commands never run.
 
 ### Fixed
 

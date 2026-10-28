@@ -180,6 +180,9 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 	op, ok := localOps[r.PathValue("op")]
+	if r.PathValue("op") == opGit {
+		op, ok = opGit, true
+	}
 	if !ok {
 		n.writeLocal(w, r, 404, LocalResponse{Error: "unknown operation"})
 		return
@@ -198,6 +201,17 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 		body = []byte("{}")
 	}
 	switch op {
+	case opGit:
+		// workspace_git runs here, on the session's own repository; the
+		// coordinator is not involved.
+		res, err := n.handleGit(r.Context(), s, body)
+		if err != nil {
+			n.writeLocal(w, r, 200, LocalResponse{Error: err.Error()})
+			return
+		}
+		b, _ := json.Marshal(res)
+		n.writeLocal(w, r, 200, LocalResponse{OK: true, Data: b})
+		return
 	case wire.ReqSend, wire.ReqAsk, wire.ReqSpawn:
 		// Image and file paths are read here, on the sender's host, under
 		// the session's working directory only. Files go with messages,
