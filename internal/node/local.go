@@ -35,6 +35,9 @@ const (
 	EnvSession     = "SWK_SESSION"
 	EnvSessionPath = "SWK_SESSION_PATH"
 	EnvToken       = "SWK_TOKEN"
+	// EnvGPURun is set ("1") when the node takes GPU runs, so `swk mcp`
+	// offers gpu_run.
+	EnvGPURun = "SWK_GPU_RUN"
 )
 
 // MCPToolTimeout is the per-call timeout given to the harness for fleet
@@ -89,6 +92,7 @@ func (n *Node) startLocal() error {
 	ln = capListener(ln, maxLocalConns)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/fleet/{op}", n.handleLocal)
+	mux.HandleFunc("POST /v1/gpu/run", n.handleGPURun)
 	l.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
 		MaxHeaderBytes: 64 << 10}
 	go func() { _ = l.srv.Serve(ln) }()
@@ -114,10 +118,13 @@ func (n *Node) mcpFor(sessionID, path string) *adapter.MCPServer {
 	if n.local == nil {
 		return nil
 	}
-	return &adapter.MCPServer{Name: "swk", Command: n.mcpCmd, Args: n.mcpArgs, ToolTimeout: MCPToolTimeout,
-		Env: map[string]string{
-			EnvNodeURL: n.local.url, EnvSession: sessionID, EnvSessionPath: path, EnvToken: n.local.token(sessionID),
-		}}
+	env := map[string]string{
+		EnvNodeURL: n.local.url, EnvSession: sessionID, EnvSessionPath: path, EnvToken: n.local.token(sessionID),
+	}
+	if n.gpuRunsOn() {
+		env[EnvGPURun] = "1"
+	}
+	return &adapter.MCPServer{Name: "swk", Command: n.mcpCmd, Args: n.mcpArgs, ToolTimeout: MCPToolTimeout, Env: env}
 }
 
 func writeLocal(w http.ResponseWriter, status int, r LocalResponse) {
@@ -127,19 +134,40 @@ func writeLocal(w http.ResponseWriter, status int, r LocalResponse) {
 }
 
 func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
-	id := r.Header.Get("X-Swk-Session")
+	id, s, done := n.localSession(w, r)
+	if s == nil {
+		return
+	}
+	defer done()
+	op, ok := localOps[r.PathValue("op")]
+	if !ok {
+		writeLocal(w, 404, LocalResponse{Error: "unknown operation"})
+		return
+	}
+	body, ok := readLocalBody(w, r)
+	if !ok {
+		return
+	}
+	n.forwardLocal(w, r, op, id, s, body)
+}
+
+// localSession checks a local API request's session credential and counts
+// it against the session's share; done uncounts it. On failure it has
+// answered, and s is nil.
+func (n *Node) localSession(w http.ResponseWriter, r *http.Request) (id string, s *session, done func()) {
+	id = r.Header.Get("X-Swk-Session")
 	tok := r.Header.Get("Authorization")
 	if len(tok) > 7 && tok[:7] == "Bearer " {
 		tok = tok[7:]
 	}
 	if id == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(n.local.token(id))) != 1 {
 		writeLocal(w, 401, LocalResponse{Error: "invalid session credential"})
-		return
+		return id, nil, nil
 	}
 	s, err := n.session(id)
 	if err != nil {
 		writeLocal(w, 404, LocalResponse{Error: err.Error()})
-		return
+		return id, nil, nil
 	}
 	s.mu.Lock()
 	stopped, busy := s.rec.Stopped, s.localReqs >= maxSessionReqs
@@ -149,36 +177,43 @@ func (n *Node) handleLocal(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if stopped {
 		writeLocal(w, 409, LocalResponse{Error: "session is stopped"})
-		return
+		return id, nil, nil
 	}
 	if busy {
 		// One session's waiting asks cannot use up the host's share.
 		writeLocal(w, 429, LocalResponse{Error: fmt.Sprintf("this session already has %d fleet operations in progress", maxSessionReqs), Transient: true})
-		return
+		return id, nil, nil
 	}
-	defer func() {
+	return id, s, func() {
 		s.mu.Lock()
 		s.localReqs--
 		s.mu.Unlock()
-	}()
-	op, ok := localOps[r.PathValue("op")]
-	if !ok {
-		writeLocal(w, 404, LocalResponse{Error: "unknown operation"})
-		return
 	}
+}
+
+// readLocalBody reads a local API request's body, at most 1 MiB ("{}" for
+// none). On failure it has answered.
+func readLocalBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
 			writeLocal(w, 413, LocalResponse{Error: "request body over 1 MiB"})
-			return
+			return nil, false
 		}
 		writeLocal(w, 400, LocalResponse{Error: err.Error()})
-		return
+		return nil, false
 	}
 	if len(body) == 0 {
 		body = []byte("{}")
 	}
+	return body, true
+}
+
+// forwardLocal sends a fleet operation to the coordinator and answers with
+// its result.
+func (n *Node) forwardLocal(w http.ResponseWriter, r *http.Request, op, id string, s *session, body []byte) {
+	var err error
 	switch op {
 	case wire.ReqSend, wire.ReqAsk, wire.ReqSpawn:
 		// Image and file paths are read here, on the sender's host, under
