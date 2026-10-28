@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Session environment** — `codex.session_env` in `node.json` sets variables (`set`) and adds
+  `PATH` directories (`path_prepend`, `path_append`) for the commands Codex sessions run, such as
+  `GIT_CONFIG_*` for Git for Windows' OpenSSL backend or a tool directory first on `PATH`. The node
+  applies it to app-server's environment, which Codex passes on, so Codex's own `PATH` entries
+  stay; `shell_environment_policy.set` in `codex.config` still wins for a variable.
+- **Per-session caches** — Each Codex session gets a cache directory of its own,
+  `<user cache dir>/switchworks/session-cache/<session>`, writable in its sandbox only (a profile
+  entry, or one more legacy writable root, sent per thread), with `XDG_CACHE_HOME` and
+  `CCACHE_DIR` pointing at it unless you set them. `ccache` and `gh` work in the sandbox, and no
+  agent can write another's cache. It is removed when the session stops or is forgotten;
+  `session_cache` moves or disables it.
+
 ### Fixed
 
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
