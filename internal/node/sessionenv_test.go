@@ -3,6 +3,7 @@
 package node
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -73,7 +74,7 @@ func TestSessionEnvPath(t *testing.T) {
 	}
 
 	// No PATH in the node's environment at all.
-	got, err = sessionEnv(SessionEnv{PathAppend: []string{tools}}, nil, false, ":")
+	got, err = sessionEnv(SessionEnv{PathAppend: []string{tools}}, nil, false, string(os.PathListSeparator))
 	if err != nil || got["PATH"] != tools {
 		t.Fatalf("no PATH: %v %v", got, err)
 	}
