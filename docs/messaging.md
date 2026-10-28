@@ -44,6 +44,9 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
+| `fleet_lock` | take a fleet-wide lease on a shared resource (`name`, `ttl_seconds` default 1800 and at most 21600, `wait_seconds` 0 to 1800, `note`): `held` with a `lease_id` and expiry, or `busy` with the holder, since when, its note and expiry (see [Locks](#locks)) |
+| `fleet_unlock` | release a lock you hold; the next waiter gets it |
+| `fleet_locks` | the locks held now, with holder, note, expiry and waiters (`prefix` to filter) |
 
 ## Addresses
 
@@ -635,6 +638,44 @@ clears it without an answer:
   people it already holds read (`read_by` "switchworks (upgrade)"), all
   but the asks still open, so they do not all show as new at once.
 
+## Locks
+
+Agents share scarce things: a host's GPU, a LAN game-server port, a whole
+test host. Rather than message each other to ask whether one is free and
+to announce taking and freeing it, they take a lease with `fleet_lock`:
+
+```json
+{"name": "host:macmini-m1:gpu", "ttl_seconds": 3600, "wait_seconds": 600, "note": "benchmark run"}
+```
+
+- **Names** are free text up to 200 bytes, one namespace for the fleet.
+  Agree on a form such as `host:<host>`, `host:<host>:gpu` or
+  `port:<ip>:<port>`.
+- **Held or busy.** The answer is `{status: "held", lock: {name,
+  lease_id, holder, since, expires, ...}}`, or `{status: "busy", lock}`
+  naming the holder, since when, its note and its expiry.
+- **Leases end** at their TTL (default 30 minutes, at most 6 hours), when
+  the holder calls `fleet_unlock`, when its session stops, goes away or is
+  removed, or when an owner breaks the lock. Locking again a lock you hold
+  renews it for a new TTL (`renewed: true`), keeping the lease.
+- **Waiting.** With `wait_seconds` (at most 1800), `fleet_lock` blocks
+  until the lock comes free or the wait ends (then `busy`), like
+  `fleet_ask`. Waiters get it in the order they asked.
+- **Limits.** A session holds at most 32 locks; at most 64 calls wait for
+  one lock.
+- The table lives in the coordinator's memory: a coordinator restart drops
+  every lease. A holder that locks again gets it back unless someone else
+  took it first.
+
+People see the locks with `swk locks [prefix]` or `GET /v1/locks` (read
+scope). The owner ends a lease with `swk locks break <name>` or `DELETE
+/v1/locks/{name}`: it needs the admin token, an owner token or an
+admin-scope token. The lock goes to the next waiter, and the old holder
+gets a `system` notice that it no longer holds it.
+
+An older node does not forward the lock tools ("unknown operation"):
+upgrade the agent's host.
+
 ## Completion notices
 
 A node emits `session.settled` when a session's last turn has completed and
@@ -809,6 +850,8 @@ swk messages [session]                           # traffic log
 swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
 swk messages cancel <id>                         # take it out of the queue
 swk usage                                        # tokens by host, model, day
+swk locks                                        # resource locks agents hold (fleet_lock)
+swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
 ```
 
 ## HTTP API
@@ -823,6 +866,8 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/messages/{id}/undismiss` | reopen a dismissed ask whose asker has not been told; 409 otherwise |
 | POST | `/v1/messages/{id}/read` | `{from}` (optional): mark a message to a person read (`read_at`, `read_by`) |
 | GET | `/v1/usage` | daily totals, by host, by model |
+| GET | `/v1/locks?prefix=` | `{locks: [{name, holder, holder_id, note, since, expires, waiting}]}`, by name |
+| DELETE | `/v1/locks/{name}` | break a lock (the name path-escaped): the owner's credential or admin scope; `{name, released, next}`; 404 if it is not held |
 | POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |

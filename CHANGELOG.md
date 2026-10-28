@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fleet resource locks** — `fleet_lock`, `fleet_unlock` and `fleet_locks` give agents leases on
+  things they share (a host's GPU, a LAN port, a whole test host) instead of messaging each other
+  to ask whether one is free: `held` with a lease id and expiry, or `busy` with the holder, its
+  note and expiry. Leases end at their TTL (default 30 minutes, at most 6 hours; locking again
+  renews), on unlock, or when the holder's session stops; `wait_seconds` waits for one, first come
+  first served. `swk locks` and `GET /v1/locks` list them; the owner breaks one with `swk locks
+  break` or `DELETE /v1/locks/{name}`. Leases live in the coordinator's memory.
+
 ### Fixed
 
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
