@@ -88,6 +88,11 @@ type Message struct {
 	// queued, and SupersededBy is then that message's id.
 	Supersedes   string `json:"supersedes,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// Quiet (notifies): the message never starts a turn of its own. It is
+	// steered into a running turn as usual; to an idle session it waits in
+	// the queue and goes in with the next turn something else starts (or a
+	// person's promote), unless it expires first.
+	Quiet bool `json:"quiet,omitempty"`
 	// Files are text files sent with the message, kept like Attachments
 	// (metadata here, bytes in the attachment store). The receiving node
 	// writes them to disk and names their paths in the message.

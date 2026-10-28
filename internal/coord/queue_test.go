@@ -480,3 +480,41 @@ func TestReplyQuotesAsk(t *testing.T) {
 		t.Fatal("askText of no ask")
 	}
 }
+
+// A quiet notify reaches the node marked quiet; asks and interrupts
+// cannot be quiet.
+func TestQuietSend(t *testing.T) {
+	s := testServer(t, Guards{})
+	var mu sync.Mutex
+	var got []wire.MessageCmd
+	fakeNode(t, s, "devbox", func(cmd wire.Cmd) wire.Result {
+		mu.Lock()
+		defer mu.Unlock()
+		if cmd.Op == wire.OpDeliver {
+			got = append(got, *cmd.Message)
+			return wire.Result{OK: true, Data: model.Marshal(wire.DeliverResult{Mode: model.ModeQueue})}
+		}
+		return wire.Result{Error: "unknown op " + cmd.Op}
+	})
+	a := addSession(t, s, "devbox", "a", func(x *model.Session) { x.ID = ulid.New() })
+	addSession(t, s, "devbox", "b", func(x *model.Session) { x.ID = ulid.New() })
+	ctx := context.Background()
+	msgs, err := s.router.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "devbox/b", Text: "ok", Mode: model.ModeAuto, Quiet: true})
+	if err != nil || len(msgs) != 1 || !msgs[0].Quiet || msgs[0].State != model.MsgDelivered {
+		t.Fatalf("send: %+v %v", msgs, err)
+	}
+	if m, _ := s.store.Message(msgs[0].ID); !m.Quiet {
+		t.Fatal("the stored message is not quiet")
+	}
+	mu.Lock()
+	if len(got) != 1 || !got[0].Quiet {
+		t.Fatalf("node got %+v", got)
+	}
+	mu.Unlock()
+	if _, err := s.router.send(ctx, from(a), model.MsgNotify, fleet.SendArgs{To: "devbox/b", Text: "x", Mode: model.ModeInterrupt, Quiet: true}); err == nil {
+		t.Fatal("a quiet interrupt was sent")
+	}
+	if _, err := s.router.send(ctx, from(a), model.MsgAsk, fleet.SendArgs{To: "devbox/b", Text: "x?", Mode: model.ModeAuto, Quiet: true}); err == nil {
+		t.Fatal("a quiet ask was sent")
+	}
+}

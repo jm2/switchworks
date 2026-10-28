@@ -631,6 +631,14 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	case len(supersedes) > fleet.MaxSupersedesBytes || !utf8.ValidString(supersedes):
 		return nil, fmt.Errorf("supersedes must be UTF-8 text of at most %d bytes", fleet.MaxSupersedesBytes)
 	}
+	if args.Quiet {
+		switch {
+		case kind != model.MsgNotify:
+			return nil, errors.New("quiet is for notifies, not asks")
+		case args.Mode == model.ModeInterrupt:
+			return nil, errors.New("a quiet message cannot interrupt: quiet means it never starts a turn of its own")
+		}
+	}
 	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
@@ -761,7 +769,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
-			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes}
+			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes, Quiet: args.Quiet}
 		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
@@ -1020,7 +1028,7 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		ReplyToText: r.askText(m.ReplyTo), Attachments: images, Files: files, ExpiresAt: m.ExpiresAt}}, 30*time.Second)
+		ReplyToText: r.askText(m.ReplyTo), Attachments: images, Files: files, ExpiresAt: m.ExpiresAt, Quiet: m.Quiet}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {

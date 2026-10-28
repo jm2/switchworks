@@ -141,7 +141,8 @@ var Tools = []Tool{
 			` mode: "auto" (default: added to the target's running turn if it has one, at its next tool call; otherwise it starts a turn), "queue" (waits for the target's turn to end, then starts the next one together with any other waiting messages), "steer" (like auto; reaches a target that has opted out of auto only if you spawned it), "interrupt" (cancels the target's running turn and delivers now; only for sessions you spawned). Set broadcast to send to every session matching an @selector.` +
 			` To tell several sessions the same thing, pass a list of addresses in one call rather than calling once per recipient: each gets its own message, and the result lists each one's id or why it could not go.` +
 			` The result has delivered_at if it went straight into the target's running turn; fleet_inbox(all: true) shows later whether it was delivered and seen, so there is no need to resend.` +
-			` For progress updates, give each one the same supersedes key (e.g. "status:gate5"): a newer update replaces your earlier one with that key if the target has not received it yet, so it reads only the latest. Undelivered messages expire after 2 hours by default; set ttl_seconds shorter for a note that is only useful soon, or longer (up to 24 hours) for one that must wait.`,
+			` For progress updates, give each one the same supersedes key (e.g. "status:gate5"): a newer update replaces your earlier one with that key if the target has not received it yet, so it reads only the latest. Undelivered messages expire after 2 hours by default; set ttl_seconds shorter for a note that is only useful soon, or longer (up to 24 hours) for one that must wait.` +
+			` Set quiet for an acknowledgement, an FYI or a "host free" note that needs no action now: it never starts a turn of its own (each turn resends the target's whole context), so it goes into the target's running turn if it has one, or else waits and goes in with its next turn; it still expires.`,
 		InputSchema: obj(map[string]any{
 			"to": map[string]any{"description": "Recipient address, or a list of up to 64 addresses.", "anyOf": []any{
 				map[string]any{"type": "string"},
@@ -152,6 +153,7 @@ var Tools = []Tool{
 			"broadcast": map[string]any{"type": "boolean", "description": "Send to every session matching an @selector."},
 			"supersedes": map[string]any{"type": "string", "maxLength": fleet.MaxSupersedesBytes,
 				"description": `A key for what this message reports, e.g. "status:gate5": it replaces your earlier message with the same key to the same session while that one still waits to be delivered.`},
+			"quiet":       map[string]any{"type": "boolean", "description": "Never start a turn for this message: it joins the target's running turn, or waits for its next one. For acknowledgements and FYIs."},
 			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Expire undelivered after this many seconds (default: the fleet's agent_notify_ttl_seconds, 2 hours unless changed; at most its default_ttl_seconds, 24 hours unless changed)."},
 			"images":      imagesProp,
 			"files":       filesProp,
@@ -204,7 +206,7 @@ var Tools = []Tool{
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
 }
 
-const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.`
+const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while. Send acknowledgements, FYIs and "host free" or "done with X" notes with quiet: true, so they never start a turn of their own. A message whose header has quiet=1 needs no answer: never reply to one, or to any message, just to acknowledge it.`
 
 // Server serves MCP on one connection.
 type Server struct {

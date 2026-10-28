@@ -367,11 +367,12 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	intr := fs.Bool("interrupt", false, "cancel the running turn and deliver now")
 	from := fs.String("from", "", "sender (default user:cli)")
 	supersedes := fs.String("supersedes", "", "a key (e.g. status:build): replaces your earlier message with this key that is still waiting")
+	quiet := fs.Bool("quiet", false, "never start a turn: go into the running turn, or wait for the next one (acknowledgements, FYIs)")
 	images := addImageFlag(fs)
 	fileArgs := addFileFlag(fs)
 	pos, err := interleave(fs, args)
 	if err != nil || len(pos) < 2 {
-		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--supersedes KEY] [--image FILE]... [--file FILE]... <session> <text>")
+		fmt.Fprintln(stderr, "usage: swk send [--queue|--steer|--interrupt] [--quiet] [--supersedes KEY] [--image FILE]... [--file FILE]... <session> <text>")
 		return 2
 	}
 	atts, err := readImages(*images)
@@ -405,7 +406,7 @@ func cmdSend(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := ctxTimeout()
 	defer cancel()
 	res, err := c.SendMessage(ctx, s.ID, apiclient.SessionMessage{Text: strings.Join(pos[1:], " "), Mode: mode, From: *from,
-		Supersedes: *supersedes, Attachments: atts, Files: files})
+		Supersedes: *supersedes, Quiet: *quiet, Attachments: atts, Files: files})
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -260,6 +260,7 @@ type SessionMessage struct {
 	Mode        string             `json:"mode"`
 	From        string             `json:"from"`
 	Supersedes  string             `json:"supersedes,omitempty"`  // see fleet.SendArgs
+	Quiet       bool               `json:"quiet,omitempty"`       // see fleet.SendArgs
 	Attachments []model.Attachment `json:"attachments,omitempty"` // images
 	Files       []model.Attachment `json:"files,omitempty"`       // text files
 }
@@ -289,6 +290,7 @@ type PostMessage struct {
 	Mode        string   `json:"mode,omitempty"`
 	TTLSeconds  int      `json:"ttl_seconds,omitempty"`
 	Supersedes  string   `json:"supersedes,omitempty"`   // notify and broadcast only; see fleet.SendArgs
+	Quiet       bool     `json:"quiet,omitempty"`        // notify and broadcast only; see fleet.SendArgs
 	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`

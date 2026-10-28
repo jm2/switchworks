@@ -136,6 +136,13 @@ type queuedMsg struct {
 	// ExpiresAt, when set, is when the message expires: past it, it is
 	// dropped undelivered rather than starting or joining a turn.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Quiet: it never starts a turn of its own. Steered into a running
+	// turn as usual, it otherwise waits here until a turn starts for
+	// another message (and goes in with it) or a person promotes it.
+	Quiet bool `json:"quiet,omitempty"`
+	// Promoted: a person asked for it now (OpPromote), so it may start a
+	// turn even if it is quiet.
+	Promoted bool `json:"promoted,omitempty"`
 	// Sending is set, and saved, before the message is handed to the
 	// harness (a new turn, or a promoted message's steer). It stays in the
 	// queue meanwhile, out of reach of promote, cancel and expiry; one
@@ -143,6 +150,10 @@ type queuedMsg struct {
 	// reported failed rather than delivered a second time.
 	Sending bool `json:"sending,omitempty"`
 }
+
+// wakes reports whether m may start a turn: it is not quiet, or a person
+// promoted it.
+func (m queuedMsg) wakes() bool { return !m.Quiet || m.Promoted }
 
 // expired reports whether m has an expiry and it has passed.
 func (m queuedMsg) expired(now time.Time) bool {
@@ -1279,7 +1290,13 @@ func formatMessage(m queuedMsg) string {
 	if m.ReplyTo != "" {
 		fmt.Fprintf(&b, " re=%s", m.ReplyTo)
 	}
+	if m.Quiet {
+		b.WriteString(" quiet=1")
+	}
 	b.WriteString("]\n")
+	if m.Quiet {
+		b.WriteString("(Quiet: for your information; it needs no answer, so do not reply just to acknowledge it.)\n")
+	}
 	switch kind {
 	case model.MsgAsk:
 		fmt.Fprintf(&b, "(%s is waiting for an answer: reply with the fleet_reply tool, message_id=%s.)\n", m.From, m.ID)
@@ -1441,7 +1458,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		return nil, err
 	}
 	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo, ReplyToText: m.ReplyToText,
-		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt}
+		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt, Quiet: m.Quiet && m.Mode != model.ModeInterrupt}
 	caps := h.Caps()
 	steer := caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h)))
 	if steer && m.Mode == model.ModeAuto && s.turnRunning(h) && strings.HasPrefix(m.From, "user:") {
@@ -1628,7 +1645,7 @@ func (n *Node) sweepQueues(now time.Time) {
 			n.gcFor(s, expired)
 		}
 		s.mu.Lock()
-		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && len(s.rec.Queue) > 0 && s.h.Status() == model.StatusIdle
+		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && s.waitingLocked() && s.h.Status() == model.StatusIdle
 		kick := false
 		switch {
 		case !stuck:
@@ -1767,19 +1784,31 @@ func timedOut(ctx context.Context, err error) bool {
 
 // nextBatchLocked picks the queued messages the next turn carries: those
 // not being sent already, within batchLen, and only one if it is one that
-// failed in a batch (solo) or the batch would reach one.
+// failed in a batch (solo) or the batch would reach one. Quiet messages
+// never start a turn: with only those waiting there is no batch, and a
+// batch always holds a message that is not quiet (moved to the front if
+// the bounds would leave it out).
 func (s *session) nextBatchLocked() []queuedMsg {
 	var cands []queuedMsg
+	lead := -1 // the first message that may start a turn
 	for _, m := range s.rec.Queue {
 		if !m.Sending {
+			if lead < 0 && m.wakes() {
+				lead = len(cands)
+			}
 			cands = append(cands, m)
 		}
 	}
-	if len(cands) == 0 {
+	if lead < 0 {
 		return nil
 	}
 	if s.solo[cands[0].ID] {
+		// Retried alone even if quiet: it was in a batch a message that is
+		// not quiet started.
 		return cands[:1]
+	}
+	if lead >= batchLen(cands) {
+		cands = append([]queuedMsg{cands[lead]}, append(cands[:lead:lead], cands[lead+1:]...)...)
 	}
 	k := batchLen(cands)
 	for i := 1; i < k; i++ {
@@ -1789,6 +1818,28 @@ func (s *session) nextBatchLocked() []queuedMsg {
 		}
 	}
 	return cands[:k]
+}
+
+// sendingLocked reports whether a queued message is being handed to the
+// harness.
+func (s *session) sendingLocked() bool {
+	for _, m := range s.rec.Queue {
+		if m.Sending {
+			return true
+		}
+	}
+	return false
+}
+
+// waitingLocked reports whether a queued message would start a turn: one
+// that is not quiet, or being sent.
+func (s *session) waitingLocked() bool {
+	for _, m := range s.rec.Queue {
+		if m.Sending || m.wakes() {
+			return true
+		}
+	}
+	return false
 }
 
 // markLocked sets or clears Sending on the queued messages of batch. The
@@ -1854,7 +1905,7 @@ func (n *Node) tryDeliver(s *session) {
 		}
 		batch := s.nextBatchLocked()
 		if len(batch) == 0 {
-			if len(s.rec.Queue) > 0 {
+			if s.sendingLocked() {
 				s.mu.Unlock()
 				return // a promoted message is being steered in
 			}
@@ -2124,7 +2175,7 @@ func (n *Node) queueList(s *session) json.RawMessage {
 	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
 	for i, m := range s.rec.Queue {
 		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
-			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt, AtStep: m.AtStep})
+			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt, AtStep: m.AtStep, Quiet: m.Quiet})
 	}
 	return model.Marshal(res)
 }
@@ -2163,6 +2214,7 @@ func (s *session) promoteLocked(id string, steer bool) (queuedMsg, error) {
 	// if it would have expired before its turn came.
 	m.ExpiresAt = time.Time{}
 	m.Sending = steer
+	m.Promoted = true // asked for now: it starts a turn even if quiet
 	if steer {
 		q := append([]queuedMsg(nil), s.rec.Queue...)
 		q[i] = m

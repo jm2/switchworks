@@ -762,6 +762,7 @@ function parseRouted(text) {
   }
   let body = nl >= 0 ? text.slice(nl + 1) : '';
   body = body.replace(/^\((?:.*?is waiting for an answer.*?|This answers your earlier fleet_ask.*?)\)\n/, '');
+  body = body.replace(/^\(Quiet: for your information.*?\)\n/, '');
   body = body.replace(/^\(\d+ images? attached, in this turn's input: .*\)\n/, ''); // shown as thumbnails
   return {from: f.from, kind: f.kind, msg: f.msg, re: f.re, body};
 }
