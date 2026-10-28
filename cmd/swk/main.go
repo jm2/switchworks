@@ -49,6 +49,8 @@ Messages:
   swk messages promote|cancel <id>
                                  send a queued message now, or cancel it
   swk usage                      token use by host, model and day
+  swk locks [prefix]             resource locks agents hold (fleet_lock)
+  swk locks break <name>         end a lock's lease (owner or admin)
   swk ui-link [--scope S]        print a one-time sign-in link for the web UI
 
 Access:

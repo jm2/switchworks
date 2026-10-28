@@ -589,3 +589,21 @@ func (c *Client) Health(ctx context.Context) (string, error) {
 	}
 	return out.Version, nil
 }
+
+// Locks lists the fleet's resource locks (those whose name starts with
+// prefix, if set).
+func (c *Client) Locks(ctx context.Context, prefix string) ([]fleet.LockInfo, error) {
+	var out fleet.LocksResult
+	path := "/v1/locks"
+	if prefix != "" {
+		path += "?prefix=" + url.QueryEscape(prefix)
+	}
+	return out.Locks, c.do(ctx, "GET", path, nil, &out)
+}
+
+// BreakLock ends whoever's lease on a lock (the owner's credential or
+// admin scope).
+func (c *Client) BreakLock(ctx context.Context, name string) (fleet.UnlockResult, error) {
+	var out fleet.UnlockResult
+	return out, c.do(ctx, "DELETE", "/v1/locks/"+url.PathEscape(name), nil, &out)
+}

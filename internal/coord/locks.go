@@ -365,16 +365,26 @@ func (s *Server) handleLocks(w http.ResponseWriter, r *http.Request) {
 
 // handleBreakLock ends a lease: the owner's (the admin token, an owner
 // token, or any admin-scope token) to do.
+// (GET /v1/locks shows read scope which locks are held, so a 404 before
+// the 403 tells nothing new.)
 func (s *Server) handleBreakLock(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	t := s.lockTab()
+	t.mu.Lock()
+	_, held := t.locks[name]
+	t.mu.Unlock()
+	if !held {
+		writeErr(w, 404, fmt.Errorf("no lock %q is held", name))
+		return
+	}
 	via, owner, _ := s.credential(r.Context())
 	if !owner && grantFrom(r.Context()).scope < scopeAdmin {
 		writeErr(w, 403, errors.New("breaking a lock needs the owner's credential or admin scope"))
 		return
 	}
-	name := r.PathValue("name")
-	res, ok := s.lockTab().breakLock(name, via)
+	res, ok := t.breakLock(name, via)
 	if !ok {
-		writeErr(w, 404, fmt.Errorf("no lock %q", name))
+		writeErr(w, 404, fmt.Errorf("no lock %q is held", name))
 		return
 	}
 	s.logf("lock %q broken by %s", name, via)
