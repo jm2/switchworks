@@ -44,8 +44,10 @@ import (
 //   - Every git gets -c overrides for the keys that run commands: hooks
 //     (an empty directory of the node's), fsmonitor, askpass, editors,
 //     signing, credential helpers. Only https is spoken (protocol.allow);
-//     an ssh remote is fetched and pushed over https with the agent token,
-//     so the owner's ssh keys and credential manager are never used.
+//     a GitHub ssh remote is fetched and pushed over https with the agent
+//     token (url.<https>.insteadOf on git's command line; other ssh hosts
+//     are rewritten the same way by httpsURL), so the owner's ssh keys and
+//     credential manager are never used.
 //   - Push needs node.json's git.gh_config_dir (a gh config holding the
 //     agent token) and is refused for main, master and the remote's
 //     default branch; never forced.
@@ -395,6 +397,10 @@ func (n *Node) newGit(ctx context.Context, repo *gitRepo, spath string) (*gitRun
 	host, _, _ := strings.Cut(spath, "/")
 	g := &gitRunner{n: n, ctx: ctx, bin: bin, repo: repo, host: host, session: spath}
 	slash := filepath.ToSlash
+	ghBase := "https://github.com/"
+	if n.gitGitHubBase != "" {
+		ghBase = n.gitGitHubBase
+	}
 	g.args = []string{"--no-pager",
 		"-c", "core.hooksPath=" + slash(hooks),
 		"-c", "core.fsmonitor=false",
@@ -422,6 +428,11 @@ func (n *Node) newGit(ctx context.Context, repo *gitRepo, spath string) (*gitRun
 		"-c", "maintenance.auto=false",
 		"-c", "http.extraHeader=",
 		"-c", "credential.helper=",
+		// GitHub ssh remotes are reached over https, for workspace_git's own
+		// git only (the repository's config is left alone): agents' hosts
+		// often have no ssh key, and the owner's must not be used.
+		"-c", "url." + ghBase + ".insteadOf=git@github.com:",
+		"-c", "url." + ghBase + ".insteadOf=ssh://git@github.com/",
 		"-c", "safe.directory=" + slash(repo.top),
 		"-c", "safe.directory=" + slash(repo.gitDir),
 		"-c", "safe.directory=" + slash(repo.common),
@@ -720,6 +731,9 @@ func httpsURL(u string, allowLocal bool) (string, error) {
 	return "", gitErrf("remote URL %q: workspace_git speaks https only (ssh remotes are reached over https)", u)
 }
 
+// remoteURL is the URL workspace_git fetches from or pushes to: the
+// remote's, after the insteadOf rewrites (git remote get-url applies them),
+// then httpsURL.
 func (g *gitRunner) remoteURL(remote string, push bool) (string, error) {
 	args := []string{"remote", "get-url"}
 	if push {

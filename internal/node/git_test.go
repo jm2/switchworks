@@ -505,3 +505,38 @@ func TestHTTPSURL(t *testing.T) {
 		}
 	}
 }
+
+// GitHub ssh remotes are reached through url.<base>.insteadOf on git's
+// command line, the repository's config unchanged: here the base stands in
+// for https://github.com/ with a file:// URL of the fixture's directory.
+func TestGitSSHRemoteRewritten(t *testing.T) {
+	f := newGitFixture(t)
+	dir := filepath.ToSlash(filepath.Dir(f.remote))
+	if !strings.HasPrefix(dir, "/") {
+		dir = "/" + dir // C:/... on Windows
+	}
+	f.n.gitGitHubBase = "file://" + dir + "/"
+	for i, url := range []string{"git@github.com:remote.git", "ssh://git@github.com/remote.git"} {
+		rawGit(t, f.work, "remote", "set-url", "origin", url)
+		f.upstreamCommit("one\ntwo\nthree\n" + strings.Repeat("more\n", i+1))
+		res := f.ok(map[string]any{"op": "sync"})
+		if res.Outcome != "fast_forward" {
+			t.Fatalf("%s: sync %+v", url, res)
+		}
+		b := "swk/h/ssh" + string(rune('a'+i))
+		writeFile(t, filepath.Join(f.work, b+".txt"), b+"\n")
+		res = f.ok(map[string]any{"op": "commit", "message": b, "new_branch": b})
+		f.ok(map[string]any{"op": "push"})
+		if rawGit(t, f.remote, "rev-parse", "refs/heads/"+b) != res.Commit {
+			t.Fatalf("%s: push did not reach the remote", url)
+		}
+		if got := rawGit(t, f.work, "config", "--get", "remote.origin.url"); got != url {
+			t.Fatalf("the repository's config changed: %q", got)
+		}
+		rawGit(t, f.work, "switch", "-q", "main")
+	}
+	// Other ssh forms are mapped to https by httpsURL.
+	if u, err := httpsURL("git@github.com:jm2/x.git", false); err != nil || u != "https://github.com/jm2/x.git" {
+		t.Fatalf("httpsURL: %q %v", u, err)
+	}
+}

@@ -424,6 +424,9 @@ type Node struct {
 	// gitAllowLocal lets workspace_git fetch from and push to a local
 	// repository without credentials. Tests only.
 	gitAllowLocal bool
+	// gitGitHubBase replaces https://github.com/ as what GitHub ssh
+	// remotes are rewritten to. Tests only.
+	gitGitHubBase string
 	closing       chan struct{}
 	wg            sync.WaitGroup
 
