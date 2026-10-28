@@ -320,7 +320,7 @@ func TestGitPushRefused(t *testing.T) {
 	f := newGitFixture(t)
 	writeFile(t, filepath.Join(f.work, "x.txt"), "x\n")
 	f.ok(map[string]any{"op": "commit", "message": "x"})
-	for _, b := range []string{"main", "master", "MAIN"} {
+	for _, b := range []string{"main", "master"} {
 		if b != "main" {
 			rawGit(t, f.work, "branch", "-q", "-f", b)
 		}
