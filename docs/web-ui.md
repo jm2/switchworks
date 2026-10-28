@@ -43,8 +43,11 @@ system; the choice is kept per browser.
   (steers it into the running turn, or interrupts a session that cannot
   take one mid-turn) and **Cancel**, and when it expires undelivered
   ("expires 14:30", from a node that enforces it); it becomes the usual
-  message when its turn starts. A message sent **now** into a running
-  turn shows the same way, "Steered: the agent reads it at its next
+  message when its turn starts. A message you send **now** into a running
+  turn waits in the queue for the turn's next step, when the agent reads
+  steered input anyway, so it shows as **Queued** ("Goes in at the
+  agent's next step") with **Cancel** until then; once it has gone in it
+  shows the same way, "Steered: the agent reads it at its next
   step", until the harness takes it in (Codex reads a steer at its next
   step, which can be a long tool call away). Under a message from you (or another
   person) a receipt says when it went into the session's input,

@@ -444,6 +444,11 @@ it runs this version.
   distracted. Nodes before 0.1.5 take `auto` as `queue`.
 - Messages that arrive while a steer is being delivered go in together, as
   one steer input, each with its own header.
+- A person's message sent in mode `auto` (the web UI's Now) into a running turn waits in the session's
+  queue until the turn's next step (a tool call or message finishing), when
+  the agent would read it anyway, so it can be cancelled until then. If the
+  turn ends first, it starts the next one. Mode `steer`, Send now, and
+  agents' messages go in at once.
 - `interrupt` puts the message at the head of the queue and cancels the
   running turn.
 - When a session goes idle, the messages in its queue are delivered

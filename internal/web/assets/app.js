@@ -1020,7 +1020,7 @@ function sessionView(id, full) {
           clock(m.expires_at) ? h('span', {title: 'Dropped undelivered if the host is still offline then', text: `expires ${clock(m.expires_at)}`}) : null,
           h('button', {type: 'button', class: 'link', text: 'Cancel', onclick: (e) => cancelQueued([m], e.currentTarget)}))
         : h('div', {class: 'queued-foot'},
-          h('span', {text: m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
+          h('span', {text: m.at_step ? 'Goes in at the agent\'s next step' : m.position ? `Queued, ${m.position} ahead` : 'Queued, next'}),
           // The node drops it undelivered at expires_at (a node from
           // 0.1.5); Send now still sends it.
           clock(m.expires_at) ? h('span', {title: 'Not delivered after this; Send now still sends it', text: `expires ${clock(m.expires_at)}`}) : null,
@@ -1273,6 +1273,11 @@ function sessionView(id, full) {
         add(h('div', {class: 'sys', text: `A queued message from ${p.from} expired before it was delivered`}));
         queueSoon();
         break;
+      case 'message.seen':
+        // The turn that carried it is over: it has been read, whether or
+        // not its input showed in the transcript.
+        dropSending(sending.find((x) => x.id === p.message_id));
+        break;
       case 'message.queued':
       case 'message.promoted':
       case 'session.queue':
@@ -1315,8 +1320,9 @@ function sessionView(id, full) {
     const known = items.get(p.item_id);
     switch (p.item_type) {
       case 'userMessage': {
-        if (done || known) return;
         const text = (raw.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+        takenIn(text); // a steer may show only as completed
+        if (done || known) return;
         const parts = splitRouted(text).map((part) => {
           const r = parseRouted(part);
           return r

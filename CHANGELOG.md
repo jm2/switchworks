@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Replies say which ask they answer** — A reply reaches the asking agent with the first 400
-  bytes of its ask quoted under the header, and `fleet_inbox` lists it as `re_text`, so an agent
-  with several questions out can tell "1. yes" to one apart from another without looking it up.
+- **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
+  of its ask quoted under the header, and `fleet_inbox` lists it as `re_text`, so an agent with
+  several questions out can tell "1. yes" to one apart from another without looking it up.
+- **Cancel a steered message** — A person's message sent Now (steer) into a running turn waits in
+  the queue until the turn's next step, when the agent reads steered input anyway, so it can be
+  cancelled until then; Codex cannot take input back once it is in. Its pending bubble no longer
+  sticks until a reload: it goes once the turn that carried it ends.
 
 ## [0.1.6] — 2026-10-25
 

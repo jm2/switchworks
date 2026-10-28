@@ -57,10 +57,11 @@ func TestSeenReceipts(t *testing.T) {
 		t.Fatalf("seen %+v", got)
 	}
 
-	// Steered into a turn that is interrupted: not seen.
+	// Steered into a turn that is interrupted: not seen. (An agent's: a
+	// person's waits for the turn's next step, TestPersonSteerAtStep.)
 	turn("t2")
 	c := ulid.New()
-	if dr := send(t, n, s, wire.MessageCmd{ID: c, From: "user:web", Owner: true, Text: "three", Mode: model.ModeAuto}); dr.Mode != model.ModeSteer {
+	if dr := send(t, n, s, wire.MessageCmd{ID: c, From: "devbox/b", Text: "three", Mode: model.ModeAuto}); dr.Mode != model.ModeSteer {
 		t.Fatalf("mode %s", dr.Mode)
 	}
 	done("t2", "interrupted")
@@ -72,7 +73,7 @@ func TestSeenReceipts(t *testing.T) {
 	// before that.
 	turn("t3")
 	d := ulid.New()
-	send(t, n, s, wire.MessageCmd{ID: d, From: "user:web", Owner: true, Text: "four", Mode: model.ModeAuto})
+	send(t, n, s, wire.MessageCmd{ID: d, From: "devbox/b", Text: "four", Mode: model.ModeAuto})
 	reply("t3", "i3")
 	done("t3", "completed")
 	if got := seen(); len(got) != 3 || got[2].MessageID != d || got[2].TurnID != "t3" || got[2].ItemID != "i3" {
@@ -82,4 +83,39 @@ func TestSeenReceipts(t *testing.T) {
 	if strings.LastIndex(kinds, model.KindMessageDelivered) > strings.LastIndex(kinds, model.KindMessageSeen) {
 		t.Fatalf("delivered after seen: %s", kinds)
 	}
+}
+
+// A person's steer into a running turn waits in the queue for the turn's
+// next step, when the agent would read it anyway: until then it can be
+// cancelled; at the step it goes into the turn.
+func TestPersonSteerAtStep(t *testing.T) {
+	h := &queueHandle{status: model.StatusActive, steer: true}
+	n, s := queueNode(t, h)
+	h.sink(adapter.Event{Kind: model.KindTurnStarted, Payload: model.TurnStarted{TurnID: "t1"}})
+	step := func() {
+		h.sink(adapter.Event{Kind: model.KindItemCompleted, Payload: model.Item{TurnID: "t1", ItemID: ulid.New(), ItemType: "commandExecution"}})
+	}
+
+	a := ulid.New()
+	if dr := send(t, n, s, wire.MessageCmd{ID: a, From: "user:web", Owner: true, Text: "stop that", Mode: model.ModeAuto}); dr.Mode != model.ModeQueue {
+		t.Fatalf("a person's steer: %s, want queue (held)", dr.Mode)
+	}
+	if len(h.deliveries()) != 0 || s.queueLen() != 1 {
+		t.Fatal("steered at once")
+	}
+	if err := n.cancelQueued(s, &wire.QueuedCmd{MessageID: a}); err != nil {
+		t.Fatalf("cancel before the step: %v", err)
+	}
+	step()
+	if len(h.deliveries()) != 0 {
+		t.Fatal("a cancelled steer went in")
+	}
+
+	b := ulid.New()
+	send(t, n, s, wire.MessageCmd{ID: b, From: "user:web", Owner: true, Text: "and this", Mode: model.ModeAuto})
+	step()
+	eventually(t, "the held steer in at the step", func() bool {
+		d := h.deliveries()
+		return len(d) == 1 && d[0].mode == adapter.DeliverSteer && s.queueLen() == 0
+	})
 }
