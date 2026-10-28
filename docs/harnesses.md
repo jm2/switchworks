@@ -444,7 +444,7 @@ still put what it reads into a message or a patch. Treat their output as
 untrusted until the elevated sandbox works
 ([openai/codex#48759](https://github.com/openai/codex/issues/48759)).
 
-**GPU access.** The sandbox hides `/dev/dri`, so Vulkan and GL fall back to
+<a id="gpu-access"></a>**GPU access.** The sandbox hides `/dev/dri`, so Vulkan and GL fall back to
 llvmpipe, and a profile entry can't add it back. An allow rule doesn't help
 either: under approval `never` Codex refuses every escalation. Instead,
 run GPU work through a small service outside the sandbox that starts each
@@ -456,6 +456,81 @@ after `--clearenv`: a helper script that runs outside the sandbox with
 the agent's `BASH_ENV`, `PATH` or `LD_PRELOAD` runs the agent's code as
 you. Tests without a display can use SDL's offscreen driver, which still
 renders on the real GPU.
+
+**GPU access on Windows.** Codex's Windows sandbox, elevated or not, runs
+commands on a private desktop (`CodexSandboxDesktop-*`). Direct3D 9 and
+11 cannot reach the display from there (`D3DERR_NOTAVAILABLE`), though
+Vulkan may work. Codex 0.156 removed the only way out of it
+(`windows.sandbox_private_desktop = false`, [openai/codex#46554](https://github.com/openai/codex/pull/46554)).
+Don't let agents work around it by starting programs on your desktop by
+other means and driving them with simulated input: that leaves the
+sandbox entirely. Instead, turn on the node's `gpu_run` tool:
+
+```json
+"gpu_run": {"enabled": true}
+```
+
+With it, an agent calls `gpu_run` with a command (`argv`, optional `cwd`,
+`env` and `timeout_seconds`). The node, which runs in your logon session,
+starts the command on your desktop (`winsta0\default`) and returns its
+exit code and the last 64 KiB of stdout and stderr. The command is
+confined:
+
+- It runs in a Windows AppContainer, one per workspace, at low
+  integrity. It can open only what is granted to that container or to
+  all AppContainers: the session's working directory, its own folder
+  (`%LOCALAPPDATA%\Packages\swk.gpu.*`, where `TEMP`, `APPDATA` and
+  `LOCALAPPDATA` point), and the system files and `Program Files` that
+  Windows lets every AppContainer read. Your profile, the node's key and
+  `~\.codex` are out of reach. This is narrower than the default
+  (unelevated) Codex sandbox, which reads everything you can.
+- In the working directory, every `.git` is read-only (it can't be
+  written, deleted, renamed or have its ACL changed), and the entries of
+  the deny list inside it (the attachment deny list: credential
+  locations, Codex profile denies, `attach_deny`) can't be opened at
+  all. The node grants this with explicit ACEs that it sets on each file
+  and directory itself, through a handle opened without following links.
+  It never relies on Windows' own ACL inheritance, which follows paths
+  and so could follow a junction out of the workspace. Links,
+  hard-linked files and entries whose path changed while they were
+  being opened get nothing. A link where a `.git` or denied entry should
+  be refuses the run. The ACEs stay on the files after the run.
+- It has no network unless `gpu_run.network` is `true`. Loopback is
+  closed either way, so it can't reach the node's local API.
+- It runs in a job with UI limits: no access to other programs' windows,
+  no clipboard, no new or switched desktops, no logoff or shutdown, no
+  system-wide settings. Low integrity also blocks sending input or
+  messages to your programs (UIPI). Display mode changes stay allowed,
+  for full-screen games.
+- It gets a fixed environment (system paths and the container's folders)
+  plus `env`, never the node's own. Its stdin is `NUL`. When the command
+  exits or its time limit passes (default 5 minutes, at most
+  `gpu_run.max_seconds`, up to 30), the job ends everything it started.
+
+Refused: sessions with a `read-only` sandbox, sessions working in your
+home directory (or above it) or inside a denied path, a `cwd` outside the
+working directory, programs on the deny list, and batch files (run them
+through `cmd.exe /d /c`). Each session can have one run at a time.
+
+What stays possible, so weigh it before turning this on:
+
+- Windows appear on your screen, and a program could draw something
+  that looks like a password prompt. Don't type credentials into
+  windows you didn't open.
+- At low integrity a program can probably still read the screen (GDI
+  capture), and so save what you have open into the workspace for the
+  agent to read.
+- It can read whatever Windows grants all AppContainers. That is system
+  files, not your data, unless you have granted `ALL APPLICATION
+  PACKAGES` access somewhere yourself.
+- It talks to the GPU driver, a large kernel attack surface, as any GPU
+  program does.
+
+Direct3D in an AppContainer is what UWP games do, but test your program
+there before relying on it. A program that writes its saves under your
+profile should take its paths from `APPDATA` or `LOCALAPPDATA`; anything
+that reads the real profile through known-folder APIs will get "access
+denied".
 
 ## Images and the vision probe
 

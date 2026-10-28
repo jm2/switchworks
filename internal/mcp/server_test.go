@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/gpurun"
 	"github.com/jm2/switchworks/internal/jsonrpc"
 )
 
@@ -71,6 +72,8 @@ func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "send":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "rate limit: too many messages"})
 		return
+	case "/v1/gpu/run":
+		data = gpurun.Result{ExitCode: 0xC0000005, DurationMS: 1500, Stdout: "frame 300\n", StderrDropped: 10, Stderr: "warn"}
 	default:
 		data = map[string]any{}
 	}
@@ -79,12 +82,17 @@ func (s *stubNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func startServer(t *testing.T, node *stubNode) *jsonrpc.Conn {
 	t.Helper()
+	return startServerWith(t, node, false)
+}
+
+func startServerWith(t *testing.T, node *stubNode, gpu bool) *jsonrpc.Conn {
+	t.Helper()
 	hs := httptest.NewServer(node)
 	t.Cleanup(hs.Close)
 	cr, sw := io.Pipe()
 	sr, cw := io.Pipe()
 	go func() {
-		_ = Serve(sr, sw, &NodeClient{URL: hs.URL, Session: "sess1", Token: "tok"}, t.Logf)
+		_ = Serve(sr, sw, &NodeClient{URL: hs.URL, Session: "sess1", Token: "tok", GPU: gpu}, t.Logf)
 		sw.Close()
 	}()
 	t.Cleanup(func() { cw.Close() })
@@ -233,5 +241,68 @@ func TestAskTwoPhase(t *testing.T) {
 	defer node.mu.Unlock()
 	if len(node.bodies["inbox"]) != 2 {
 		t.Fatalf("inbox calls: %d", len(node.bodies["inbox"]))
+	}
+}
+
+// gpu_run is offered only when the node takes GPU runs, and goes to the
+// node's /v1/gpu/run once, never retried.
+func TestGPURun(t *testing.T) {
+	listed := func(c *jsonrpc.Conn) bool {
+		var tl struct {
+			Tools []Tool `json:"tools"`
+		}
+		if err := c.Call(context.Background(), "tools/list", map[string]any{}, &tl); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range tl.Tools {
+			if tool.Name == "gpu_run" {
+				return true
+			}
+		}
+		return false
+	}
+	off := startServer(t, &stubNode{})
+	if listed(off) {
+		t.Error("gpu_run listed without SWK_GPU_RUN")
+	}
+	if res := callTool(t, off, "gpu_run", map[string]any{"argv": []string{"x"}}); !res.IsError {
+		t.Error("gpu_run ran while off")
+	}
+
+	node := &stubNode{fail: 1}
+	c := startServerWith(t, node, true)
+	if !listed(c) {
+		t.Fatal("gpu_run not listed")
+	}
+	args := map[string]any{"argv": []string{"game.exe", "--frames", "300"}, "cwd": "build", "env": map[string]string{"A": "b"}, "timeout_seconds": 60}
+	res := callTool(t, c, "gpu_run", args)
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "reconnecting") {
+		t.Fatalf("a transient failure was not reported as is: %+v", res)
+	}
+	res = callTool(t, c, "gpu_run", args)
+	text := res.Content[0].Text
+	if res.IsError || !strings.Contains(text, "0xC0000005") || !strings.Contains(text, "frame 300") || !strings.Contains(text, "10 before them dropped") {
+		t.Fatalf("gpu_run: %+v", res)
+	}
+	node.mu.Lock()
+	bodies := node.bodies["/v1/gpu/run"]
+	node.mu.Unlock()
+	var sent gpurun.Request
+	if len(bodies) != 2 || json.Unmarshal(bodies[1], &sent) != nil || sent.Cwd != "build" || sent.TimeoutSeconds != 60 || sent.Env["A"] != "b" || len(sent.Argv) != 3 {
+		t.Fatalf("sent %s", bodies)
+	}
+	for _, bad := range []map[string]any{{}, {"argv": "game.exe"}, {"argv": []string{"x"}, "shell": true}} {
+		if res := callTool(t, c, "gpu_run", bad); !res.IsError {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
+func TestFormatGPUResult(t *testing.T) {
+	got := FormatGPUResult(gpurun.Result{ExitCode: 1, TimedOut: true, DurationMS: 2000, Skipped: 2})
+	for _, s := range []string{"Timed out after 2.0s", "exit code 1)", "2 workspace entries", "stdout: (empty)", "stderr: (empty)"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("%q lacks %q", got, s)
+		}
 	}
 }

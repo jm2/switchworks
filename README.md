@@ -663,7 +663,10 @@ credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exp
 `files_quota_mib`: how much of them the node keeps (default 1024), and
 `attach_deny` and `attach_allow`: paths agents may never attach, and
 paths exempt from the rules on dot-files and credential-like names
-(see [docs/messaging.md](docs/messaging.md#images)).
+(see [docs/messaging.md](docs/messaging.md#images)), and `gpu_run`: on
+Windows, lets agents run GPU work on your desktop, confined, with the
+`gpu_run` tool (off by default; see
+[docs/harnesses.md](docs/harnesses.md#gpu-access)).
 
 ### Trying it without spending tokens
 

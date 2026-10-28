@@ -44,6 +44,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
+| `gpu_run` | Windows nodes with `gpu_run.enabled` only: run a command where it can use the GPU, confined, and get its exit code and output (see [GPU access](harnesses.md#gpu-access)) |
 
 ## Addresses
 
