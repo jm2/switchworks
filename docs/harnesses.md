@@ -494,7 +494,11 @@ confined:
   and so could follow a junction out of the workspace. Links,
   hard-linked files and entries whose path changed while they were
   being opened get nothing. A link where a `.git` or denied entry should
-  be refuses the run. The ACEs stay on the files after the run.
+  be refuses the run. The ACEs stay on the files after the run, and go
+  with a file you move elsewhere on the same drive. To take them away,
+  remove the container's SID (the node log's "GPU run" lines name the
+  workspace; `Get-Acl` shows the SID, `S-1-15-2-…`) with
+  `icacls <dir> /remove:g *<SID> /T /L`.
 - It has no network unless `gpu_run.network` is `true`. Loopback is
   closed either way, so it can't reach the node's local API.
 - It runs in a job with UI limits: no access to other programs' windows,

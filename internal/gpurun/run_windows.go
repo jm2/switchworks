@@ -122,14 +122,14 @@ func Run(ctx context.Context, p Plan) (Result, error) {
 		return Result{}, err
 	}
 	stdout, stderr := os.NewFile(uintptr(outR), "stdout"), os.NewFile(uintptr(errR), "stderr")
-	defer stdout.Close()
-	defer stderr.Close()
 
 	pi, err := start(p, sid, folder, job, nul, outW, errW)
 	syscall.CloseHandle(nul)
 	syscall.CloseHandle(outW)
 	syscall.CloseHandle(errW)
 	if err != nil {
+		stdout.Close()
+		stderr.Close()
 		return Result{}, err
 	}
 	defer syscall.CloseHandle(pi.Process)
@@ -139,8 +139,18 @@ func Run(ctx context.Context, p Plan) (Result, error) {
 	outT, errT := NewTail(MaxOutput), NewTail(MaxOutput)
 	var copies sync.WaitGroup
 	copies.Add(2)
-	go func() { defer copies.Done(); _, _ = io.Copy(outT, stdout) }()
-	go func() { defer copies.Done(); _, _ = io.Copy(errT, stderr) }()
+	// Each copy closes its pipe when it ends (a Close would wait for a read
+	// in progress).
+	for _, c := range []struct {
+		t *Tail
+		f *os.File
+	}{{outT, stdout}, {errT, stderr}} {
+		go func() {
+			defer copies.Done()
+			_, _ = io.Copy(c.t, c.f)
+			c.f.Close()
+		}()
+	}
 
 	exited := make(chan struct{})
 	go func() {
