@@ -44,6 +44,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
+| `workspace_git` | git on the session's own repository, run by its node outside the sandbox (not through the coordinator): `status`, `sync` (fetch, then rebase or fast-forward onto the upstream, carrying uncommitted work), `commit`, `push` (never main, master or the remote's default branch) and `branch_delete`; see [Git for agents](harnesses.md#git-for-agents-workspace_git) |
 
 ## Addresses
 

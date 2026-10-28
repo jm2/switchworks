@@ -410,12 +410,13 @@ own. Forbidden wins over allow for the same prefix, but a forbid on
 with your account on the vendor's side, whatever token the sandbox has.
 Turn apps off for managed sessions (`-c features.apps=false`).
 
-**Git for agents.** To let agents commit, pull and push without your
-credentials:
-- Give them a fine-grained token for their repositories only (Contents,
-  Pull requests and Issues read/write), in a folder the profile leaves
-  readable, and point `GH_CONFIG_DIR` and a git credential helper at it
-  through `[shell_environment_policy.set]`.
+**Git for agents.** Shell git inside the sandbox is unreliable: on
+Windows `.git` is read-only and Git for Windows' `sh.exe` fails under the
+restricted token, so even `git fetch` fails; on Linux the profile keeps
+`.git/config` read-only, so `push -u`, `worktree add` and `branch -D`
+half-fail. Agents should use the `workspace_git` tool instead (see
+[Git for agents: workspace_git](#git-for-agents-workspace_git)). If you
+also want shell git to work on Linux and macOS:
 - `:workspace` keeps `.git` read-only. On Linux and macOS you can make it
   writable while keeping hooks and config out of reach:
 
@@ -430,9 +431,11 @@ credentials:
   Don't do this on Windows. There a read-only child of a writable folder
   can be deleted or replaced, so an agent could plant `core.hooksPath`,
   which then runs outside the sandbox on your next git command.
-- On Windows, agents can't commit. Have them hand patches to an agent on
-  Linux or macOS that pushes them. Check every handed-off patch for secrets
-  before pushing (see below).
+- For pushes from the shell, give the sandbox the same scoped token
+  `workspace_git` uses (below), in a folder the profile leaves readable,
+  and point `GH_CONFIG_DIR` and a git credential helper at it through
+  `[shell_environment_policy.set]`. Check anything an agent hands off as a
+  patch for secrets before pushing it (see below).
 
 **Windows: the default sandbox can read everything you can.** Without
 `[windows] sandbox = "elevated"`, Codex runs commands with your own,
@@ -456,6 +459,116 @@ after `--clearenv`: a helper script that runs outside the sandbox with
 the agent's `BASH_ENV`, `PATH` or `LD_PRELOAD` runs the agent's code as
 you. Tests without a display can use SDL's offscreen driver, which still
 renders on the real GPU.
+
+## Git for agents: workspace_git
+
+`workspace_git` is a fleet tool that the session's own node carries out,
+outside the sandbox, as you (the node's user). It is not sent to the
+coordinator. It works only on the session's own repository: the one its
+working directory is in. Agents are told to `sync` before starting work
+and whenever main moves, and to commit and push through it when shell git
+fails, and always on Windows.
+
+| Op | What it does |
+| --- | --- |
+| `status` | branch, upstream, ahead/behind, changed files |
+| `sync` | fetch, then bring the current branch onto `remote`/`branch` (default: its upstream, else `origin`'s default branch). `strategy` `rebase` (default) rebases local commits, and on a conflict aborts and reports the files, changing nothing; `ff-only` refuses when diverged. Uncommitted changes, untracked files included (ignored ones stay where they are), are saved first and reapplied with a three-way merge; on a conflict the files get conflict markers and are listed |
+| `commit` | `message`; `paths` (default: all changes, untracked included); `new_branch` to create or switch to a branch first. Hooks don't run |
+| `push` | `branch` (default the current one) to its remote, with the upstream set. Never forced; never `main`, `master` or the remote's default branch (asked of the remote at each push) |
+| `branch_delete` | the local branch; with `delete_remote`, also on the remote, only if `workspace_git` pushed it |
+
+Every result carries the repository's status afterwards. Before a sync
+touches the work tree it saves the uncommitted work as a stash-like commit
+(in `git stash list`, "workspace_git sync of …") and as a binary patch in
+`git/saved/` in the node directory (the newest 50 per repository), and
+reports both. If anything fails halfway, the work is put back, and the
+saved copies stay either way.
+
+### Setting it up
+
+Without configuration, `status`, `sync` and `commit` work: fetches use
+whatever anonymous access the remote allows. `push` needs a token of its
+own, never yours. Create a fine-grained GitHub token for the agents'
+repositories only (Contents and Pull requests read/write), log `gh` in
+with it into a directory of its own, and name that directory in
+`node.json`:
+
+```json
+"git": {
+  "gh_config_dir": "~/.config/swk/agent-gh",
+  "push_branch_prefixes": ["swk/<host>/"]
+}
+```
+
+| Key | What it does |
+| --- | --- |
+| `gh_config_dir` | A gh config directory whose `hosts.yml` holds the agent token. Required for `push` (and `branch_delete` with `delete_remote`). `~/` is the home directory. |
+| `push_branch_prefixes` | Optional: the only branch name prefixes `workspace_git` pushes. `<host>` and `<session>` stand for the host and the session's name. Default: any branch but the default branch, `main` and `master`. |
+
+Restart the node after changing them. On each OS:
+
+- **Linux and macOS:**
+  `GH_CONFIG_DIR=~/.config/swk/agent-gh gh auth login --with-token < token.txt`.
+  Keep the directory out of the sandbox's reach (a `deny` in the Codex
+  permission profile), since agents don't need to read it.
+- **Windows:** in PowerShell,
+  `$env:GH_CONFIG_DIR="$HOME\.config\swk\agent-gh"; Get-Content token.txt | gh auth login --with-token`.
+  Git for Windows and `gh` must be on the node's `PATH`. git runs as the
+  node, unsandboxed, so `sh.exe` works. The Windows sandbox can read
+  what you can, so agents could read the token there; scope it to their
+  repositories.
+
+The node runs git with `-c credential.helper= -c "credential.helper=!gh auth
+git-credential"` (gh as found on its `PATH`) and `GH_CONFIG_DIR` set to
+that directory, and removes `GH_TOKEN`, `GITHUB_TOKEN` and the other
+`GH_*` variables from git's environment. Without the setting it still
+clears every credential helper, so neither fetch nor push ever reaches
+your credential manager, keyring or `gh` login.
+
+### What it refuses and why
+
+The work tree is the agent's, and on some hosts `.git` may be writable,
+so the node does not let either choose a command it runs:
+
+- **Other repositories.** `path`, if given, must be inside the session's
+  working directory and in the same repository; a nested repository is
+  refused. `.git` must be a real directory at the top of the work tree,
+  or the `.git` file of a normal linked worktree: its gitdir is
+  `<repository>/worktrees/<name>`, with a `commondir` back to the
+  repository and a `gitdir` back to this `.git` file. A `.git` file
+  pointing anywhere else (a repository the agent made in `/tmp`, another
+  worktree's gitdir) is refused. git then gets `GIT_DIR` and
+  `GIT_WORK_TREE` and does no discovery of its own.
+- **Commands from the repository.** The repository's config is trusted as
+  yours, since agents cannot write `.git/config` (read-only on Windows
+  and in the Linux profile). Still, every git runs with hooks pointed at
+  an empty directory of the node's, and with `core.fsmonitor=false`,
+  `core.sshCommand`, `core.askPass`, `core.alternateRefsCommand`,
+  editors, signing and `http.extraHeader` overridden, submodules not
+  recursed and auto-gc off. A repository whose own config includes another
+  file (`include.path`, `includeIf`) or defines a filter, merge or diff
+  driver is refused, because `.gitattributes` in the work tree picks
+  which driver runs. Your global and system config are used as they are
+  (Windows needs `http.sslBackend` from the system config).
+- **Other transports.** Only https is spoken (`protocol.allow=never`,
+  `protocol.https.allow=always`, `protocol.file.allow=never`). GitHub ssh
+  remotes (`git@github.com:…`, `ssh://git@github.com/…`) are reached over
+  https through `url.https://github.com/.insteadOf` on git's command line,
+  so the repository's config is left alone; other ssh remotes are mapped
+  to https on the same host. Your ssh keys are never used.
+- **Pushes.** No force, no refspecs: the branch name is checked with
+  `git check-ref-format`, and `main`, `master`, the remote's default
+  branch and names outside `push_branch_prefixes` are refused. The
+  upstream is recorded after the push by the node (which can write
+  `.git/config`), so nothing in the sandbox has to.
+- **Author.** Commits take `user.name` and `user.email` from the
+  repository's or your config; an empty name, or one with `$(`, backquotes
+  or angle brackets in it, is replaced by `<host>/<session>
+  <noreply@switchworks.invalid>`.
+
+Each op has a time limit (1 minute for `status`, 5 for `sync` and
+`push`); git is run directly, with no shell, and never prompts
+(`GIT_TERMINAL_PROMPT=0`).
 
 ## Images and the vision probe
 

@@ -663,7 +663,9 @@ credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exp
 `files_quota_mib`: how much of them the node keeps (default 1024), and
 `attach_deny` and `attach_allow`: paths agents may never attach, and
 paths exempt from the rules on dot-files and credential-like names
-(see [docs/messaging.md](docs/messaging.md#images)).
+(see [docs/messaging.md](docs/messaging.md#images)), and `git`: the agent
+token and branch rules of `workspace_git`, the git tool the node runs for
+its sessions (see [docs/harnesses.md](docs/harnesses.md#git-for-agents-workspace_git)).
 
 ### Trying it without spending tokens
 
