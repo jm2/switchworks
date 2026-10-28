@@ -5,6 +5,7 @@ package coord
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,5 +194,14 @@ func TestUnknownStatusProjected(t *testing.T) {
 	}
 	if got := status(2, model.StatusActive); got != model.StatusActive {
 		t.Fatalf("known status stored as %q", got)
+	}
+}
+
+// The hop-limit error says how the chain ends and names the guard.
+func TestHopLimitText(t *testing.T) {
+	for _, want := range []string{"max_hops", "0.1.6", "a person's message", "goes idle"} {
+		if !strings.Contains(ErrHopLimit.Error(), want) {
+			t.Errorf("ErrHopLimit lacks %q: %s", want, ErrHopLimit)
+		}
 	}
 }

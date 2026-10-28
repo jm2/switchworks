@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the queue until the turn's next step, when the agent reads steered input anyway, so it can be
   cancelled until then; Codex cannot take input back once it is in. Its pending bubble no longer
   sticks until a reload: it goes once the turn that carried it ends.
+- **Clearer fleet errors** — The hop-limit error names the `max_hops` guard (off by default since
+  0.1.6) and says that a person's message, or the session going idle, starts the chain over.
+  `fleet_reply` to a notify says it is a notify, which cannot be replied to, and to use
+  `fleet_send`; to an ask already answered, it says when and by whom, and whether that was the
+  caller's own earlier reply. `fleet_inbox` marks open asks to the session `replyable`.
 
 ## [0.1.6] — 2026-10-25
 
