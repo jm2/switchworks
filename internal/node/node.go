@@ -109,6 +109,25 @@ type Config struct {
 	// names that look like credentials (.env, id_ed25519) and on dot-files
 	// when a session works in the home directory. It never lifts a deny.
 	AttachAllow []string `json:"attach_allow,omitempty"`
+
+	// Git configures workspace_git, the git tool the node runs for its
+	// sessions outside their sandbox (see git.go and docs/harnesses.md).
+	Git GitConfig `json:"git"`
+}
+
+// GitConfig is node.json's "git".
+type GitConfig struct {
+	// GHConfigDir is a gh config directory whose hosts.yml holds the
+	// scoped agent token (never the owner's). workspace_git pushes only
+	// with it set, through `gh auth git-credential` with GH_CONFIG_DIR
+	// pointing here; without it, push is refused. "~/" is the home
+	// directory.
+	GHConfigDir string `json:"gh_config_dir,omitempty"`
+	// PushBranchPrefixes, if set, are the only branch name prefixes
+	// workspace_git pushes, e.g. ["swk/<host>/"]; <host> and <session>
+	// stand for this host and the session's name. The remote's default
+	// branch, main and master are refused whatever these say.
+	PushBranchPrefixes []string `json:"push_branch_prefixes,omitempty"`
 }
 
 // spool compaction threshold.
@@ -398,8 +417,15 @@ type Node struct {
 
 	stateMu sync.Mutex
 	filesMu sync.Mutex // orders writeFiles, so the quota holds
-	closing chan struct{}
-	wg      sync.WaitGroup
+	// gitMu guards gitLocks (one workspace_git op at a time per
+	// repository) and pushed.json.
+	gitMu    sync.Mutex
+	gitLocks map[string]*sync.Mutex
+	// gitAllowLocal lets workspace_git fetch from and push to a local
+	// repository without credentials. Tests only.
+	gitAllowLocal bool
+	closing       chan struct{}
+	wg            sync.WaitGroup
 
 	status *runstatus.Reporter // status.json for `swk service status` and the tray
 }
