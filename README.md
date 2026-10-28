@@ -658,6 +658,10 @@ and providers, fleet tools, and what each supports.
 and `codex.permissions`: a Codex permission profile for `workspace-write`
 sessions, which can give them the network while denying reads of your
 credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)),
+`codex.session_env`: variables and `PATH` directories for sessions' commands
+(see [docs/harnesses.md](docs/harnesses.md#codex-session-environment)),
+`session_cache`: where each Codex session's own cache directory goes
+(see [docs/harnesses.md](docs/harnesses.md#codex-session-caches)),
 `files_dir`: where files received with messages go (default
 `<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)),
 `files_quota_mib`: how much of them the node keeps (default 1024), and

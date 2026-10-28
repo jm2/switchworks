@@ -122,10 +122,12 @@ func (n *Node) gcImages(s *session) {
 	}
 }
 
-// dropImages removes everything the node keeps for a stopped session.
-func (n *Node) dropImages(id string) {
+// dropSessionDirs removes everything the node keeps for a stopped session:
+// its images, scratch and cache directories.
+func (n *Node) dropSessionDirs(id string) {
 	_ = os.RemoveAll(n.attachDir(id))
 	_ = os.RemoveAll(n.scratchDir(id))
+	n.dropCache(id)
 }
 
 // pathArg is a fleet argument that lists files an agent attaches by path,

@@ -200,10 +200,15 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 
 // CodexOptions sets o's Codex fields from node.json as the node's sessions
 // get them: codex.bin, codex.args, codex.config (with codex.lean and, on
-// Windows, the sandbox default), codex.permissions and codex.home. `swk
-// dev run` uses it too, so it tests the sandbox sessions get.
+// Windows, the sandbox default), codex.permissions, codex.home,
+// codex.session_env and how threads get their session cache. `swk dev run`
+// uses it too, so it tests the sandbox and environment sessions get.
 func CodexOptions(cfg Config, o *harness.Options, logf func(string, ...any)) error {
 	codexConf, err := codexConfig(cfg)
+	if err != nil {
+		return err
+	}
+	env, err := codexEnv(cfg)
 	if err != nil {
 		return err
 	}
@@ -211,11 +216,13 @@ func CodexOptions(cfg Config, o *harness.Options, logf func(string, ...any)) err
 		logf = func(string, ...any) {}
 	}
 	hostCodexConfig(cfg, codexConf, logf)
-	o.CodexBin, o.CodexArgs, o.CodexConfig, o.CodexPermissions = cfg.Codex.Bin, cfg.Codex.Args, codexConf, cfg.Codex.Permissions
-	o.CodexEnv = nil
-	if cfg.Codex.Home != "" {
-		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}
+	var configTOML []byte
+	if home := codexHome(cfg); home != "" {
+		configTOML, _ = os.ReadFile(filepath.Join(home, "config.toml"))
 	}
+	o.CodexBin, o.CodexArgs, o.CodexConfig, o.CodexPermissions = cfg.Codex.Bin, cfg.Codex.Args, codexConf, cfg.Codex.Permissions
+	o.CodexEnv = env
+	o.CodexCache = codexCache(cfg, codexConf, configTOML, logf)
 	return nil
 }
 

@@ -144,6 +144,7 @@ The `codex` object in `node.json` configures how the node runs
 | `config` | Config overrides, passed as `-c key=value` ahead of `args`. |
 | `lean` | `true` adds the [lean defaults](#codex-lean-sessions) to `config`. Default `false`. |
 | `permissions` | A permission profile for `workspace-write` sessions ([below](#codex-network-without-exposing-credentials)). |
+| `session_env` | Variables and `PATH` directories for the commands sessions run ([below](#codex-session-environment)). |
 
 `args` replaces the argument list rather than adding to it, so it must
 still name the subcommand: `["-c", "x=1"]` alone runs Codex without
@@ -188,6 +189,119 @@ When app-server fails to start, the node log has the end of what it
 wrote to stderr, which usually says why (an unknown argument, a
 `config.toml` error). The full output is in `logs/harness.log` in the
 node directory.
+
+### Codex: session environment
+
+`codex.session_env` sets variables for the commands Codex sessions run,
+and adds directories to their `PATH`:
+
+```json
+"codex": {
+  "session_env": {
+    "set": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.sslBackend", "GIT_CONFIG_VALUE_0": "openssl"},
+    "path_prepend": ["C:\\Users\\thesa\\tools\\glslang"],
+    "path_append": []
+  }
+}
+```
+
+The first example makes Git for Windows use OpenSSL instead of
+Windows' TLS stack, as `git -c http.sslBackend=openssl` would, for every
+`git` a session runs. The second puts a directory first on `PATH`, here
+for an arm64 `glslangValidator` on a Windows arm64 host, so the agent
+finds it before any other.
+
+The node applies `session_env` to the environment it starts
+`codex app-server` with, and Codex passes its environment on to every
+command (its default `shell_environment_policy.inherit = "all"`). Codex
+then adds its own `PATH` entries on top: its `apply_patch` shim, the
+Windows sandbox's helpers, its versioned `codex-path` folder. That is
+why `PATH` doesn't belong in `shell_environment_policy.set`, which
+would freeze a copy of those entries and break at the next Codex update.
+
+- `set` replaces a variable's value. A `PATH` in it replaces the node's
+  `PATH`, and `path_prepend` and `path_append` then apply to it.
+- `path_prepend` and `path_append` add directories ahead of and after the
+  node's `PATH`: on Linux and macOS that's the login shell's `PATH` that
+  `swk service install` gives the service (the `swk-path.conf` drop-in on
+  Linux). Each directory must be absolute (`~/` is your home) and appears
+  once: a prepended one already on `PATH` moves to the front, an
+  appended one already there stays where it is. The node joins them with the OS's
+  separator (`;` on Windows, `:` elsewhere) and keeps the node's spelling
+  of the name (`Path` on Windows).
+- A `shell_environment_policy.set.<VAR>` in `codex.config` (or a `-c` in
+  `codex.args`, or `config.toml`) wins over `session_env` for that
+  variable, since Codex applies it after inheriting.
+- `shell_environment_policy.inherit = "core"` keeps only a core set of
+  variables (`PATH`, `HOME` and a few others), and `"none"` drops all of
+  them, `session_env` included. With `ignore_default_excludes = false`,
+  Codex also drops every variable whose name contains `KEY`, `SECRET` or
+  `TOKEN`, so `GIT_CONFIG_KEY_0` from the example; set such ones in
+  `shell_environment_policy.set` instead.
+- The variables are app-server's own too, so they also reach Codex's
+  own `git` calls and MCP servers. `CODEX_HOME` can't be set here: use
+  `codex.home`.
+
+Restart the node after changing `session_env`.
+
+### Codex: session caches
+
+Inside the sandbox `~/.cache` isn't writable, so `ccache` (with
+`USE_CCACHE=1`, or Fedora's `/usr/lib64/ccache` first on `PATH`) and
+`gh` (`~/.cache/gh`) fail. The node gives each Codex session a cache
+directory of its own, `<user cache dir>/switchworks/session-cache/<session id>`
+(`~/.cache/...` on Linux, `~/Library/Caches/...` on macOS,
+`%LOCALAPPDATA%\switchworks\...` on Windows; mode 0700), and points
+`XDG_CACHE_HOME` and `CCACHE_DIR` at it in that session's commands.
+
+The directory is made writable for that session's thread only, through
+the per-thread config Switchworks sends with `thread/start` and
+`thread/resume`, so one agent can't write, or poison, another's cache:
+
+- **Permission profile** (`codex.permissions`, on Linux and macOS): a
+  `"<dir>" = "write"` entry is added to the profile's filesystem table.
+  It merges with your `[permissions.<name>.filesystem]` table in
+  `config.toml`. If `codex.config` or `codex.args` sets that table (or
+  the whole profile) with `-c`, the entry would replace it, so the node
+  logs that it can't add one and the directory stays read-only: add
+  the cache root to the profile yourself in that case.
+- **Legacy `workspace-write`** (Windows, and any node without
+  `codex.permissions`): the directory is added to
+  `sandbox_workspace_write.writable_roots`. The per-thread value replaces
+  the whole list, so the node sends it with the roots you set: those in
+  `codex.config` or `codex.args`, else those in `config.toml` (in
+  `codex.home`, `CODEX_HOME` or `~/.codex`; a project's
+  `.codex/config.toml` is not read, and its `writable_roots` don't apply
+  to managed sessions). Write them as an array of strings, in a
+  `[sandbox_workspace_write]` table or as
+  `sandbox_workspace_write.writable_roots`. In another form (an inline
+  table, say) the node can't read them, logs so at start, and leaves the
+  list alone; the directory then stays read-only.
+- `danger-full-access` sessions get the variables, and `read-only`
+  sessions get nothing.
+
+Either way, a variable you set yourself is left alone: `CCACHE_DIR` or
+`XDG_CACHE_HOME` in `codex.session_env.set`, in
+`shell_environment_policy.set` in `codex.config` or `codex.args`, or in
+`[shell_environment_policy.set]` in `config.toml`. When the node can't
+make the directory writable it still sets the variables, so tools fail
+as they would have on `~/.cache`.
+
+The directory is kept across node restarts and removed when the session
+stops, fails to start, or is forgotten; at start the node also removes
+those of sessions it no longer has. `session_cache` in `node.json`
+moves the root (`{"dir": "/srv/swk-cache"}`) or turns it off
+(`{"disabled": true}`). Keep the root out of `/tmp` and `$TMPDIR`,
+which every legacy `workspace-write` session can write, and out of any
+session's working directory; and keep it out of the paths your profile
+denies (`~/.config/swk`). Another session whose working directory
+contains the root, such as one in your home directory, can still write
+it.
+
+Verified with Codex 0.163 on Linux, legacy and profile
+(`SWK_CODEX_IT=1 go test -run TestRealCodexSessionCache ./internal/e2e/`).
+On macOS and Windows the overrides are the same; that the sandboxes
+there honor them is not yet checked on a live host.
 
 ### Codex: lean sessions
 

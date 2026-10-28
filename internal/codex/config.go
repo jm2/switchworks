@@ -221,17 +221,30 @@ func Subcommand(args []string) string {
 // or after its subcommand.
 func ConfigKeys(args []string) []string {
 	var keys []string
+	eachConfigArg(args, func(k, _ string) { keys = append(keys, k) })
+	return keys
+}
+
+// ConfigArgs returns the -c overrides of a codex argv, key -> TOML value
+// as written; for a key given twice, the last.
+func ConfigArgs(args []string) map[string]string {
+	out := map[string]string{}
+	eachConfigArg(args, func(k, v string) { out[k] = v })
+	return out
+}
+
+func eachConfigArg(args []string, f func(key, value string)) {
 	add := func(kv string) {
-		k, _, _ := strings.Cut(kv, "=")
+		k, v, _ := strings.Cut(kv, "=")
 		if k = strings.TrimSpace(k); k != "" {
-			keys = append(keys, k)
+			f(k, strings.TrimSpace(v))
 		}
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--":
-			return keys
+			return
 		case a == "-c" || a == "--config":
 			if i+1 < len(args) {
 				add(args[i+1])
@@ -245,7 +258,6 @@ func ConfigKeys(args []string) []string {
 			i++
 		}
 	}
-	return keys
 }
 
 // ConfigSetsWindowsSandbox reports whether a config.toml sets a Windows
