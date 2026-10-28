@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,9 +46,7 @@ func TestResolveCwd(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, "sub", "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(out, filepath.Join(ws, "escape")); err != nil {
-		t.Fatal(err)
-	}
+	links := os.Symlink(out, filepath.Join(ws, "escape")) == nil // Windows: needs developer mode
 	os.WriteFile(filepath.Join(ws, "file"), nil, 0o644)
 	for in, want := range map[string]string{"": ws, ".": ws, "sub/dir": filepath.Join(ws, "sub", "dir"), filepath.Join(ws, "sub"): filepath.Join(ws, "sub")} {
 		got, err := ResolveCwd(ws, in)
@@ -55,21 +54,36 @@ func TestResolveCwd(t *testing.T) {
 			t.Errorf("ResolveCwd(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"..", "escape", out, "missing", "file"} {
+	refused := []string{"..", out, "missing", "file"}
+	if links {
+		refused = append(refused, "escape")
+	}
+	for _, in := range refused {
 		if got, err := ResolveCwd(ws, in); err == nil {
 			t.Errorf("ResolveCwd(%q) = %q, accepted", in, got)
 		}
 	}
 }
 
+// abs makes a test path absolute on this OS.
+func abs(p string) string {
+	if runtime.GOOS == "windows" {
+		return `C:` + filepath.FromSlash(p)
+	}
+	return p
+}
+
 func TestCheckWorkspace(t *testing.T) {
-	home := "/home/u"
-	deny := []string{"/home/u/.ssh", "/home/u/secret"}
-	if err := CheckWorkspace("/home/u/src/game", home, deny); err != nil {
+	home := abs("/home/u")
+	deny := []string{abs("/home/u/.ssh"), abs("/home/u/secret")}
+	if err := CheckWorkspace(abs("/home/u/src/game"), home, deny); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" && CheckWorkspace(`c:\HOME\u`, home, nil) == nil {
+		t.Error("case")
+	}
 	for _, ws := range []string{"/home/u", "/home", "/", "/home/u/secret", "/home/u/secret/x"} {
-		if CheckWorkspace(ws, home, deny) == nil {
+		if ws = abs(ws); CheckWorkspace(ws, home, deny) == nil {
 			t.Errorf("%s accepted", ws)
 		}
 	}
@@ -177,5 +191,29 @@ func TestTail(t *testing.T) {
 	u.Write([]byte("b"))
 	if !strings.HasSuffix(u.String(), "b") || strings.ContainsRune(u.String(), 0xC3) {
 		t.Errorf("%q", u.String())
+	}
+}
+
+func TestFindProgram(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh and exec bits; see run_windows_test.go")
+	}
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(ws, "bin"), 0o755)
+	os.WriteFile(filepath.Join(ws, "bin", "game"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(ws, "notexec"), nil, 0o644)
+	os.WriteFile(filepath.Join(ws, "game2"), []byte("#!/bin/sh\n"), 0o755)
+	if p, err := FindProgram("bin/game", ws); err != nil || p != filepath.Join(ws, "bin", "game") {
+		t.Errorf("relative: %q %v", p, err)
+	}
+	if p, err := FindProgram("sh", ws); err != nil || !filepath.IsAbs(p) {
+		t.Errorf("PATH: %q %v", p, err)
+	}
+	t.Chdir(ws)
+	t.Setenv("PATH", ".")
+	for _, a := range []string{"game2", "notexec", "missing/x"} {
+		if p, err := FindProgram(a, ws); err == nil {
+			t.Errorf("%s found: %s", a, p)
+		}
 	}
 }

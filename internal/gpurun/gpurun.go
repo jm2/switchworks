@@ -24,15 +24,20 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 )
 
 // ErrUnsupported is returned where confined GPU runs are not implemented.
 var ErrUnsupported = errors.New("GPU runs through the node are only implemented on Windows; on Linux use swk-gpu-run")
+
+// DefaultDesktop is the interactive desktop.
+const DefaultDesktop = `winsta0\default`
 
 // Limits.
 const (
@@ -73,6 +78,11 @@ type Result struct {
 	// of each stream (only the last MaxOutput bytes are kept).
 	StdoutDropped int64 `json:"stdout_dropped,omitempty"`
 	StderrDropped int64 `json:"stderr_dropped,omitempty"`
+	// Skipped counts workspace entries the container was not given access
+	// to: links (symlinks, junctions, hard links), entries whose path
+	// changed while they were opened, and entries whose ACL the node
+	// cannot change.
+	Skipped int `json:"skipped,omitempty"`
 }
 
 // Plan is a checked run, ready for Run.
@@ -84,6 +94,9 @@ type Plan struct {
 	Env       map[string]string // added to the base environment
 	Timeout   time.Duration
 	Network   bool // give the AppContainer the client network capabilities
+	// Desktop is the desktop the command runs on (Windows: DefaultDesktop,
+	// where Direct3D reaches the display); "" inherits the node's.
+	Desktop string
 	// ReadOnly are paths in Workspace the command may read but not change,
 	// delete or rename: every .git. Hidden are paths it may not open at all:
 	// the deny list's entries inside the workspace.
@@ -388,6 +401,26 @@ func escapeArg(s string) string {
 	return b.String()
 }
 
+// FindProgram resolves argv0 for a run in cwd: a path (one with a
+// separator) is taken relative to cwd; a bare name is looked up on the
+// node's PATH, never in the current directory. On Windows both try PATHEXT.
+func FindProgram(argv0, cwd string) (string, error) {
+	p := argv0
+	if strings.ContainsAny(argv0, `/\`) || filepath.VolumeName(argv0) != "" {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cwd, p)
+		}
+	}
+	found, err := exec.LookPath(p)
+	if err != nil || !filepath.IsAbs(found) {
+		return "", fmt.Errorf("%s: no such program (a bare name is looked up on the node's PATH; give a path for one in the workspace)", argv0)
+	}
+	if err := CheckProgram(found); err != nil {
+		return "", err
+	}
+	return found, nil
+}
+
 // CheckProgram refuses programs CreateProcess would hand to cmd.exe, whose
 // own parsing the quoting above does not cover.
 func CheckProgram(path string) error {
@@ -398,8 +431,10 @@ func CheckProgram(path string) error {
 	return nil
 }
 
-// Tail keeps the last max bytes written to it and counts the rest.
+// Tail keeps the last max bytes written to it and counts the rest. It is
+// safe for concurrent use.
 type Tail struct {
+	mu      sync.Mutex
 	max     int
 	buf     []byte
 	dropped int64
@@ -409,6 +444,8 @@ type Tail struct {
 func NewTail(max int) *Tail { return &Tail{max: max} }
 
 func (t *Tail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	n := len(p)
 	if len(p) >= t.max {
 		t.dropped += int64(len(t.buf) + len(p) - t.max)
@@ -428,4 +465,8 @@ func (t *Tail) Write(p []byte) (int, error) {
 func (t *Tail) String() string { return strings.ToValidUTF8(string(t.buf), "�") }
 
 // Dropped is the number of bytes not kept.
-func (t *Tail) Dropped() int64 { return t.dropped }
+func (t *Tail) Dropped() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.dropped
+}

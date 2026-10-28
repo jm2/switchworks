@@ -2,7 +2,11 @@
 
 package gpurun
 
-import "bytes"
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+)
 
 // The AppContainer reaches the workspace through ACEs for its SID, which the
 // node adds to each file and directory itself (aclwalk_windows.go): an
@@ -141,4 +145,64 @@ func PathMode(path string, readOnly, hidden []string) Mode {
 		}
 	}
 	return ModeWrite
+}
+
+// ParseACL reads an ACL's ACEs and revision. ACEs other than plain allow
+// and deny keep only Raw (and Type and Flags).
+func ParseACL(b []byte) (rev byte, aces []ACE, err error) {
+	if len(b) < 8 {
+		return 0, nil, errors.New("ACL too short")
+	}
+	rev = b[0]
+	size, count := int(binary.LittleEndian.Uint16(b[2:])), int(binary.LittleEndian.Uint16(b[4:]))
+	if size > len(b) || size < 8 {
+		return 0, nil, errors.New("bad ACL size")
+	}
+	b = b[8:size]
+	for i := 0; i < count; i++ {
+		if len(b) < 4 {
+			return 0, nil, errors.New("ACL truncated")
+		}
+		n := int(binary.LittleEndian.Uint16(b[2:]))
+		if n < 4 || n > len(b) {
+			return 0, nil, errors.New("bad ACE size")
+		}
+		a := ACE{Type: b[0], Flags: b[1], Raw: append([]byte(nil), b[:n]...)}
+		if (a.Type == aceAllowed || a.Type == aceDenied) && n >= 16 {
+			a.Mask = binary.LittleEndian.Uint32(b[4:])
+			sid := b[8:n]
+			if sl := 8 + 4*int(sid[1]); sl <= len(sid) {
+				a.SID = append([]byte(nil), sid[:sl]...)
+			}
+		}
+		aces = append(aces, a)
+		b = b[n:]
+	}
+	return rev, aces, nil
+}
+
+// MarshalACL builds an ACL of aces (Raw where set, else Type, Flags, Mask
+// and SID). Revision 2 (ACL_REVISION) unless rev is higher.
+func MarshalACL(rev byte, aces []ACE) []byte {
+	if rev < 2 {
+		rev = 2
+	}
+	body := []byte{}
+	for _, a := range aces {
+		if a.Raw != nil {
+			body = append(body, a.Raw...)
+			continue
+		}
+		n := 8 + len(a.SID)
+		e := make([]byte, 8, n)
+		e[0], e[1] = a.Type, a.Flags
+		binary.LittleEndian.PutUint16(e[2:], uint16(n))
+		binary.LittleEndian.PutUint32(e[4:], a.Mask)
+		body = append(body, append(e, a.SID...)...)
+	}
+	h := make([]byte, 8, 8+len(body))
+	h[0] = rev
+	binary.LittleEndian.PutUint16(h[2:], uint16(8+len(body)))
+	binary.LittleEndian.PutUint16(h[4:], uint16(len(aces)))
+	return append(h, body...)
 }

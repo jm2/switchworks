@@ -59,3 +59,28 @@ func TestPathMode(t *testing.T) {
 		}
 	}
 }
+
+func TestACLRoundTrip(t *testing.T) {
+	sid := []byte{1, 1, 0, 0, 0, 0, 0, 15, 2, 0, 0, 0} // S-1-15-2, one subauthority
+	ownerSID := []byte{1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0}
+	audit := []byte{0x11, 0, 8, 0, 1, 2, 3, 4} // an ACE of another type, kept as is
+	b := MarshalACL(2, []ACE{{Type: aceAllowed, Flags: inheritedACE, Mask: fileAllAccess, SID: ownerSID}, {Type: 0x11, Raw: audit}})
+	rev, aces, err := ParseACL(b)
+	if err != nil || rev != 2 || len(aces) != 2 || aces[0].Mask != fileAllAccess || string(aces[0].SID) != string(ownerSID) || string(aces[1].Raw) != string(audit) {
+		t.Fatalf("%v %d %+v", err, rev, aces)
+	}
+	out, _ := PlanDACL(aces, sid, ModeRead, true)
+	b2 := MarshalACL(rev, out)
+	_, again, err := ParseACL(b2)
+	if err != nil || len(again) != 4 || again[0].Type != aceDenied || string(again[0].SID) != string(sid) || again[0].Flags != inheritFlags {
+		t.Fatalf("%v %+v", err, again)
+	}
+	if _, changed := PlanDACL(again, sid, ModeRead, true); changed {
+		t.Error("parsed plan not recognised as applied")
+	}
+	for _, bad := range [][]byte{nil, {2, 0, 200, 0, 1, 0, 0, 0}, {2, 0, 12, 0, 1, 0, 0, 0, 0, 0, 99, 0}} {
+		if _, _, err := ParseACL(bad); err == nil {
+			t.Errorf("%v parsed", bad)
+		}
+	}
+}
