@@ -7,8 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-10-28
+
+### Added
+
+- **Fleet resource locks** — `fleet_lock`, `fleet_unlock` and `fleet_locks` give agents leases on
+  things they share (a host's GPU, a LAN port, a whole test host) instead of messaging each other
+  to ask whether one is free: `held` with a lease id and expiry, or `busy` with the holder, its
+  note and expiry. Leases end at their TTL (default 30 minutes, at most 6 hours; locking again
+  renews), on unlock, or when the holder's session stops; `wait_seconds` waits for one, first come
+  first served. `swk locks` and `GET /v1/locks` list them; the owner breaks one with `swk locks
+  break` or `DELETE /v1/locks/{name}`. Leases live in the coordinator's memory.
+- **Reminders instead of polling** — `fleet_remind {in_seconds, text, id}` has the coordinator send
+  the calling session a `system` message after 60 s to 24 h, starting a turn if it is idle, so an
+  agent waiting on CI, a build or a person can end its turn instead of polling in it. A new reminder
+  with a pending one's id replaces it, `{cancel: id}` cancels one, reminders survive a coordinator
+  restart and are dropped when the session stops. `swk reminders <session>` and `GET
+  /v1/sessions/{id}/reminders` list them; an owner can cancel one. The `swk mcp` instructions now
+  say to wait with a reminder, to ask people with `wait_seconds` 0 and carry on, and to keep
+  acknowledgements quiet.
+- **Quiet messages** — `quiet` on `fleet_send`, the API and `swk msg`/`send --quiet`: the message
+  never starts a turn of its own. A running turn takes it as usual; an idle session keeps it queued
+  until its next turn starts for something else (or a person sends it now), and it still expires.
+  The MCP instructions tell agents to send acknowledgements and FYIs quiet and never to reply just
+  to acknowledge, which cost a whole turn of context each.
+- **Turns cut off by a restart continue** — A session whose turn was running when the node went
+  down (an upgrade, a reboot), or when Codex's app-server crashed under it, gets one `system`
+  message once it is resumed, starting a new turn that tells the agent to carry on and check what
+  it was running, instead of sitting idle until someone prompts it. Not for turns a person
+  interrupted, nor stopped sessions; `"continue_interrupted": false` in `node.json` turns it off.
+- **Session environment** — `codex.session_env` in `node.json` sets variables (`set`) and adds
+  `PATH` directories (`path_prepend`, `path_append`) for the commands Codex sessions run, such as
+  `GIT_CONFIG_*` for Git for Windows' OpenSSL backend or a tool directory first on `PATH`. The node
+  applies it to app-server's environment, which Codex passes on, so Codex's own `PATH` entries
+  stay; `shell_environment_policy.set` in `codex.config` still wins for a variable.
+- **Per-session caches** — Each Codex session gets a cache directory of its own,
+  `<user cache dir>/switchworks/session-cache/<session>`, writable in its sandbox only (a profile
+  entry, or one more legacy writable root, sent per thread), with `XDG_CACHE_HOME` and
+  `CCACHE_DIR` pointing at it unless you set them. `ccache` and `gh` work in the sandbox, and no
+  agent can write another's cache. It is removed when the session stops or is forgotten;
+  `session_cache` moves or disables it.
+- **Git for agents: `workspace_git`** — A fleet tool the session's own node runs outside the
+  sandbox, on the session's repository only, so agents can sync, commit and push where shell git
+  fails (on Windows, and where `.git/config` is read-only). `sync` fetches and rebases or
+  fast-forwards onto the upstream, saving uncommitted and untracked work (a stash entry and a patch
+  under the node directory) and reapplying it, with conflict markers on a conflict; `commit` takes
+  a message, paths and a new branch; `push` never forces and refuses main, master and the remote's
+  default branch; `branch_delete` removes only branches it pushed from the remote. Pushes use a
+  scoped agent token through `gh` (`git.gh_config_dir` in `node.json`; `git.push_branch_prefixes`
+  can restrict branch names), never the owner's credentials or ssh keys: GitHub ssh remotes go over
+  https. Hooks, fsmonitor and other repository-configured commands never run.
+- **GPU runs on Windows** — `gpu_run` (off unless `node.json` sets `gpu_run.enabled`): Codex's
+  Windows sandbox runs commands on a private desktop where Direct3D can't reach the display, so an
+  agent can ask its node to run a command on your desktop instead. The command runs in an
+  AppContainer that can write the session's working directory (`.git` read-only, the deny list's
+  files unreadable) and can't open your profile. It has no network unless `gpu_run.network` is set,
+  and runs in a job with UI limits (no other windows, no clipboard, no desktop switching) and a time
+  limit; its exit code and output come back. See the GPU access section of docs/harnesses.md for
+  what it still allows.
+
 ### Fixed
 
+- **Steers count toward `max_hops` again** — 0.1.6 stopped a steer into a running turn from
+  raising its hop count, which let two agents steering into each other's turns loop past a
+  `max_hops` the owner had set. Steers count again; a person's message still starts it over.
+- **Codex turns resend the approval policy only when it changes** — Every `turn/start` carried the
+  session's approval policy, which app-server applies as a thread settings update and records as
+  `thread_settings_applied`, once per turn. It now goes only with the first turn after a change.
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
   of its ask quoted under the header, and `fleet_inbox` lists it as `re_text`, so an agent with
   several questions out can tell "1. yes" to one apart from another without looking it up.
@@ -16,6 +81,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the queue until the turn's next step, when the agent reads steered input anyway, so it can be
   cancelled until then; Codex cannot take input back once it is in. Its pending bubble no longer
   sticks until a reload: it goes once the turn that carried it ends.
+- **`fleet_inbox` with a ticket waits as long as asked** — `fleet_inbox(ticket, wait_seconds)` gave
+  up after 3 minutes with "context deadline exceeded"; it now gets its `wait_seconds` (at most 1800)
+  plus a minute, and an ask still unanswered when the wait ends comes back as pending, "Not answered
+  yet", not as an error.
+- **"cannot reach the swk node: EOF"** — Each fleet tool call left its connection to the node's
+  local API open and idle for 2 minutes, so a busy host could fill the node's connection cap, and
+  then every call failed with EOF for as long as the retries lasted. `swk mcp` now opens a new
+  connection per call and the node closes it after answering. The node logs failed local API
+  requests and refused connections, which before left nothing in its log.
+- **`swk service restart` no longer races the old process** — On Windows, stop returns only once
+  the old process has let go of its run lock, so restart cannot start the new one while the old one
+  is still saving its state and ending its harnesses; the new one used to fail with "already
+  running" and nothing started it again. On every OS the node and coordinator also wait up to 45 s
+  at startup for an old process that is shutting down.
+- **`swk dev run` uses the node's Codex settings** — It started Codex without `node.json`'s
+  `codex.args` or `codex.config`, so it tested a different sandbox than sessions get (on Windows,
+  read-only and "degraded" while the sessions were fine). It now builds Codex's options from
+  `node.json` as the node does, says so, and takes `--node-dir` and `--no-node-config`.
+- **Clearer fleet errors** — The hop-limit error names the `max_hops` guard (off by default since
+  0.1.6) and says that a person's message, or the session going idle, starts the chain over.
+  `fleet_reply` to a notify says it is a notify, which cannot be replied to, and to use
+  `fleet_send`; to an ask already answered, it says when and by whom, and whether that was the
+  caller's own earlier reply. `fleet_inbox` marks open asks to the session `replyable`.
 
 ## [0.1.6] — 2026-10-25
 
@@ -374,7 +462,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Running sessions grow without bound** — Only ended sessions are deleted.
 - **Web UI tested in Chromium only** — Safari on iOS has not been tried.
 
-[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/jm2/switchworks/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/jm2/switchworks/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/jm2/switchworks/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/jm2/switchworks/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/jm2/switchworks/compare/v0.1.3...v0.1.4

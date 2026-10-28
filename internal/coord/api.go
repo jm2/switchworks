@@ -53,11 +53,13 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"GET /v1/sessions/{id}/events", scopeRead, s.handleEvents},
 		{"GET /v1/sessions/{id}/stream", scopeRead, s.handleStream},
 		{"GET /v1/sessions/{id}/queue", scopeRead, s.handleQueue},
+		{"GET /v1/sessions/{id}/reminders", scopeRead, s.handleReminders},
 		{"GET /v1/messages", scopeRead, s.handleListMessages},
 		{"GET /v1/messages/{id}", scopeRead, s.handleGetMessage},
 		{"GET /v1/usage", scopeRead, s.handleUsage},
 		{"GET /v1/attachments/{sha256}", scopeRead, s.handleAttachment},
 		{"GET /v1/stream", scopeRead, s.handleFleetStream},
+		{"GET /v1/locks", scopeRead, s.handleLocks},
 		// A sign-in link carries the minting credential's scope, never more.
 		{"POST /v1/ui-links", scopeRead, s.handleUILink},
 
@@ -68,6 +70,7 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/sessions/{id}/stop", scopeOperate, s.handleSimple(wire.OpStop)},
 		{"POST /v1/sessions/{id}/policy", scopeOperate, s.handlePolicy},
 		{"POST /v1/sessions/{id}/approvals/{aid}", scopeOperate, s.handleApprove},
+		{"POST /v1/sessions/{id}/reminders/{rid}/cancel", scopeOperate, s.handleCancelReminder},
 		{"POST /v1/messages", scopeOperate, s.handlePostMessage},
 		{"POST /v1/messages/{id}/reply", scopeOperate, s.handleReplyMessage},
 		{"POST /v1/messages/{id}/promote", scopeOperate, s.handlePromote},
@@ -75,6 +78,9 @@ func (s *Server) apiRoutes() []apiRoute {
 		{"POST /v1/messages/{id}/dismiss", scopeOperate, s.handleDismiss},
 		{"POST /v1/messages/{id}/undismiss", scopeOperate, s.handleUndismiss},
 		{"POST /v1/messages/{id}/read", scopeOperate, s.handleMarkRead},
+		// Breaking a lock also needs the owner's credential or admin
+		// scope (handleBreakLock).
+		{"DELETE /v1/locks/{name...}", scopeOperate, s.handleBreakLock},
 
 		// admin: change who is in the fleet and who may use it, and erase
 		// history.
@@ -355,6 +361,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		Mode        string             `json:"mode"`
 		From        string             `json:"from"`
 		Supersedes  string             `json:"supersedes"`
+		Quiet       bool               `json:"quiet"`
 		Attachments []model.Attachment `json:"attachments"`
 		Files       []model.Attachment `json:"files"`
 	}
@@ -389,7 +396,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msgs, err := s.router.send(r.Context(), from, model.MsgNotify, fleet.SendArgs{To: sess.ID, Text: body.Text, Mode: body.Mode,
-		Supersedes: body.Supersedes, Attachments: body.Attachments, FileAttachments: body.Files})
+		Supersedes: body.Supersedes, Quiet: body.Quiet, Attachments: body.Attachments, FileAttachments: body.Files})
 	if err != nil {
 		writeErr(w, routeStatus(err), err)
 		return
@@ -451,7 +458,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 			body.Mode = model.ModeAuto
 		}
 		res, err := s.router.sendEach(r.Context(), from, kind, fleet.SendArgs{To: body.To, ToList: body.ToList, Text: body.Text, Mode: body.Mode,
-			TTLSeconds: body.TTLSeconds, Supersedes: body.Supersedes, Attachments: body.Attachments, FileAttachments: body.Files})
+			TTLSeconds: body.TTLSeconds, Supersedes: body.Supersedes, Quiet: body.Quiet, Attachments: body.Attachments, FileAttachments: body.Files})
 		if err != nil {
 			writeErr(w, routeStatus(err), err)
 			return
@@ -464,6 +471,10 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Supersedes != "" {
 			writeErr(w, 400, errors.New("supersedes is for notifies, not asks"))
+			return
+		}
+		if body.Quiet {
+			writeErr(w, 400, errors.New("quiet is for notifies, not asks"))
 			return
 		}
 		wait := 0

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -43,6 +44,30 @@ type Config struct {
 	// place of codex's legacy workspace-write sandbox. Codex ignores a
 	// profile, and its deny rules, for a thread given a sandbox mode.
 	Permissions string
+
+	// Cache says how a thread gets its session's cache directory
+	// (adapter.StartSpec.CacheDir).
+	Cache Cache
+}
+
+// Cache is how each thread is given its session's own writable cache
+// directory, through per-thread config overrides in thread/start and
+// thread/resume: the directory is added to what the sandbox may write,
+// and Env's variables point at it in the thread's command environment.
+type Cache struct {
+	// Env are the variables to point at the directory (XDG_CACHE_HOME,
+	// CCACHE_DIR): those the owner's config does not set already.
+	Env []string
+	// Roots are the legacy sandbox_workspace_write.writable_roots the
+	// thread has without the override, which replaces them; RootsKnown
+	// is false when the node could not read them, and then the directory
+	// is not added under the legacy sandbox.
+	Roots      []string
+	RootsKnown bool
+	// ProfileOK: under the permission profile, a per-thread
+	// permissions.<profile>.filesystem table can add the directory
+	// without replacing a table node.json sets.
+	ProfileOK bool
 }
 
 // Adapter manages one app-server process and its threads.
@@ -373,7 +398,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.StartSpec, sink adapte
 		Sandbox:        sandbox,
 		Permissions:    perms,
 		ServiceName:    "switchworks",
-		Config:         mcpConfig(spec.MCP),
+		Config:         a.threadConfig(spec),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("thread/start: %w", err)
@@ -442,6 +467,11 @@ type handle struct {
 	provider   string
 	home       string
 	closed     bool
+	// threadPolicy is the approval policy the thread runs with, as
+	// thread/start or thread/resume reported it or the last turn/start
+	// that carried one set it ("" if not known). A turn carries the
+	// policy only when it differs (see Deliver).
+	threadPolicy string
 	// readOnly: the thread's effective sandbox, as app-server last
 	// reported it, is read-only (Caps.ReadOnly).
 	readOnly bool
@@ -592,6 +622,7 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	h.home = c.Info.CodexHome
 	h.activeTurn = ""
 	h.readOnly = ro
+	h.threadPolicy = reportedPolicy(resp.ApprovalPolicy)
 	h.mu.Unlock()
 	early := h.a.register(h)
 	// Stop marks the handle closed before it unregisters, so a Stop that
@@ -623,6 +654,17 @@ func (h *handle) attached(c *codex.Client, resp *codex.ThreadStartResponse, resu
 	return nil
 }
 
+// reportedPolicy is the approval policy a thread/start or thread/resume
+// response reports, if it is one of the named ones ("" otherwise: a
+// granular policy, or none reported).
+func reportedPolicy(raw json.RawMessage) string {
+	var p string
+	if json.Unmarshal(raw, &p) != nil {
+		return ""
+	}
+	return p
+}
+
 func (h *handle) isClosed() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -646,7 +688,7 @@ func (h *handle) resumeOn(ctx context.Context, c *codex.Client) error {
 		Sandbox:        sandbox,
 		Permissions:    perms,
 		ExcludeTurns:   true,
-		Config:         mcpConfig(h.spec.MCP),
+		Config:         h.a.threadConfig(h.spec),
 	})
 	if err != nil {
 		return fmt.Errorf("thread/resume %s: %w", h.threadID, err)
@@ -691,7 +733,7 @@ func (h *handle) lostClient() {
 		h.emit(model.KindApprovalResolved, model.ApprovalResolved{ApprovalID: aid, Decision: "cleared"})
 	}
 	if turn != "" {
-		h.emit(model.KindTurnCompleted, model.TurnCompleted{TurnID: turn, Status: "failed", Error: "codex app-server exited"})
+		h.emit(model.KindTurnCompleted, model.TurnCompleted{TurnID: turn, Status: "failed", Error: "codex app-server exited", HarnessExited: true})
 	}
 	h.setStatus(model.StatusError, "codex app-server exited; restarting")
 }
@@ -910,6 +952,56 @@ func usage(b codex.TokenUsageBreakdown) model.Usage {
 	}
 }
 
+// threadConfig is the per-thread config override for a session: its
+// fleet tools (mcpConfig) and its cache directory (cacheConfig).
+func (a *Adapter) threadConfig(spec adapter.StartSpec) map[string]any {
+	out := mcpConfig(spec.MCP)
+	for k, v := range a.cacheConfig(spec) {
+		if out == nil {
+			out = map[string]any{}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// cacheConfig renders the overrides that give a thread its session's
+// cache directory: writable (a write entry in the permission profile's
+// filesystem table, or one more legacy writable root), with Cache.Env
+// pointing at it. Codex applies a dotted key of a per-thread override
+// like a -c one, merging it into the tables of config.toml; an array
+// (writable_roots) is replaced, hence Cache.Roots. Read-only sessions
+// get nothing: they could not write it. When it cannot be made writable
+// the variables are still set, so tools fail as they would on ~/.cache.
+func (a *Adapter) cacheConfig(spec adapter.StartSpec) map[string]any {
+	dir := spec.CacheDir
+	if dir == "" || spec.Sandbox == "read-only" || spec.Sandbox == "" {
+		return nil
+	}
+	c := a.cfg.Cache
+	out := map[string]any{}
+	if spec.Sandbox == "workspace-write" {
+		switch _, perms := a.sandboxFor(spec.Sandbox); {
+		case perms != "" && c.ProfileOK:
+			// Codex profile paths are written with forward slashes on
+			// every OS (docs/harnesses.md).
+			out["permissions."+perms+".filesystem"] = map[string]any{filepath.ToSlash(dir): "write"}
+		case perms == "" && c.RootsKnown:
+			roots := make([]any, 0, len(c.Roots)+1)
+			for _, r := range c.Roots {
+				if r != dir {
+					roots = append(roots, r)
+				}
+			}
+			out["sandbox_workspace_write.writable_roots"] = append(roots, dir)
+		}
+	}
+	for _, v := range c.Env {
+		out["shell_environment_policy.set."+v] = dir
+	}
+	return out
+}
+
 // mcpConfig renders a per-thread config override that attaches an MCP
 // server to this thread only. Its tools are auto-approved
 // (default_tools_approval_mode = "approve"): Codex otherwise asks before
@@ -1029,6 +1121,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 	active := h.activeTurn
 	status := h.status
 	policy := h.spec.ApprovalPolicy
+	if policy == h.threadPolicy {
+		policy = "" // the thread has it already
+	}
 	h.mu.Unlock()
 	switch mode {
 	case adapter.DeliverSteer:
@@ -1053,8 +1148,11 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		if err != nil {
 			return err
 		}
-		// Every turn carries the policy, so a change (SetApprovalPolicy)
-		// takes effect with the next one.
+		// A turn carries the policy only when it differs from the thread's
+		// (a change made with SetApprovalPolicy): app-server applies any
+		// override on turn/start as a thread settings update, recorded as
+		// thread_settings_applied, so sending the same one every turn would
+		// churn the thread's settings for nothing.
 		resp, err := c.TurnStart(ctx, codex.TurnStartParams{
 			ThreadID: h.threadID, Input: input, ClientUserMessageID: in.ClientMessageID,
 			ApprovalPolicy: policy,
@@ -1067,6 +1165,9 @@ func (h *handle) Deliver(ctx context.Context, in adapter.Input, mode adapter.Del
 		// fast turn can complete before the turn/start response is read
 		// here), so only adopt it if it has not finished.
 		h.mu.Lock()
+		if policy != "" {
+			h.threadPolicy = policy
+		}
 		if resp.Turn.Status == codex.TurnInProgress && h.activeTurn == "" && !containsStr(h.doneTurns, resp.Turn.ID) {
 			h.activeTurn = resp.Turn.ID
 			h.turnSince = time.Now()

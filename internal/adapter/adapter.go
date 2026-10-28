@@ -81,6 +81,12 @@ type StartSpec struct {
 	// session, where adapters may write files the harness reads (Codex's
 	// localImage inputs). Empty: the adapter makes its own temp directory.
 	ScratchDir string `json:"-"`
+
+	// CacheDir is a writable directory (0700) the node owns for this
+	// session only, for tools' caches (ccache, gh): ~/.cache is not
+	// writable in a sandbox. Adapters that can make it writable there
+	// point XDG_CACHE_HOME and CCACHE_DIR at it. Empty: none.
+	CacheDir string `json:"-"`
 }
 
 // MCPServer is a stdio MCP server launched by the harness for one session.

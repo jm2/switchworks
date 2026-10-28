@@ -259,29 +259,45 @@ func waitExit(role string, pid int, d time.Duration) bool {
 }
 
 // stop asks the process to stop through its stop event, so it can save its
-// state and end its harnesses, and ends the task only if that fails.
+// state and end its harnesses, and ends the task only if that fails. It
+// returns once the process has exited, that is once it has let go of its
+// run lock: a status file can be gone, or stale, while its process is
+// still shutting down, and a restart that started the next one then got
+// "already running".
 func stop(role string) error {
+	dir := Dir(role)
 	pid := 0
-	if s, err := runstatus.Read(Dir(role)); err == nil && s.Running(time.Now()) {
+	if s, err := runstatus.Read(dir); err == nil && s.Running(time.Now()) {
 		pid = s.PID
 	}
-	err := runstatus.RequestStop(Dir(role))
-	if err == nil && waitExit(role, pid, 30*time.Second) {
+	err := runstatus.RequestStop(dir)
+	if err == nil && waitExit(role, pid, stopWait) && runstatus.WaitUnlocked(dir, stopWait) {
 		return nil
 	}
 	if endErr := stopTask(unitName(role)); endErr == nil {
 		// Ending the task kills the process before it can remove its
 		// status file.
 		waitExit(role, pid, 5*time.Second)
-		runstatus.RemoveDead(Dir(role))
+		runstatus.RemoveDead(dir)
 	} else if err == nil {
 		return endErr
 	}
 	if err != nil && !errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
 		return err
 	}
+	if !runstatus.WaitUnlocked(dir, 10*time.Second) {
+		who := "its process"
+		if pid > 0 {
+			who = fmt.Sprintf("its process (%d)", pid)
+		}
+		return fmt.Errorf("%s: %s has not exited; end it in Task Manager, then start it again", role, who)
+	}
 	return nil
 }
+
+// stopWait is how long stop waits for a graceful stop before it ends the
+// task.
+const stopWait = 30 * time.Second
 
 func restart(role string) error {
 	old := 0

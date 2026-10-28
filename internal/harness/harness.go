@@ -42,10 +42,12 @@ type Options struct {
 	// CodexPermissions names the codex permission profile workspace-write
 	// sessions run under (codexad.Config.Permissions).
 	CodexPermissions string
-	AgyBin           string   // default "agy"
-	AgyArgs          []string // extra agy flags
-	AgyEnv           map[string]string
-	Agy              agyad.Options // agy behavior (stream mode, fleet tools)
+	// CodexCache: how threads get their session's cache directory.
+	CodexCache codexad.Cache
+	AgyBin     string   // default "agy"
+	AgyArgs    []string // extra agy flags
+	AgyEnv     map[string]string
+	Agy        agyad.Options // agy behavior (stream mode, fleet tools)
 
 	// ACP lists ACP agents by harness name. "goose" is built in (goose acp)
 	// and its entry here, if any, overrides the defaults.
@@ -104,7 +106,7 @@ func New(name string, o Options) (adapter.Adapter, error) {
 	switch name {
 	case codexad.Harness, "":
 		return codexad.New(codexad.Config{
-			Bin: o.CodexBin, Args: CodexArgv(o), Env: o.CodexEnv, Permissions: o.CodexPermissions,
+			Bin: o.CodexBin, Args: CodexArgv(o), Env: o.CodexEnv, Permissions: o.CodexPermissions, Cache: o.CodexCache,
 			Stderr: o.Stderr, Tap: o.Tap, Logf: o.Logf,
 		}), nil
 	case agyad.Harness:

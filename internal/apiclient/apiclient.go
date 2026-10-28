@@ -260,6 +260,7 @@ type SessionMessage struct {
 	Mode        string             `json:"mode"`
 	From        string             `json:"from"`
 	Supersedes  string             `json:"supersedes,omitempty"`  // see fleet.SendArgs
+	Quiet       bool               `json:"quiet,omitempty"`       // see fleet.SendArgs
 	Attachments []model.Attachment `json:"attachments,omitempty"` // images
 	Files       []model.Attachment `json:"files,omitempty"`       // text files
 }
@@ -289,6 +290,7 @@ type PostMessage struct {
 	Mode        string   `json:"mode,omitempty"`
 	TTLSeconds  int      `json:"ttl_seconds,omitempty"`
 	Supersedes  string   `json:"supersedes,omitempty"`   // notify and broadcast only; see fleet.SendArgs
+	Quiet       bool     `json:"quiet,omitempty"`        // notify and broadcast only; see fleet.SendArgs
 	WaitSeconds *int     `json:"wait_seconds,omitempty"` // ask only
 	// Attachments are images (data, base64 in JSON); see docs/messaging.md.
 	Attachments []model.Attachment `json:"attachments,omitempty"`
@@ -382,6 +384,27 @@ func (c *Client) Promote(ctx context.Context, id, mode string) (SendResult, erro
 // CancelMessage takes a queued message out of its target's queue.
 func (c *Client) CancelMessage(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/v1/messages/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
+// Reminders is a session's pending reminders (GET
+// /v1/sessions/{id}/reminders), soonest first.
+type Reminders struct {
+	Session   string           `json:"session"`
+	Reminders []fleet.Reminder `json:"reminders"`
+}
+
+// Reminders lists the reminders a session has set itself with
+// fleet_remind that are still to come.
+func (c *Client) Reminders(ctx context.Context, sessionID string) (Reminders, error) {
+	var out Reminders
+	return out, c.do(ctx, "GET", "/v1/sessions/"+url.PathEscape(sessionID)+"/reminders", nil, &out)
+}
+
+// CancelReminder cancels one of a session's pending reminders, by its id
+// or its message id (owners only).
+func (c *Client) CancelReminder(ctx context.Context, sessionID, id string) (fleet.RemindResult, error) {
+	var out fleet.RemindResult
+	return out, c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(sessionID)+"/reminders/"+url.PathEscape(id)+"/cancel", nil, &out)
 }
 
 // Dismiss ends an ask to a person without an answer; its asker is told
@@ -588,4 +611,22 @@ func (c *Client) Health(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return out.Version, nil
+}
+
+// Locks lists the fleet's resource locks (those whose name starts with
+// prefix, if set).
+func (c *Client) Locks(ctx context.Context, prefix string) ([]fleet.LockInfo, error) {
+	var out fleet.LocksResult
+	path := "/v1/locks"
+	if prefix != "" {
+		path += "?prefix=" + url.QueryEscape(prefix)
+	}
+	return out.Locks, c.do(ctx, "GET", path, nil, &out)
+}
+
+// BreakLock ends whoever's lease on a lock (the owner's credential or
+// admin scope).
+func (c *Client) BreakLock(ctx context.Context, name string) (fleet.UnlockResult, error) {
+	var out fleet.UnlockResult
+	return out, c.do(ctx, "DELETE", "/v1/locks/"+url.PathEscape(name), nil, &out)
 }

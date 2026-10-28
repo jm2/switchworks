@@ -2,10 +2,13 @@
 
 // Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
-// fleet_inbox, fleet_spawn, fleet_status, fleet_stop). The harness starts it
-// inside the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by
-// the node; every call is forwarded to the node's local API and from there
-// to the coordinator.
+// fleet_inbox, fleet_spawn, fleet_status, fleet_stop, fleet_remind, and the
+// lock tools in locks.go), workspace_git, and gpu_run when the node takes
+// GPU runs. The harness starts it inside the session with SWK_NODE_URL,
+// SWK_SESSION and SWK_TOKEN set by the node; every call is forwarded to
+// the node's local API, and fleet calls from there to the coordinator.
+// workspace_git and gpu_run are run by the node itself, outside the
+// sandbox.
 package mcp
 
 import (
@@ -23,6 +26,7 @@ import (
 
 	"github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/gpurun"
 	"github.com/jm2/switchworks/internal/jsonrpc"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/version"
@@ -38,6 +42,7 @@ const (
 	envSession     = "SWK_SESSION"
 	envSessionPath = "SWK_SESSION_PATH"
 	envToken       = "SWK_TOKEN"
+	envGPURun      = "SWK_GPU_RUN"
 )
 
 // NodeClient calls the node's local API for one session.
@@ -46,6 +51,8 @@ type NodeClient struct {
 	Session string
 	Token   string
 	HTTP    *http.Client
+	// GPU is set when the node takes GPU runs: the server offers gpu_run.
+	GPU bool
 }
 
 type localResponse struct {
@@ -60,13 +67,39 @@ type errTransient struct{ msg string }
 
 func (e *errTransient) Error() string { return e.msg }
 
+// localHTTP is the client for the node's local API. Keep-alives are off:
+// a new loopback connection per call costs nothing, and the server closes
+// it once it has answered. Before, each call made its own transport and
+// left its connection idle until the node's 2-minute idle timeout, so a
+// busy host could fill the node's connection cap (maxLocalConns) and every
+// call got EOF ("cannot reach the swk node: EOF"); and a kept-alive
+// connection the node closed for idleness could be reused just as it went.
+var localHTTP = &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+
 // Do performs one fleet operation ("list", "send", ...).
 func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessage, error) {
+	return c.post(ctx, "/v1/fleet/"+op, args)
+}
+
+// RunGPU asks the node for a GPU run and waits for its result.
+func (c *NodeClient) RunGPU(ctx context.Context, req gpurun.Request) (gpurun.Result, error) {
+	var res gpurun.Result
+	data, err := c.post(ctx, "/v1/gpu/run", req)
+	if err != nil {
+		return res, err
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return res, fmt.Errorf("bad response from the swk node: %w", err)
+	}
+	return res, nil
+}
+
+func (c *NodeClient) post(ctx context.Context, path string, args any) (json.RawMessage, error) {
 	b, err := json.Marshal(args)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.URL, "/")+"/v1/fleet/"+op, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.URL, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +108,7 @@ func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessa
 	req.Header.Set("X-Swk-Session", c.Session)
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Transport: &http.Transport{Proxy: nil}}
+		hc = localHTTP
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -141,7 +174,8 @@ var Tools = []Tool{
 			` mode: "auto" (default: added to the target's running turn if it has one, at its next tool call; otherwise it starts a turn), "queue" (waits for the target's turn to end, then starts the next one together with any other waiting messages), "steer" (like auto; reaches a target that has opted out of auto only if you spawned it), "interrupt" (cancels the target's running turn and delivers now; only for sessions you spawned). Set broadcast to send to every session matching an @selector.` +
 			` To tell several sessions the same thing, pass a list of addresses in one call rather than calling once per recipient: each gets its own message, and the result lists each one's id or why it could not go.` +
 			` The result has delivered_at if it went straight into the target's running turn; fleet_inbox(all: true) shows later whether it was delivered and seen, so there is no need to resend.` +
-			` For progress updates, give each one the same supersedes key (e.g. "status:gate5"): a newer update replaces your earlier one with that key if the target has not received it yet, so it reads only the latest. Undelivered messages expire after 2 hours by default; set ttl_seconds shorter for a note that is only useful soon, or longer (up to 24 hours) for one that must wait.`,
+			` For progress updates, give each one the same supersedes key (e.g. "status:gate5"): a newer update replaces your earlier one with that key if the target has not received it yet, so it reads only the latest. Undelivered messages expire after 2 hours by default; set ttl_seconds shorter for a note that is only useful soon, or longer (up to 24 hours) for one that must wait.` +
+			` Set quiet for an acknowledgement or an FYI that needs no action now: it never starts a turn of its own (each turn resends the target's whole context), so it goes into the target's running turn if it has one, or else waits and goes in with its next turn; it still expires.`,
 		InputSchema: obj(map[string]any{
 			"to": map[string]any{"description": "Recipient address, or a list of up to 64 addresses.", "anyOf": []any{
 				map[string]any{"type": "string"},
@@ -152,13 +186,15 @@ var Tools = []Tool{
 			"broadcast": map[string]any{"type": "boolean", "description": "Send to every session matching an @selector."},
 			"supersedes": map[string]any{"type": "string", "maxLength": fleet.MaxSupersedesBytes,
 				"description": `A key for what this message reports, e.g. "status:gate5": it replaces your earlier message with the same key to the same session while that one still waits to be delivered.`},
+			"quiet":       map[string]any{"type": "boolean", "description": "Never start a turn for this message: it joins the target's running turn, or waits for its next one. For acknowledgements and FYIs."},
 			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Expire undelivered after this many seconds (default: the fleet's agent_notify_ttl_seconds, 2 hours unless changed; at most its default_ttl_seconds, 24 hours unless changed)."},
 			"images":      imagesProp,
 			"files":       filesProp,
 		}, "to", "text")},
 	{Name: "fleet_ask", Title: "Ask and wait for an answer",
 		Description: "Ask another agent session (or a person) a question and wait for the answer, for up to wait_seconds (default 600, max 1800). " + addressHelp +
-			" The recipient answers with fleet_reply. If no answer arrives in time you get a ticket instead: the answer will arrive later as a message in this session, or check it with fleet_inbox(ticket).",
+			" The recipient answers with fleet_reply. If no answer arrives in time you get a ticket instead: the answer will arrive later as a message in this session, or check it with fleet_inbox(ticket)." +
+			" A person may take a long while: ask them with wait_seconds 0 and carry on with other work, or end your turn; the answer starts a turn when it comes.",
 		InputSchema: obj(map[string]any{
 			"to":           str("Recipient address."),
 			"text":         str("The question."),
@@ -167,13 +203,13 @@ var Tools = []Tool{
 			"files":        filesProp,
 		}, "to", "text")},
 	{Name: "fleet_reply", Title: "Answer a question",
-		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id.`,
+		Description: `Answer a question another session asked you. A question arrives as a message starting with "[switchworks msg=<id> ... kind=ask"; pass that id as message_id. Only asks can be answered (fleet_inbox marks them replyable); answer a notify with fleet_send.`,
 		InputSchema: obj(map[string]any{
 			"message_id": str("The id of the ask you are answering."),
 			"text":       str("Your answer."),
 		}, "message_id", "text")},
 	{Name: "fleet_inbox", Title: "Unread messages",
-		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re}, text cut at 2,000 bytes. " +
+		Description: "Show messages sent to this session that you have not seen yet, oldest first: each as {id, kind, from, created_at, text, re, replyable}, text cut at 2,000 bytes. " +
 			"You rarely need this: every message already arrives as a turn of its own, and those count as seen. Do not poll it. " +
 			"all: true shows recent messages to and from this session, seen or not, with the state, delivered_at and seen_at of those you sent; verbose: true gives full records. " +
 			"With ticket (an ask id returned by fleet_ask), report only whether that ask has been answered, waiting up to wait_seconds for it.",
@@ -202,9 +238,71 @@ var Tools = []Tool{
 	{Name: "fleet_stop", Title: "Stop a session", Annotations: map[string]bool{"destructiveHint": true},
 		Description: "Stop a session you spawned (its history is kept).",
 		InputSchema: obj(map[string]any{"session": str("The session to stop.")}, "session")},
+	{Name: "fleet_remind", Title: "Remind yourself later",
+		Description: "Have Switchworks send you a reminder after in_seconds (60 to 86400): text comes back as a kind=system message that starts a turn if you are idle (or joins your running turn). " +
+			"Use it to wait for something slow (CI, a long build on another host, a person) instead of polling or sleeping in a turn: set a reminder, then end your turn; each check in a turn costs a model call over your whole context. " +
+			`Give it an id (e.g. "ci:123") to re-arm it: a new reminder with the id of a pending one replaces it. {cancel: id} cancels one. ` +
+			"Reminders survive a coordinator restart and are dropped if this session stops.",
+		InputSchema: obj(map[string]any{
+			"in_seconds": map[string]any{"type": "integer", "minimum": fleet.MinRemindSeconds, "maximum": fleet.MaxRemindSeconds, "description": "Seconds from now (60 to 86400)."},
+			"text":       map[string]any{"type": "string", "maxLength": fleet.MaxRemindTextBytes, "description": "What to remind you of, e.g. \"check CI on PR 123; merge if green\"."},
+			"id":         map[string]any{"type": "string", "maxLength": fleet.MaxRemindIDBytes, "description": "Your name for it; a pending reminder with this id is replaced (default: a new id)."},
+			"cancel":     str("Cancel the pending reminder with this id instead (pass nothing else)."),
+		})},
+	{Name: "workspace_git", Title: "Git for your repository",
+		Description: "Run git on your own repository (the one your working directory is in), done by the Switchworks node outside your sandbox, so it works where shell git cannot: on Windows (read-only .git, sh.exe failing) and where .git/config is read-only. " +
+			"Use op sync before you start work and whenever main has moved; use commit and push through this tool whenever shell git fails, and always on Windows. GitHub ssh remotes are reached over https with the host's agent token. " +
+			`Ops: "status" (branch, upstream, ahead/behind, changed files); ` +
+			`"sync" (fetch, then bring your branch onto remote/branch, default its upstream or the remote's default branch: strategy "rebase" (default) rebases your local commits, aborting and reporting if that conflicts; "ff-only" refuses when diverged. Uncommitted and untracked changes are saved (git stash list, and a patch whose path is reported) and reapplied; on a conflict the files get conflict markers and are listed); ` +
+			`"commit" (message; paths, default all changes; new_branch to create or switch to a branch first); ` +
+			`"push" (branch, default the current one, to its remote with upstream set; never forced, and never main, master or the remote's default branch: push a branch of your own and open a PR); ` +
+			`"branch_delete" (branch; delete_remote also deletes it on the remote if this tool pushed it). Hooks and other repository-configured commands never run.`,
+		InputSchema: obj(map[string]any{
+			"op":            map[string]any{"type": "string", "enum": []string{"status", "sync", "commit", "push", "branch_delete"}},
+			"path":          str("A directory inside your working directory, in the same repository (default: your working directory). Other repositories are refused."),
+			"remote":        str(`sync: the remote (default: the branch's upstream remote, else "origin").`),
+			"branch":        str("sync: the remote branch to sync onto; push: the branch to push (default the current one); branch_delete: the branch."),
+			"strategy":      map[string]any{"type": "string", "enum": []string{"rebase", "ff-only"}, "description": "sync: rebase (default) or ff-only."},
+			"message":       str("commit: the commit message."),
+			"paths":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "commit: only these files or directories (relative to your working directory); default: all changes, untracked files included."},
+			"new_branch":    str("commit: create this branch (or switch to it if it exists) and commit there."),
+			"delete_remote": map[string]any{"type": "boolean", "description": "branch_delete: also delete the branch on its remote (only one this tool pushed)."},
+		}, "op")},
+}
+
+// gpuTool is offered when the node takes GPU runs (Windows nodes with
+// gpu_run.enabled).
+var gpuTool = Tool{Name: "gpu_run", Title: "Run a command with the GPU",
+	Description: `Run a command where it can use the GPU, and get its exit code and output. Use it for work that fails in your sandbox for want of a GPU or a display: Direct3D 9/11/12, OpenGL or Vulkan programs, games and their tests, renderers, GPU benchmarks. Never work around the sandbox instead (no starting programs on the user's desktop by other means, no simulated keystrokes or mouse input).
+
+The node runs the command on the user's interactive desktop, so its windows show on their screen, inside a Windows AppContainer: your working directory is readable and writable (every .git read-only, the deny list's files hidden), the user's profile and other files are out of reach, there is no network unless the node allows it (never loopback), no clipboard, no access to other programs' windows, no stdin. The command and everything it starts is killed when the command exits or its time limit passes. The program must run unattended: give it a test or scripted mode, and have it write screenshots or logs into your working directory to inspect afterwards. Only the last 64 KiB of stdout and of stderr come back. The environment is a fixed minimal one (system paths; TEMP, APPDATA and LOCALAPPDATA in the container's own folder) plus env.`,
+	InputSchema: obj(map[string]any{
+		"argv": map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string"},
+			"description": `The program and its arguments, e.g. ["build/game.exe", "--test-frames", "300"]. A bare name is looked up on the node's PATH; a path is relative to cwd. Batch files: ["cmd.exe", "/d", "/c", "run.bat"].`},
+		"cwd":             str("Working directory, relative to yours (default: yours). It must be inside your working directory."),
+		"env":             map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables to add."},
+		"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 1800, "description": "Time limit (default 300; the node may allow less)."},
+	}, "argv"),
+	Annotations: map[string]bool{"destructiveHint": true}}
+
+func (s *Server) tools() []Tool {
+	if s.node.GPU {
+		return append(append([]Tool{}, Tools...), gpuTool)
+	}
+	return Tools
 }
 
 const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.`
+
+// waitInstructions are added to instructions: how to wait without
+// burning a model call per check, and how to keep acknowledgements from
+// starting turns.
+const waitInstructions = ` To wait for something slow (CI, a long build on another host, a person), do not poll or sleep in a turn: every check resends your whole context. Set a fleet_remind and end your turn; the reminder, like any message, starts a new one. Ask people with fleet_ask wait_seconds 0 (a ticket) and carry on, or end your turn: the answer arrives as a message. Keep acknowledgements quiet: never send a message, or reply to one, only to say you got it or will look at it. Send an acknowledgement or FYI that is needed with fleet_send quiet: true, so it never starts a turn of its own; a message whose header has quiet=1 needs no answer.`
+
+// gitInstructions end the instructions, as a paragraph of their own.
+const gitInstructions = `
+
+For git, use workspace_git: run it with op "sync" before you start work and whenever main has moved, so you work on the latest code. Commit and push through it (op "commit", then "push" of a branch of your own, never main) whenever shell git fails, and always on Windows, where shell git cannot write .git.`
 
 // Server serves MCP on one connection.
 type Server struct {
@@ -239,7 +337,8 @@ func Serve(r io.Reader, w io.Writer, node *NodeClient, logf func(string, ...any)
 
 // Main implements `swk mcp`.
 func Main(stdin io.Reader, stdout, stderr io.Writer) int {
-	node := &NodeClient{URL: os.Getenv(envNodeURL), Session: os.Getenv(envSession), Token: os.Getenv(envToken)}
+	node := &NodeClient{URL: os.Getenv(envNodeURL), Session: os.Getenv(envSession), Token: os.Getenv(envToken),
+		GPU: os.Getenv(envGPURun) == "1"}
 	logf := func(f string, a ...any) { fmt.Fprintf(stderr, "swk mcp: "+f+"\n", a...) }
 	if node.URL == "" || node.Session == "" || node.Token == "" {
 		logf("missing %s/%s/%s: swk mcp is started by a swk node inside a managed session", envNodeURL, envSession, envToken)
@@ -284,12 +383,12 @@ func (s *Server) HandleRequest(id json.RawMessage, method string, params json.Ra
 			"protocolVersion": ver,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": version.Bin, "title": version.Name + " fleet tools", "version": version.Version},
-			"instructions":    instructions,
+			"instructions":    instructions + waitInstructions + lockInstructions + gitInstructions,
 		})
 	case "ping":
 		_ = s.conn.Reply(id, map[string]any{})
 	case "tools/list":
-		_ = s.conn.Reply(id, map[string]any{"tools": Tools})
+		_ = s.conn.Reply(id, map[string]any{"tools": s.tools()})
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -437,6 +536,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 		if err != nil {
 			return "", nil, err
 		}
+		if a.Ticket != "" {
+			return s.inboxTicket(ctx, a)
+		}
 		op, args = "inbox", a
 	case "fleet_spawn":
 		a, err := decode[fleet.SpawnArgs](raw)
@@ -459,10 +561,39 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 			return "", nil, err
 		}
 		op, args = "stop", a
+	case "fleet_remind":
+		a, err := decode[fleet.RemindArgs](raw)
+		if err != nil {
+			return "", nil, err
+		}
+		op, args = "remind", a
+	case "workspace_git":
+		// The node checks the arguments; it runs git under its own time
+		// limit for each op (at most 5 minutes).
+		var a map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &a); err != nil || a == nil {
+			return "", nil, errors.New("bad arguments: an object with op is required")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		data, err := s.do(cctx, "git", a)
+		if err != nil {
+			return "", nil, err
+		}
+		text, structured := pretty(data)
+		return text, structured, nil
+	case "gpu_run":
+		if !s.node.GPU {
+			return "", nil, fmt.Errorf("unknown tool %q", name)
+		}
+		return s.gpuRun(ctx, raw)
 	default:
+		if text, structured, ok, err := s.lockCall(ctx, name, raw); ok {
+			return text, structured, err
+		}
 		return "", nil, fmt.Errorf("unknown tool %q", name)
 	}
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	data, err := s.do(cctx, op, args)
 	if err != nil {
@@ -470,6 +601,44 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 	}
 	text, structured := pretty(data)
 	return text, structured, nil
+}
+
+// callTimeout bounds one fleet tool call, except a wait for an answer
+// (fleet_ask, fleet_inbox with a ticket), which gets its wait plus
+// waitMargin. Variables for tests.
+var (
+	callTimeout = 3 * time.Minute
+	waitMargin  = time.Minute
+)
+
+// inboxTicket is fleet_inbox(ticket): it may wait up to wait_seconds (at
+// most fleet.MaxAskWait) for the answer, and reports an ask still not
+// answered when the wait ends as pending, not as an error.
+func (s *Server) inboxTicket(ctx context.Context, a fleet.InboxArgs) (string, any, error) {
+	wait := min(max(time.Duration(a.WaitSeconds)*time.Second, 0), fleet.MaxAskWait)
+	a.WaitSeconds = int(wait.Seconds())
+	cctx, cancel := context.WithTimeout(ctx, max(callTimeout, wait+waitMargin))
+	defer cancel()
+	data, err := s.do(cctx, "inbox", a)
+	res := fleet.InboxResult{Messages: []fleet.InboxMessage{}}
+	switch {
+	case err == nil:
+		if json.Unmarshal(data, &res) != nil || res.Ticket == nil {
+			text, structured := pretty(data)
+			return text, structured, nil
+		}
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		// The node or coordinator did not end the wait in time: as far
+		// as anyone knows, it is still unanswered.
+		res.Ticket = &fleet.AskResult{Status: fleet.AskPending, MessageID: a.Ticket}
+	default:
+		return "", nil, err
+	}
+	if t := res.Ticket; t.Status == fleet.AskPending && t.Note == "" {
+		t.Note = "Not answered yet. The answer will arrive as a message in this session; or check again with fleet_inbox(ticket=" + a.Ticket + ")."
+	}
+	b, _ := json.MarshalIndent(res, "", "  ")
+	return string(b), res, nil
 }
 
 // ask sends the question at once (getting a ticket), then waits for the
@@ -503,7 +672,7 @@ func (s *Server) ask(ctx context.Context, a fleet.AskArgs) (string, any, error) 
 	deadline := time.Now().Add(wait)
 	for res.Status == fleet.AskPending && time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
-		wctx, cancel := context.WithTimeout(ctx, remaining+time.Minute)
+		wctx, cancel := context.WithTimeout(ctx, remaining+waitMargin)
 		data, err := s.node.Do(wctx, "inbox", fleet.InboxArgs{Ticket: res.MessageID, WaitSeconds: int(remaining.Seconds()), Limit: 1})
 		cancel()
 		if ctx.Err() != nil {
@@ -541,4 +710,62 @@ func (s *Server) ask(ctx context.Context, a fleet.AskArgs) (string, any, error) 
 		text = string(b)
 	}
 	return text, res, nil
+}
+
+// gpuRun asks the node for a GPU run. It is not retried: the command may
+// have run.
+func (s *Server) gpuRun(ctx context.Context, raw json.RawMessage) (string, any, error) {
+	var req gpurun.Request
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if len(raw) == 0 || dec.Decode(&req) != nil {
+		return "", nil, errors.New(`bad arguments: give argv, a list of strings, and optionally cwd, env and timeout_seconds`)
+	}
+	if err := gpurun.Validate(req, 24*time.Hour); err != nil { // the node applies its own limit
+		return "", nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, req.Timeout()+2*time.Minute)
+	defer cancel()
+	res, err := s.node.RunGPU(cctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	return FormatGPUResult(res), res, nil
+}
+
+// FormatGPUResult is a run's result as the model reads it.
+func FormatGPUResult(r gpurun.Result) string {
+	var b strings.Builder
+	code := fmt.Sprintf("%d", r.ExitCode)
+	if r.ExitCode >= 0x80000000 {
+		code += fmt.Sprintf(" (0x%08X)", uint32(r.ExitCode))
+	}
+	if r.TimedOut {
+		fmt.Fprintf(&b, "Timed out after %.1fs and was killed (exit code %s).\n", float64(r.DurationMS)/1000, code)
+	} else {
+		fmt.Fprintf(&b, "Exit code %s after %.1fs.\n", code, float64(r.DurationMS)/1000)
+	}
+	if r.Skipped > 0 {
+		fmt.Fprintf(&b, "%d workspace entries were not made reachable (links, hard links, or ACLs the node cannot change).\n", r.Skipped)
+	}
+	for _, st := range []struct {
+		name    string
+		text    string
+		dropped int64
+	}{{"stdout", r.Stdout, r.StdoutDropped}, {"stderr", r.Stderr, r.StderrDropped}} {
+		if st.text == "" && st.dropped == 0 {
+			fmt.Fprintf(&b, "\n%s: (empty)\n", st.name)
+			continue
+		}
+		if st.dropped > 0 {
+			fmt.Fprintf(&b, "\n%s (last %d bytes; %d before them dropped):\n", st.name, len(st.text), st.dropped)
+		} else {
+			fmt.Fprintf(&b, "\n%s:\n", st.name)
+		}
+		b.WriteString(st.text)
+		if !strings.HasSuffix(st.text, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }

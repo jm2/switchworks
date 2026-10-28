@@ -121,7 +121,7 @@ func TestQueuedImagesOnDisk(t *testing.T) {
 	if _, err := n.loadImages("s1", metas[:1]); err == nil {
 		t.Fatal("corrupt image loaded")
 	}
-	n.dropImages("s1")
+	n.dropSessionDirs("s1")
 	if _, err := os.Stat(n.attachDir("s1")); !os.IsNotExist(err) {
 		t.Fatal("attachments kept after stop")
 	}

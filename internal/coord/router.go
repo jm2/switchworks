@@ -89,7 +89,9 @@ func (g Guards) withDefaults() Guards {
 
 // Errors returned to senders.
 var (
-	ErrHopLimit  = errors.New("hop limit reached: this message would extend a chain of agent-to-agent turns past the configured maximum")
+	ErrHopLimit = errors.New("hop limit reached: this message would extend a chain of agent-to-agent turns " +
+		"past the coordinator's max_hops guard (off by default since 0.1.6; set under \"guards\" in coordinator.json). " +
+		"The chain starts over with a person's message, or once this session goes idle: finish this turn without sending")
 	ErrRateLimit = errors.New("rate limit: too many messages to this target; wait a minute")
 	ErrBudget    = errors.New("daily token budget reached; spawning is paused until tomorrow (UTC)")
 	// ErrAskClosed refuses a reply to an ask that was answered, or ended
@@ -159,6 +161,9 @@ type router struct {
 	inbound  map[string]trigger              // session id -> what started its current work
 	buckets  map[string]*bucket
 	inflight map[string]bool
+	// remindMu serializes setting, cancelling and dropping reminders
+	// (taken before mu).
+	remindMu sync.Mutex
 
 	wake     chan struct{}
 	stop     chan struct{}
@@ -631,6 +636,14 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	case len(supersedes) > fleet.MaxSupersedesBytes || !utf8.ValidString(supersedes):
 		return nil, fmt.Errorf("supersedes must be UTF-8 text of at most %d bytes", fleet.MaxSupersedesBytes)
 	}
+	if args.Quiet {
+		switch {
+		case kind != model.MsgNotify:
+			return nil, errors.New("quiet is for notifies, not asks")
+		case args.Mode == model.ModeInterrupt:
+			return nil, errors.New("a quiet message cannot interrupt: quiet means it never starts a turn of its own")
+		}
+	}
 	targets, err := r.resolveTo(from, args)
 	if err != nil {
 		return nil, err
@@ -761,7 +774,7 @@ func (r *router) send(ctx context.Context, from sender, kind string, args fleet.
 	for _, t := range targets {
 		m := model.Message{ID: ulid.New(), Kind: kind, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
 			To: t.addr, Text: args.Text, Attachments: model.MetaOnly(images), Mode: args.Mode, Group: group, Hops: hops,
-			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes}
+			State: model.MsgPending, CreatedAt: now, ExpiresAt: now.Add(ttl), Supersedes: supersedes, Quiet: args.Quiet}
 		m.Files = model.MetaOnly(files)
 		if t.sess != nil {
 			m.ToSession, m.ToPath = t.sess.ID, t.sess.Path
@@ -1020,7 +1033,7 @@ func (r *router) deliver(ctx context.Context, m model.Message) model.Message {
 	}
 	res, err := r.s.command(ctx, sess.Host, wire.Cmd{Op: wire.OpDeliver, Session: sess.ID, Message: &wire.MessageCmd{
 		ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Mode: m.Mode, Kind: m.Kind, ReplyTo: m.ReplyTo,
-		ReplyToText: r.askText(m.ReplyTo), Attachments: images, Files: files, ExpiresAt: m.ExpiresAt}}, 30*time.Second)
+		ReplyToText: r.askText(m.ReplyTo), Attachments: images, Files: files, ExpiresAt: m.ExpiresAt, Quiet: m.Quiet}}, 30*time.Second)
 	if err != nil {
 		var rej *errRejected
 		if errors.As(err, &rej) {
@@ -1274,8 +1287,12 @@ func (r *router) onFailed(sessionID, messageID, why string) {
 }
 
 // failAsksTo fails the asks a session was given and will not answer, now
-// that it has stopped or gone, and tells their senders.
+// that it has stopped or gone, and tells their senders. It releases the
+// session's fleet locks too, and its pending reminders expire: every place
+// a session ends comes here.
 func (r *router) failAsksTo(sess model.Session, why string) {
+	r.s.lockTab().releaseSession(sess.ID)
+	r.dropReminders(sess, why)
 	for _, m := range r.s.store.Messages(store.MessageFilter{Session: sess.ID}) {
 		if m.Kind != model.MsgAsk || m.ToSession != sess.ID || !m.Accepted() {
 			continue
@@ -1287,12 +1304,18 @@ func (r *router) failAsksTo(sess model.Session, why string) {
 }
 
 // failOrphanedAsks fails the unanswered asks of sessions that ended before
-// asks were failed when their session ended.
+// asks were failed when their session ended, and expires the reminders of
+// sessions that ended while the coordinator was down.
 func (r *router) failOrphanedAsks() {
 	ended := map[string]model.Session{}
 	for _, sess := range r.s.store.Sessions() {
 		if !live(sess) {
 			ended[sess.ID] = sess
+		}
+	}
+	for _, m := range r.s.store.PendingMessages() {
+		if sess, ok := ended[m.ToSession]; ok && m.Reminder != "" {
+			r.dropReminders(sess, "its session "+sess.Status)
 		}
 	}
 	seen := map[string]bool{}
@@ -1435,14 +1458,23 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		return fleet.ReplyResult{}, fmt.Errorf("text is %d bytes; the limit is %d", len(args.Text), fleet.MaxTextBytes)
 	}
 	ask, ok := r.s.store.Message(args.MessageID)
-	if !ok || ask.Kind != model.MsgAsk {
+	if !ok {
 		return fleet.ReplyResult{}, fmt.Errorf("no ask with id %q", args.MessageID)
 	}
-	switch {
-	case from.sess != nil && ask.ToSession == from.sess.ID:
-	case from.user != "" && ask.ToUser != "":
-	default:
+	if !recipient(from, ask) {
+		if ask.Kind != model.MsgAsk {
+			// Not the caller's message: say no more than for a missing one.
+			return fleet.ReplyResult{}, fmt.Errorf("no ask with id %q", args.MessageID)
+		}
 		return fleet.ReplyResult{}, errors.New("only the recipient of an ask can reply to it")
+	}
+	if ask.Kind != model.MsgAsk {
+		kind := map[string]string{model.MsgDone: "completion notice", model.MsgSystem: "Switchworks notice"}[ask.Kind]
+		if kind == "" {
+			kind = ask.Kind
+		}
+		return fleet.ReplyResult{}, fmt.Errorf("message %q is a %s, not an ask: it cannot be replied to "+
+			"(only asks can; fleet_inbox marks them replyable). To answer %s, use fleet_send", args.MessageID, kind, ask.From)
 	}
 	now := time.Now().UTC()
 	rep := model.Message{ID: ulid.New(), Kind: model.MsgReply, From: from.addr(), FromSession: from.sessionID(), Via: from.via, Owner: from.owner, ViaToken: from.token,
@@ -1464,8 +1496,9 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 	if cur, ok := r.s.store.Message(ask.ID); ok {
 		switch {
 		case cur.ReplyID != "":
+			prev, _ := r.s.store.Message(cur.ReplyID)
 			r.mu.Unlock()
-			return fleet.ReplyResult{}, fmt.Errorf("%w: it has already been answered", ErrAskClosed)
+			return fleet.ReplyResult{}, fmt.Errorf("%w: %s", ErrAskClosed, answeredBy(from, prev))
 		case cur.State == model.MsgCancelled, cur.State == model.MsgExpired, cur.State == model.MsgFailed, cur.State == model.MsgDismissed:
 			// Its sender was told it will not be answered (and a waiting
 			// fleet_ask has returned): an answer now would contradict that.
@@ -1508,6 +1541,36 @@ func (r *router) reply(ctx context.Context, from sender, args fleet.ReplyArgs) (
 		res.State = fleet.ReplyHeld
 	}
 	return res, nil
+}
+
+// recipient reports whether from is who m was sent to.
+func recipient(from sender, m model.Message) bool {
+	switch {
+	case from.sess != nil:
+		return m.ToSession == from.sess.ID
+	case from.user != "":
+		return m.ToUser != ""
+	}
+	return false
+}
+
+// replyable reports whether from can answer m with fleet_reply: an ask to
+// it that is still open.
+func replyable(from sender, m model.Message) bool {
+	return m.Kind == model.MsgAsk && m.ReplyID == "" && !m.Terminal() && recipient(from, m)
+}
+
+// answeredBy says when and by whom an ask was answered, given its reply
+// (which may be gone, if dropped by retention).
+func answeredBy(from sender, rep model.Message) string {
+	if rep.ID == "" {
+		return "it has already been answered"
+	}
+	who := rep.From
+	if from.sess != nil && rep.FromSession == from.sess.ID || from.sess == nil && from.user != "" && rep.From == from.user {
+		who += " (you: this was your own earlier reply)"
+	}
+	return fmt.Sprintf("it was already answered at %s by %s, in reply %s", rep.CreatedAt.UTC().Format(time.RFC3339), who, rep.ID)
 }
 
 // inbox reports on a ticket and lists recent messages for a session (or the
@@ -1585,7 +1648,8 @@ func (r *router) inbox(ctx context.Context, from sender, args fleet.InboxArgs) (
 	}
 	out := make([]fleet.InboxMessage, len(msgs))
 	for i, m := range msgs {
-		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo, ReText: r.askText(m.ReplyTo)}
+		out[i] = fleet.InboxMessage{ID: m.ID, Kind: m.Kind, From: m.From, CreatedAt: m.CreatedAt, Text: m.Text, Re: m.ReplyTo, ReText: r.askText(m.ReplyTo),
+			Replyable: replyable(from, m)}
 		if from.sess != nil && m.FromSession == from.sess.ID {
 			out[i].To, out[i].State, out[i].DeliveredAt, out[i].SeenAt = m.To, m.State, m.DeliveredAt, m.SeenAt
 		}
@@ -1684,10 +1748,10 @@ func (r *router) onDelivered(sessionID, messageID, mode string) {
 		tr = trigger{hops: m.Hops}
 	case contains(tr.msgs, m.ID):
 		return // reported again (a delivery retried after a busy harness)
-	case mode == model.ModeSteer:
-		// It only adds to a turn it did not start, which keeps the count
-		// of what started it.
 	default:
+		// A steer counts too: two agents steering into each other's
+		// running turns are a chain like any other (max_hops is off by
+		// default, so this binds only an owner who sets it).
 		tr.hops = max(tr.hops, m.Hops)
 	}
 	if len(tr.msgs) < maxTriggerMsgs {

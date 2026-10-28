@@ -29,6 +29,7 @@ func init() {
 	commands["inbox"] = cmdInbox
 	commands["messages"] = cmdMessages
 	commands["usage"] = cmdUsage
+	commands["locks"] = cmdLocks
 	commands["ui-link"] = cmdUILink
 }
 
@@ -84,6 +85,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	from := fs.String("from", "", "sender (default user:cli)")
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")
 	supersedes := fs.String("supersedes", "", "a key (e.g. status:build): replaces your earlier message with this key that is still waiting")
+	quiet := fs.Bool("quiet", false, "never start a turn: go into the running turn, or wait for the next one (acknowledgements, FYIs)")
 	images := addImageFlag(fs)
 	fileArgs := addFileFlag(fs)
 	var to imageFlag
@@ -104,7 +106,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	if len(to) == 0 {
 		to, pos = imageFlag{pos[0]}, pos[1:]
 	}
-	pm := apiclient.PostMessage{From: *from, Text: strings.Join(pos, " "), Mode: *mode, TTLSeconds: int(ttl.Seconds()), Supersedes: *supersedes}
+	pm := apiclient.PostMessage{From: *from, Text: strings.Join(pos, " "), Mode: *mode, TTLSeconds: int(ttl.Seconds()), Supersedes: *supersedes, Quiet: *quiet}
 	if len(to) == 1 {
 		pm.To = to[0]
 	} else {
@@ -481,5 +483,65 @@ func cmdUsage(args []string, stdout, stderr io.Writer) int {
 	for _, d := range days {
 		fmt.Fprintf(stdout, "%s  %s\n", d, human(u.Daily[d]))
 	}
+	return 0
+}
+
+func cmdLocks(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "break" || args[0] == "rm") {
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "usage: swk locks break <name>")
+			return 2
+		}
+		c, ok := client(stderr)
+		if !ok {
+			return 1
+		}
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		res, err := c.BreakLock(ctx, args[1])
+		if err != nil {
+			return fail(stderr, err)
+		}
+		next := "it is free"
+		if res.Next != "" {
+			next = "it went to " + res.Next
+		}
+		fmt.Fprintf(stdout, "broke %s: %s\n", res.Name, next)
+		return 0
+	}
+	fs := flag.NewFlagSet("locks", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print JSON")
+	if fs.Parse(args) != nil || fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "usage: swk locks [--json] [prefix]\n       swk locks break <name>")
+		return 2
+	}
+	c, ok := client(stderr)
+	if !ok {
+		return 1
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	locks, err := c.Locks(ctx, fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(locks)
+		return 0
+	}
+	if len(locks) == 0 {
+		fmt.Fprintln(stdout, "no locks held")
+		return 0
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tHOLDER\tSINCE\tEXPIRES\tWAITING\tNOTE")
+	for _, l := range locks {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", l.Name, l.Holder, ago(l.Since), l.Expires.Local().Format("15:04:05"), l.Waiting,
+			orDash(strings.ReplaceAll(l.Note, "\n", " ")))
+	}
+	tw.Flush()
 	return 0
 }

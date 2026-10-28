@@ -17,3 +17,5 @@ func lockFile(f *os.File) error {
 	}
 	return err
 }
+
+func unlockFile(f *os.File) error { return syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }

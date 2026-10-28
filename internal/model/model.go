@@ -236,6 +236,10 @@ type TurnCompleted struct {
 	Status     string `json:"status"` // completed | interrupted | failed
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+	// HarnessExited: the turn failed because the harness process exited
+	// under it (Codex's app-server crashed); the adapter restarts it and
+	// resumes the session.
+	HarnessExited bool `json:"harness_exited,omitempty"`
 }
 
 type Item struct {

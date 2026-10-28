@@ -88,6 +88,11 @@ type Message struct {
 	// queued, and SupersededBy is then that message's id.
 	Supersedes   string `json:"supersedes,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// Quiet (notifies): the message never starts a turn of its own. It is
+	// steered into a running turn as usual; to an idle session it waits in
+	// the queue and goes in with the next turn something else starts (or a
+	// person's promote), unless it expires first.
+	Quiet bool `json:"quiet,omitempty"`
 	// Files are text files sent with the message, kept like Attachments
 	// (metadata here, bytes in the attachment store). The receiving node
 	// writes them to disk and names their paths in the message.
@@ -95,8 +100,12 @@ type Message struct {
 	// HoldUntil (asks): the asker collects the reply itself until then, so
 	// a reply that arrives earlier is held rather than delivered as a turn.
 	HoldUntil time.Time `json:"hold_until,omitempty"`
-	// NotBefore (held replies): not delivered as a message before this.
+	// NotBefore (held replies, reminders, dismissal notices): not
+	// delivered as a message before this.
 	NotBefore time.Time `json:"not_before,omitempty"`
+	// Reminder (system messages a session set with fleet_remind) is the
+	// reminder's id: one pending reminder per id per session.
+	Reminder  string    `json:"reminder,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	// DeliveredAt is when the message went into its target's input: at

@@ -77,6 +77,11 @@ type SendArgs struct {
 	// from the same sender to the same session that is still pending or
 	// queued, which becomes superseded.
 	Supersedes string `json:"supersedes,omitempty"`
+	// Quiet: the message never starts a turn of its own. A running turn
+	// takes it as usual (mode auto); an idle target keeps it queued until
+	// its next turn starts for another reason. For acknowledgements and
+	// FYIs that need no action now.
+	Quiet bool `json:"quiet,omitempty"`
 	// Images are image files on the sender's host, as an agent names them
 	// in a fleet tool. The sender's node reads them (under the session's
 	// working directory only) and replaces them with Attachments; they
@@ -277,6 +282,9 @@ type InboxMessage struct {
 	Text      string    `json:"text"`
 	Re        string    `json:"re,omitempty"`      // the ask a reply answers
 	ReText    string    `json:"re_text,omitempty"` // the start of that ask
+	// Replyable marks an open ask to the session: the only kind of
+	// message fleet_reply takes. Answer anything else with fleet_send.
+	Replyable bool `json:"replyable,omitempty"`
 	// On messages the session sent: their state (delivered, seen,
 	// answered...), when they went into the target's input, and when the
 	// turn that carried them finished.
@@ -320,4 +328,114 @@ type StopArgs struct {
 type StopResult struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
+}
+
+// Lock limits: a lease lasts DefaultLockTTL unless the holder asks for
+// another TTL (at most MaxLockTTL), and a waiting fleet_lock waits at most
+// MaxLockWait.
+const (
+	DefaultLockTTL   = 30 * time.Minute
+	MaxLockTTL       = 6 * time.Hour
+	MaxLockWait      = 30 * time.Minute
+	MaxLockNameBytes = 200
+	MaxLockNoteBytes = 500
+)
+
+// LockArgs asks for a fleet-wide lease on a named resource
+// ("host:macmini-m1:gpu", "port:192.168.1.10:28960").
+type LockArgs struct {
+	Name        string `json:"name"`
+	TTLSeconds  int    `json:"ttl_seconds,omitempty"`  // default 1800, at most 21600
+	WaitSeconds int    `json:"wait_seconds,omitempty"` // 0: try once; at most 1800
+	Note        string `json:"note,omitempty"`         // what it is for, shown to others
+}
+
+// Lock statuses.
+const (
+	LockHeld = "held"
+	LockBusy = "busy"
+)
+
+// LockInfo is a held lock.
+type LockInfo struct {
+	Name    string `json:"name"`
+	LeaseID string `json:"lease_id,omitempty"` // only to its holder
+	Holder  string `json:"holder"`             // the holding session's path
+	// HolderID is the holding session's id.
+	HolderID string    `json:"holder_id"`
+	Note     string    `json:"note,omitempty"`
+	Since    time.Time `json:"since"`
+	Expires  time.Time `json:"expires"`
+	// Waiting counts the fleet_lock calls queued for it.
+	Waiting int `json:"waiting,omitempty"`
+}
+
+// LockResult is fleet_lock's answer: held (the lease is the caller's) or
+// busy (Lock says who holds it).
+type LockResult struct {
+	Status  string   `json:"status"`
+	Renewed bool     `json:"renewed,omitempty"` // the caller held it already
+	Lock    LockInfo `json:"lock"`
+}
+
+type UnlockArgs struct {
+	Name string `json:"name"`
+}
+
+type UnlockResult struct {
+	Name     string `json:"name"`
+	Released bool   `json:"released"`
+	// Next is the session the lock went to, if one was waiting.
+	Next string `json:"next,omitempty"`
+}
+
+type LocksArgs struct {
+	Prefix string `json:"prefix,omitempty"` // only locks whose name starts with this
+}
+
+type LocksResult struct {
+	Locks []LockInfo `json:"locks"`
+}
+
+// Reminder limits.
+const (
+	MinRemindSeconds   = 60
+	MaxRemindSeconds   = 24 * 3600
+	MaxRemindTextBytes = 4 << 10
+	MaxRemindIDBytes   = 128
+	// MaxReminders bounds a session's pending reminders.
+	MaxReminders = 32
+)
+
+// RemindArgs sets a reminder: Text comes back to the calling session as a
+// system message after InSeconds. A new reminder with the ID of a pending
+// one replaces it. With Cancel (a reminder id) and nothing else, it
+// cancels that reminder instead.
+type RemindArgs struct {
+	InSeconds int    `json:"in_seconds,omitempty"`
+	Text      string `json:"text,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Cancel    string `json:"cancel,omitempty"`
+}
+
+// RemindResult answers fleet_remind.
+type RemindResult struct {
+	ID        string    `json:"id"`
+	MessageID string    `json:"message_id,omitempty"`
+	DueAt     time.Time `json:"due_at,omitzero"`
+	// Replaced is the message id of the pending reminder with the same id
+	// that this one replaced.
+	Replaced  string `json:"replaced,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+}
+
+// Reminder is one pending reminder, as GET /v1/sessions/{id}/reminders
+// lists it.
+type Reminder struct {
+	ID        string    `json:"id"`
+	MessageID string    `json:"message_id"`
+	Text      string    `json:"text"`
+	DueAt     time.Time `json:"due_at"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

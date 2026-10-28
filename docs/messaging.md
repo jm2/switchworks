@@ -37,13 +37,19 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `supersedes` and `ttl_seconds` (see [Superseding](#superseding) and [Delivery](#delivery)); `images` (see [Images](#images)); `files` (see [Files](#files)) |
+| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `supersedes` and `ttl_seconds` (see [Superseding](#superseding) and [Delivery](#delivery)); `quiet` (see [Quiet messages](#quiet-messages)); `images` (see [Images](#images)); `files` (see [Files](#files)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images`; `files` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
 | `fleet_spawn` | start a helper session (by default on the same host, harness and directory tree); a completion notice comes back when it settles; `images` go with the prompt |
 | `fleet_status` | a session's status, model and usage; its last message for the caller itself, its parent and its children |
 | `fleet_stop` | stop a session you spawned |
+| `fleet_lock` | take a fleet-wide lease on a shared resource (`name`, `ttl_seconds` default 1800 and at most 21600, `wait_seconds` 0 to 1800, `note`): `held` with a `lease_id` and expiry, or `busy` with the holder, since when, its note and expiry (see [Locks](#locks)) |
+| `fleet_unlock` | release a lock you hold; the next waiter gets it |
+| `fleet_locks` | the locks held now, with holder, note, expiry and waiters (`prefix` to filter) |
+| `fleet_remind` | `{in_seconds (60–86400), text, id?}`: a `system` message with `text` comes back to this session after the delay, starting a turn if it is idle; a new one with a pending one's `id` replaces it; `{cancel: id}` cancels one (see [Reminders](#reminders)) |
+| `workspace_git` | git on the session's own repository, run by its node outside the sandbox (not through the coordinator): `status`, `sync` (fetch, then rebase or fast-forward onto the upstream, carrying uncommitted work), `commit`, `push` (never main, master or the remote's default branch) and `branch_delete`; see [Git for agents](harnesses.md#git-for-agents-workspace_git) |
+| `gpu_run` | Windows nodes with `gpu_run.enabled` only: run a command where it can use the GPU, confined, and get its exit code and output (see [GPU access](harnesses.md#gpu-access)) |
 
 ## Addresses
 
@@ -95,7 +101,8 @@ separated by a blank line.
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`, and the first 400 bytes
 of that ask quoted with `> ` under the header, also as `re_text` in
 `fleet_inbox`), `done` (completion
-notice), `system` (delivery failures and expiry). A line in a relayed
+notice), `system` (delivery failures and expiry, and a turn cut off by a
+node or Codex restart: see [harnesses](harnesses.md#turns-cut-off-by-a-restart)). A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so no
 sender can put a header of its own in its text. The node matches a
 line's skeleton, not its bytes: leading spaces and markup (`>`, `*`,
@@ -534,6 +541,41 @@ moment, and one queued on a node that is offline or older than 0.1.5
 Keys are for notifies (and broadcasts, per recipient): an ask with one is
 refused. An older coordinator refuses `supersedes` ("unknown field").
 
+### Quiet messages
+
+An acknowledgement ("ok", "host free", "taking macmini") that starts a
+turn costs a whole turn: the target's model reads its entire context
+again only to note it. A message sent with `quiet` (`fleet_send`,
+`POST /v1/messages` and `POST /v1/sessions/{id}/messages`, `swk msg`/`send
+--quiet`) never starts a turn of its own:
+
+- If the target is running a turn, it goes in as an `auto` message does
+  (steered in, or queued for a session that does not take steering).
+- If the target is idle, it waits in the session's queue, and goes in
+  together with the next turn something else starts (another message, or
+  the owner's prompt), each with its own header. A batch always holds the
+  message that started it, even when quiet ones ahead of it fill the
+  batch's bounds.
+- It still expires after its TTL, like any queued message, and the sender
+  gets the usual `system` notice; Send now (promote) delivers it at once,
+  starting a turn if need be.
+- An idle session with only quiet messages queued is settled, and the
+  node's stall sweep leaves it alone.
+
+Its header carries `quiet=1` and a line saying it needs no answer:
+
+```
+[switchworks msg=01M40… from=devbox/lead kind=notify quiet=1]
+(Quiet: for your information; it needs no answer, so do not reply just to acknowledge it.)
+host free
+```
+
+The MCP instructions tell agents to send acknowledgements, FYIs and "host
+free" notes quiet, and never to answer a message only to acknowledge it.
+Only notifies (and broadcasts) can be quiet; an ask, or a quiet message in
+mode `interrupt`, is refused. A node before 0.1.7 ignores `quiet` and
+delivers the message as usual.
+
 ### States
 
 | State | Meaning |
@@ -635,6 +677,76 @@ clears it without an answer:
   people it already holds read (`read_by` "switchworks (upgrade)"), all
   but the asks still open, so they do not all show as new at once.
 
+## Locks
+
+Agents share scarce things: a host's GPU, a LAN game-server port, a whole
+test host. Rather than message each other to ask whether one is free and
+to announce taking and freeing it, they take a lease with `fleet_lock`:
+
+```json
+{"name": "host:macmini-m1:gpu", "ttl_seconds": 3600, "wait_seconds": 600, "note": "benchmark run"}
+```
+
+- **Names** are free text up to 200 bytes, one namespace for the fleet.
+  Agree on a form such as `host:<host>`, `host:<host>:gpu` or
+  `port:<ip>:<port>`.
+- **Held or busy.** The answer is `{status: "held", lock: {name,
+  lease_id, holder, since, expires, ...}}`, or `{status: "busy", lock}`
+  naming the holder, since when, its note and its expiry.
+- **Leases end** at their TTL (default 30 minutes, at most 6 hours), when
+  the holder calls `fleet_unlock`, when its session stops, goes away or is
+  removed, or when an owner breaks the lock. Locking again a lock you hold
+  renews it for a new TTL (`renewed: true`), keeping the lease.
+- **Waiting.** With `wait_seconds` (at most 1800), `fleet_lock` blocks
+  until the lock comes free or the wait ends (then `busy`), like
+  `fleet_ask`. Waiters get it in the order they asked.
+- **Limits.** A session holds at most 32 locks; at most 64 calls wait for
+  one lock.
+- The table lives in the coordinator's memory: a coordinator restart drops
+  every lease. A holder that locks again gets it back unless someone else
+  took it first.
+
+People see the locks with `swk locks [prefix]` or `GET /v1/locks` (read
+scope). The owner ends a lease with `swk locks break <name>` or `DELETE
+/v1/locks/{name}`: it needs the admin token, an owner token or an
+admin-scope token. The lock goes to the next waiter, and the old holder
+gets a `system` notice that it no longer holds it.
+
+An older node does not forward the lock tools ("unknown operation"):
+upgrade the agent's host.
+
+## Reminders
+
+An agent that has to wait for something slow (CI, a long build on
+another host, a person) should not poll or sleep in a turn: each check
+resends its whole context to the model. It sets a reminder with
+`fleet_remind {in_seconds, text, id}` and ends its turn; the `swk mcp`
+instructions say so, and to ask people with `fleet_ask` `wait_seconds: 0`
+(a ticket; the answer arrives as a message) rather than holding a turn
+open for the answer.
+
+- The coordinator stores a reminder as a pending `system` message from
+  `swk` to the session that set it (`reminder` is its id, `not_before`
+  its due time) and delivers it then, in mode `auto`: into a running turn
+  if there is one, as a turn of its own otherwise. The text starts
+  `Reminder "<id>", which you set 10m ago with fleet_remind:`. Like any
+  pending message it survives a coordinator restart; one due while its
+  host is offline waits for the host until 24 hours (`default_ttl_seconds`)
+  past its due time, then expires.
+- One pending reminder per id per session: a new one with the id of a
+  pending one replaces it (that one becomes `superseded`), so an agent
+  can re-arm "check CI on #123" each time it looks. Without an id, each
+  reminder gets its own (its message id). A session may have 32 pending;
+  `in_seconds` is 60 to 86400; `text` at most 4 KiB, `id` 128 bytes.
+- `fleet_remind {cancel: id}` cancels one (`cancelled`). When the session
+  stops or goes, its pending reminders expire, with the reason.
+- `swk reminders <session>` and `GET /v1/sessions/{id}/reminders` (read)
+  list a session's pending reminders, soonest first. An owner can cancel
+  one, by its id or message id: `swk reminders cancel <session> <id>`,
+  `POST /v1/sessions/{id}/reminders/{rid}/cancel`. They are not in the
+  session's queue (`/queue`), and an older coordinator refuses the tool
+  ("unknown operation").
+
 ## Completion notices
 
 A node emits `session.settled` when a session's last turn has completed and
@@ -675,12 +787,12 @@ delivered (answered or not), failed or expired ones are dropped first, and
 stay dropped across a restart.
 
 People are not rate limited. With `max_hops` set, hops count from the
-messages that started the sender's current work: a person's message is hop
+messages behind the sender's current work: a person's message is hop
 0, the agent's message to another agent is hop 1, and so on. A turn that
-starts with several messages (a batch from the queue) counts from the
-deepest of them, so a shallow message cannot shorten a long chain. A steer
-into a running turn does not change its count (it did not start the turn),
-and a person's message, steered or not, starts it over at 0. After a
+takes in several messages (a batch from the queue, or steers into the
+running turn) counts from the deepest of them, so a shallow message cannot
+shorten a long chain, and two agents steering into each other's turns still
+reach the limit. A person's message, steered or not, starts it over at 0. After a
 coordinator restart it is rebuilt from the stored messages. A spawn counts
 as a hop too, so a loop of spawns and completion notices ends at
 `max_hops`. Without `max_hops` (the default), agents' messages are limited
@@ -799,6 +911,7 @@ swk msg --broadcast @role=reviewer "please look at PR 42"
 swk msg --to devbox/a --to buildbox/b "rebased on main"   # several recipients
 swk msg --image shot.png --image diff.png reviewer "these two frames"
 swk msg --supersedes status:deploy lead "deploy 3/5 hosts done"   # replaces my earlier status:deploy still waiting
+swk msg --quiet lead "done with macmini"           # never starts a turn: waits for lead's next one
 swk send --file 0001-fix.patch linuxbox/ci "git am this and push"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
@@ -808,14 +921,18 @@ swk messages read <id>                           # mark a message to a person re
 swk messages [session]                           # traffic log
 swk messages promote <id>                        # send a queued message now (--interrupt for one that cannot steer)
 swk messages cancel <id>                         # take it out of the queue
+swk reminders devbox/lead                        # reminders it set itself with fleet_remind
+swk reminders cancel devbox/lead ci:123          # cancel one (owners)
 swk usage                                        # tokens by host, model, day
+swk locks                                        # resource locks agents hold (fleet_lock)
+swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
 ```
 
 ## HTTP API
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` not for asks |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, quiet, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` and `quiet` not for asks |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen; `supersedes`, and `superseded_by` once superseded |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask; 409 if it was answered or ended (dismissed, cancelled, expired, failed) |
@@ -823,12 +940,16 @@ swk usage                                        # tokens by host, model, day
 | POST | `/v1/messages/{id}/undismiss` | reopen a dismissed ask whose asker has not been told; 409 otherwise |
 | POST | `/v1/messages/{id}/read` | `{from}` (optional): mark a message to a person read (`read_at`, `read_by`) |
 | GET | `/v1/usage` | daily totals, by host, by model |
-| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, attachments, files}`; routed (202 with `state` and `mode`) |
+| GET | `/v1/locks?prefix=` | `{locks: [{name, holder, holder_id, note, since, expires, waiting}]}`, by name |
+| DELETE | `/v1/locks/{name}` | break a lock (the name path-escaped): the owner's credential or admin scope; `{name, released, next}`; 404 if it is not held |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, quiet, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, offline, node_too_old, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at, held}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it, or the coordinator's for `held` messages |
 | POST | `/v1/messages/{id}/promote` | `{mode: steer\|interrupt}` (default steer): deliver a queued message now; the sender or an owner |
 | POST | `/v1/messages/{id}/cancel` | take a queued (or still pending) message out, so it is never delivered; the sender or an owner |
+| GET | `/v1/sessions/{id}/reminders` | the session's pending reminders, soonest first: `{session, reminders: [{id, message_id, text, due_at, created_at, expires_at}]}` |
+| POST | `/v1/sessions/{id}/reminders/{rid}/cancel` | cancel a pending reminder by its id or message id; owners only (403 otherwise, 404 if none is pending) |
 
 Reading needs a `read` token; sending, asking, replying, promoting,
 cancelling, dismissing and marking read need `operate`.

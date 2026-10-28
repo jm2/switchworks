@@ -15,6 +15,32 @@ Steering is a Codex feature. For the others, a message sent to a running
 turn (the default mode, `auto`, or `--steer`) is queued for the next turn,
 together with any other waiting messages.
 
+## Turns cut off by a restart
+
+A turn running when the node goes down (an upgrade, a reboot, a crash)
+does not survive it: Codex records it as interrupted, and the resumed
+session would sit idle until someone prompted it. The node saves each
+session's running turn in `state.json` as it starts, and clears it as the
+turn ends or as a person interrupts it (Stop in the web UI, `swk
+interrupt`, a message sent with `interrupt`). A turn that ends because the
+node is shutting down stays saved. When the node starts again and has
+resumed such a session, it queues one `system` message from `swk`, which
+starts a new turn:
+
+```
+[switchworks msg=01M40… from=swk kind=system]
+Your previous turn (id 019a…) was cut off when Switchworks restarted at 2026-10-28 03:12 UTC. Continue where you left off; check the state of anything you were running.
+```
+
+The same goes for a turn cut off while the node keeps running, when
+Codex's app-server crashes under it: the adapter restarts app-server and
+resumes the thread, and the message then says the turn "was cut off when
+Codex restarted". It goes once per interruption, together with any
+messages that waited in the queue, and never to a stopped session or one
+whose harness still runs the turn. Set `"continue_interrupted": false` in `node.json` to turn it
+off. A node upgraded from a version before 0.1.7 has no saved turn yet, so
+a turn its restart for the upgrade cut off is not continued.
+
 ## Models without a translation proxy
 
 DeepSeek and Xiaomi MiMo work in both Codex and goose without a proxy.
@@ -118,6 +144,7 @@ The `codex` object in `node.json` configures how the node runs
 | `config` | Config overrides, passed as `-c key=value` ahead of `args`. |
 | `lean` | `true` adds the [lean defaults](#codex-lean-sessions) to `config`. Default `false`. |
 | `permissions` | A permission profile for `workspace-write` sessions ([below](#codex-network-without-exposing-credentials)). |
+| `session_env` | Variables and `PATH` directories for the commands sessions run ([below](#codex-session-environment)). |
 
 `args` replaces the argument list rather than adding to it, so it must
 still name the subcommand: `["-c", "x=1"]` alone runs Codex without
@@ -147,10 +174,134 @@ does a `null` value. Overrides apply to every Codex session on the node
 and take precedence over `config.toml`; restart the node after changing
 them.
 
+A turn carries the session's approval policy (`turn/start`'s
+`approvalPolicy`) only when it differs from the thread's: after a policy
+change (`swk policy`, the web UI's Approvals menu), not on every turn.
+app-server applies any `turn/start` override as a thread settings update
+and records a `thread_settings_applied` event for it; with the same policy
+each time, that was one per turn. `thread/start` and `thread/resume` still
+carry the policy, the sandbox (or permission profile) and the fleet tools'
+MCP config, since the node checks the sandbox the thread reports and a
+restarted node gives the tools a new address and credential; Codex records
+its settings once at every resume whatever it is sent.
+
 When app-server fails to start, the node log has the end of what it
 wrote to stderr, which usually says why (an unknown argument, a
 `config.toml` error). The full output is in `logs/harness.log` in the
 node directory.
+
+### Codex: session environment
+
+`codex.session_env` sets variables for the commands Codex sessions run,
+and adds directories to their `PATH`:
+
+```json
+"codex": {
+  "session_env": {
+    "set": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.sslBackend", "GIT_CONFIG_VALUE_0": "openssl"},
+    "path_prepend": ["C:\\Users\\thesa\\tools\\glslang"],
+    "path_append": []
+  }
+}
+```
+
+The first example makes Git for Windows use OpenSSL instead of
+Windows' TLS stack, as `git -c http.sslBackend=openssl` would, for every
+`git` a session runs. The second puts a directory first on `PATH`, here
+for an arm64 `glslangValidator` on a Windows arm64 host, so the agent
+finds it before any other.
+
+The node applies `session_env` to the environment it starts
+`codex app-server` with, and Codex passes its environment on to every
+command (its default `shell_environment_policy.inherit = "all"`). Codex
+then adds its own `PATH` entries on top: its `apply_patch` shim, the
+Windows sandbox's helpers, its versioned `codex-path` folder. That is
+why `PATH` doesn't belong in `shell_environment_policy.set`, which
+would freeze a copy of those entries and break at the next Codex update.
+
+- `set` replaces a variable's value. A `PATH` in it replaces the node's
+  `PATH`, and `path_prepend` and `path_append` then apply to it.
+- `path_prepend` and `path_append` add directories ahead of and after the
+  node's `PATH`: on Linux and macOS that's the login shell's `PATH` that
+  `swk service install` gives the service (the `swk-path.conf` drop-in on
+  Linux). Each directory must be absolute (`~/` is your home) and appears
+  once: a prepended one already on `PATH` moves to the front, an
+  appended one already there stays where it is. The node joins them with the OS's
+  separator (`;` on Windows, `:` elsewhere) and keeps the node's spelling
+  of the name (`Path` on Windows).
+- A `shell_environment_policy.set.<VAR>` in `codex.config` (or a `-c` in
+  `codex.args`, or `config.toml`) wins over `session_env` for that
+  variable, since Codex applies it after inheriting.
+- `shell_environment_policy.inherit = "core"` keeps only a core set of
+  variables (`PATH`, `HOME` and a few others), and `"none"` drops all of
+  them, `session_env` included. With `ignore_default_excludes = false`,
+  Codex also drops every variable whose name contains `KEY`, `SECRET` or
+  `TOKEN`, so `GIT_CONFIG_KEY_0` from the example; set such ones in
+  `shell_environment_policy.set` instead.
+- The variables are app-server's own too, so they also reach Codex's
+  own `git` calls and MCP servers. `CODEX_HOME` can't be set here: use
+  `codex.home`.
+
+Restart the node after changing `session_env`.
+
+### Codex: session caches
+
+Inside the sandbox `~/.cache` isn't writable, so `ccache` (with
+`USE_CCACHE=1`, or Fedora's `/usr/lib64/ccache` first on `PATH`) and
+`gh` (`~/.cache/gh`) fail. The node gives each Codex session a cache
+directory of its own, `<user cache dir>/switchworks/session-cache/<session id>`
+(`~/.cache/...` on Linux, `~/Library/Caches/...` on macOS,
+`%LOCALAPPDATA%\switchworks\...` on Windows; mode 0700), and points
+`XDG_CACHE_HOME` and `CCACHE_DIR` at it in that session's commands.
+
+The directory is made writable for that session's thread only, through
+the per-thread config Switchworks sends with `thread/start` and
+`thread/resume`, so one agent can't write, or poison, another's cache:
+
+- **Permission profile** (`codex.permissions`, on Linux and macOS): a
+  `"<dir>" = "write"` entry is added to the profile's filesystem table.
+  It merges with your `[permissions.<name>.filesystem]` table in
+  `config.toml`. If `codex.config` or `codex.args` sets that table (or
+  the whole profile) with `-c`, the entry would replace it, so the node
+  logs that it can't add one and the directory stays read-only: add
+  the cache root to the profile yourself in that case.
+- **Legacy `workspace-write`** (Windows, and any node without
+  `codex.permissions`): the directory is added to
+  `sandbox_workspace_write.writable_roots`. The per-thread value replaces
+  the whole list, so the node sends it with the roots you set: those in
+  `codex.config` or `codex.args`, else those in `config.toml` (in
+  `codex.home`, `CODEX_HOME` or `~/.codex`; a project's
+  `.codex/config.toml` is not read, and its `writable_roots` don't apply
+  to managed sessions). Write them as an array of strings, in a
+  `[sandbox_workspace_write]` table or as
+  `sandbox_workspace_write.writable_roots`. In another form (an inline
+  table, say) the node can't read them, logs so at start, and leaves the
+  list alone; the directory then stays read-only.
+- `danger-full-access` sessions get the variables, and `read-only`
+  sessions get nothing.
+
+Either way, a variable you set yourself is left alone: `CCACHE_DIR` or
+`XDG_CACHE_HOME` in `codex.session_env.set`, in
+`shell_environment_policy.set` in `codex.config` or `codex.args`, or in
+`[shell_environment_policy.set]` in `config.toml`. When the node can't
+make the directory writable it still sets the variables, so tools fail
+as they would have on `~/.cache`.
+
+The directory is kept across node restarts and removed when the session
+stops, fails to start, or is forgotten; at start the node also removes
+those of sessions it no longer has. `session_cache` in `node.json`
+moves the root (`{"dir": "/srv/swk-cache"}`) or turns it off
+(`{"disabled": true}`). Keep the root out of `/tmp` and `$TMPDIR`,
+which every legacy `workspace-write` session can write, and out of any
+session's working directory; and keep it out of the paths your profile
+denies (`~/.config/swk`). Another session whose working directory
+contains the root, such as one in your home directory, can still write
+it.
+
+Verified with Codex 0.163 on Linux, legacy and profile
+(`SWK_CODEX_IT=1 go test -run TestRealCodexSessionCache ./internal/e2e/`).
+On macOS and Windows the overrides are the same; that the sandboxes
+there honor them is not yet checked on a live host.
 
 ### Codex: lean sessions
 
@@ -410,12 +561,13 @@ own. Forbidden wins over allow for the same prefix, but a forbid on
 with your account on the vendor's side, whatever token the sandbox has.
 Turn apps off for managed sessions (`-c features.apps=false`).
 
-**Git for agents.** To let agents commit, pull and push without your
-credentials:
-- Give them a fine-grained token for their repositories only (Contents,
-  Pull requests and Issues read/write), in a folder the profile leaves
-  readable, and point `GH_CONFIG_DIR` and a git credential helper at it
-  through `[shell_environment_policy.set]`.
+**Git for agents.** Shell git inside the sandbox is unreliable: on
+Windows `.git` is read-only and Git for Windows' `sh.exe` fails under the
+restricted token, so even `git fetch` fails; on Linux the profile keeps
+`.git/config` read-only, so `push -u`, `worktree add` and `branch -D`
+half-fail. Agents should use the `workspace_git` tool instead (see
+[Git for agents: workspace_git](#git-for-agents-workspace_git)). If you
+also want shell git to work on Linux and macOS:
 - `:workspace` keeps `.git` read-only. On Linux and macOS you can make it
   writable while keeping hooks and config out of reach:
 
@@ -430,9 +582,11 @@ credentials:
   Don't do this on Windows. There a read-only child of a writable folder
   can be deleted or replaced, so an agent could plant `core.hooksPath`,
   which then runs outside the sandbox on your next git command.
-- On Windows, agents can't commit. Have them hand patches to an agent on
-  Linux or macOS that pushes them. Check every handed-off patch for secrets
-  before pushing (see below).
+- For pushes from the shell, give the sandbox the same scoped token
+  `workspace_git` uses (below), in a folder the profile leaves readable,
+  and point `GH_CONFIG_DIR` and a git credential helper at it through
+  `[shell_environment_policy.set]`. Check anything an agent hands off as a
+  patch for secrets before pushing it (see below).
 
 **Windows: the default sandbox can read everything you can.** Without
 `[windows] sandbox = "elevated"`, Codex runs commands with your own,
@@ -444,7 +598,7 @@ still put what it reads into a message or a patch. Treat their output as
 untrusted until the elevated sandbox works
 ([openai/codex#48759](https://github.com/openai/codex/issues/48759)).
 
-**GPU access.** The sandbox hides `/dev/dri`, so Vulkan and GL fall back to
+<a id="gpu-access"></a>**GPU access.** The sandbox hides `/dev/dri`, so Vulkan and GL fall back to
 llvmpipe, and a profile entry can't add it back. An allow rule doesn't help
 either: under approval `never` Codex refuses every escalation. Instead,
 run GPU work through a small service outside the sandbox that starts each
@@ -456,6 +610,212 @@ after `--clearenv`: a helper script that runs outside the sandbox with
 the agent's `BASH_ENV`, `PATH` or `LD_PRELOAD` runs the agent's code as
 you. Tests without a display can use SDL's offscreen driver, which still
 renders on the real GPU.
+
+**GPU access on Windows.** Codex's Windows sandbox, elevated or not, runs
+commands on a private desktop (`CodexSandboxDesktop-*`). Direct3D 9 and
+11 cannot reach the display from there (`D3DERR_NOTAVAILABLE`), though
+Vulkan may work. Codex 0.156 removed the only way out of it
+(`windows.sandbox_private_desktop = false`, [openai/codex#46554](https://github.com/openai/codex/pull/46554)).
+Don't let agents work around it by starting programs on your desktop by
+other means and driving them with simulated input: that leaves the
+sandbox entirely. Instead, turn on the node's `gpu_run` tool:
+
+```json
+"gpu_run": {"enabled": true}
+```
+
+With it, an agent calls `gpu_run` with a command (`argv`, optional `cwd`,
+`env` and `timeout_seconds`). The node, which runs in your logon session,
+starts the command on your desktop (`winsta0\default`) and returns its
+exit code and the last 64 KiB of stdout and stderr. The command is
+confined:
+
+- It runs in a Windows AppContainer, one per workspace, at low
+  integrity. It can open only what is granted to that container or to
+  all AppContainers: the session's working directory, its own folder
+  (`%LOCALAPPDATA%\Packages\swk.gpu.*`, where `TEMP`, `APPDATA` and
+  `LOCALAPPDATA` point), and the system files and `Program Files` that
+  Windows lets every AppContainer read. Your profile, the node's key and
+  `~\.codex` are out of reach. This is narrower than the default
+  (unelevated) Codex sandbox, which reads everything you can.
+- In the working directory, every `.git` is read-only (it can't be
+  written, deleted, renamed or have its ACL changed), and the entries of
+  the deny list inside it (the attachment deny list: credential
+  locations, Codex profile denies, `attach_deny`) can't be opened at
+  all. The node grants this with explicit ACEs that it sets on each file
+  and directory itself, through a handle opened without following links.
+  It never relies on Windows' own ACL inheritance, which follows paths
+  and so could follow a junction out of the workspace. Links,
+  hard-linked files and entries whose path changed while they were
+  being opened get nothing. A link where a `.git` or denied entry should
+  be refuses the run. The ACEs stay on the files after the run, and go
+  with a file you move elsewhere on the same drive. To take them away,
+  remove the container's SID (the node log's "GPU run" lines name the
+  workspace; `Get-Acl` shows the SID, `S-1-15-2-…`) with
+  `icacls <dir> /remove:g *<SID> /T /L`.
+- It has no network unless `gpu_run.network` is `true`, which opens
+  outbound internet connections only (`internetClient`): not your LAN,
+  not inbound. Loopback is closed either way, so it can't reach the
+  node's local API.
+- It runs in a job with UI limits: no access to other programs' windows,
+  no clipboard, no new or switched desktops, no logoff or shutdown, no
+  system-wide settings. Low integrity also blocks sending input or
+  messages to your programs (UIPI). Display mode changes stay allowed,
+  for full-screen games.
+- It gets a fixed environment (system paths and the container's folders)
+  plus `env`, never the node's own. Its stdin is `NUL`. When the command
+  exits or its time limit passes (default 5 minutes, at most
+  `gpu_run.max_seconds`, up to 30), the job ends everything it started.
+
+Refused: sessions with a `read-only` sandbox; sessions working in a
+volume root, in your home directory or above it, inside a denied path,
+or in or above Windows, `Program Files`, `ProgramData` or the
+AppContainer folders; a `cwd` outside the working directory; batch files
+(run them through `cmd.exe /d /c`); and programs outside the working
+directory and the Windows and `Program Files` folders. Windows opens a
+program's executable with the node's rights, not the container's, so
+without that last rule a run could start any program in your profile.
+Each session can have one run at a time.
+
+Hard-linked files get no access: inside `.git` (after `git clone
+--local`, say) they get a deny, which also applies under their other
+names, so git inside the run may fail there. Package stores that hard-link
+(pnpm, some cargo setups) are unreachable from runs. A program that
+misbehaves only in a run (input methods, full-screen swap chains) may be
+hitting the job's limit on other processes' windows; report it.
+
+What stays possible, so weigh it before turning this on:
+
+- Windows appear on your screen, and a program could draw something
+  that looks like a password prompt. Don't type credentials into
+  windows you didn't open.
+- At low integrity a program can probably still read the screen (GDI
+  capture), and so save what you have open into the workspace for the
+  agent to read.
+- It can read whatever Windows grants all AppContainers. That is system
+  files, not your data, unless you have granted `ALL APPLICATION
+  PACKAGES` access somewhere yourself.
+- It talks to the GPU driver, a large kernel attack surface, as any GPU
+  program does.
+
+Direct3D in an AppContainer is what UWP games do, but test your program
+there before relying on it. Also check on the host that a run cannot
+change the ACL of a `.git` file you own (the owner's implicit rights
+should not apply to the container, but verify it before trusting
+`.git` protection). A program that writes its saves under your
+profile should take its paths from `APPDATA` or `LOCALAPPDATA`; anything
+that reads the real profile through known-folder APIs will get "access
+denied".
+
+## Git for agents: workspace_git
+
+`workspace_git` is a fleet tool that the session's own node carries out,
+outside the sandbox, as you (the node's user). It is not sent to the
+coordinator. It works only on the session's own repository: the one its
+working directory is in. Agents are told to `sync` before starting work
+and whenever main moves, and to commit and push through it when shell git
+fails, and always on Windows.
+
+| Op | What it does |
+| --- | --- |
+| `status` | branch, upstream, ahead/behind, changed files |
+| `sync` | fetch, then bring the current branch onto `remote`/`branch` (default: its upstream, else `origin`'s default branch). `strategy` `rebase` (default) rebases local commits, and on a conflict aborts and reports the files, changing nothing; `ff-only` refuses when diverged. Uncommitted changes, untracked files included (ignored ones stay where they are), are saved first and reapplied with a three-way merge; on a conflict the files get conflict markers and are listed |
+| `commit` | `message`; `paths` (default: all changes, untracked included); `new_branch` to create or switch to a branch first. Hooks don't run |
+| `push` | `branch` (default the current one) to its remote, with the upstream set. Never forced; never `main`, `master` or the remote's default branch (asked of the remote at each push) |
+| `branch_delete` | the local branch; with `delete_remote`, also on the remote, only if `workspace_git` pushed it |
+
+Every result carries the repository's status afterwards. Before a sync
+touches the work tree it saves the uncommitted work as a stash-like commit
+(in `git stash list`, "workspace_git sync of …") and as a binary patch in
+`git/saved/` in the node directory (the newest 50 per repository), and
+reports both. If anything fails halfway, the work is put back, and the
+saved copies stay either way.
+
+### Setting it up
+
+Without configuration, `status`, `sync` and `commit` work: fetches use
+whatever anonymous access the remote allows. `push` needs a token of its
+own, never yours. Create a fine-grained GitHub token for the agents'
+repositories only (Contents and Pull requests read/write), log `gh` in
+with it into a directory of its own, and name that directory in
+`node.json`:
+
+```json
+"git": {
+  "gh_config_dir": "~/.config/swk/agent-gh",
+  "push_branch_prefixes": ["swk/<host>/"]
+}
+```
+
+| Key | What it does |
+| --- | --- |
+| `gh_config_dir` | A gh config directory whose `hosts.yml` holds the agent token. Required for `push` (and `branch_delete` with `delete_remote`). `~/` is the home directory. |
+| `push_branch_prefixes` | Optional: the only branch name prefixes `workspace_git` pushes. `<host>` and `<session>` stand for the host and the session's name. Default: any branch but the default branch, `main` and `master`. |
+
+Restart the node after changing them. On each OS:
+
+- **Linux and macOS:**
+  `GH_CONFIG_DIR=~/.config/swk/agent-gh gh auth login --with-token < token.txt`.
+  Keep the directory out of the sandbox's reach (a `deny` in the Codex
+  permission profile), since agents don't need to read it.
+- **Windows:** in PowerShell,
+  `$env:GH_CONFIG_DIR="$HOME\.config\swk\agent-gh"; Get-Content token.txt | gh auth login --with-token`.
+  Git for Windows and `gh` must be on the node's `PATH`. git runs as the
+  node, unsandboxed, so `sh.exe` works. The Windows sandbox can read
+  what you can, so agents could read the token there; scope it to their
+  repositories.
+
+The node runs git with `-c credential.helper= -c "credential.helper=!gh auth
+git-credential"` (gh as found on its `PATH`) and `GH_CONFIG_DIR` set to
+that directory, and removes `GH_TOKEN`, `GITHUB_TOKEN` and the other
+`GH_*` variables from git's environment. Without the setting it still
+clears every credential helper, so neither fetch nor push ever reaches
+your credential manager, keyring or `gh` login.
+
+### What it refuses and why
+
+The work tree is the agent's, and on some hosts `.git` may be writable,
+so the node does not let either choose a command it runs:
+
+- **Other repositories.** `path`, if given, must be inside the session's
+  working directory and in the same repository; a nested repository is
+  refused. `.git` must be a real directory at the top of the work tree,
+  or the `.git` file of a normal linked worktree: its gitdir is
+  `<repository>/worktrees/<name>`, with a `commondir` back to the
+  repository and a `gitdir` back to this `.git` file. A `.git` file
+  pointing anywhere else (a repository the agent made in `/tmp`, another
+  worktree's gitdir) is refused. git then gets `GIT_DIR` and
+  `GIT_WORK_TREE` and does no discovery of its own.
+- **Commands from the repository.** The repository's config is trusted as
+  yours, since agents cannot write `.git/config` (read-only on Windows
+  and in the Linux profile). Still, every git runs with hooks pointed at
+  an empty directory of the node's, and with `core.fsmonitor=false`,
+  `core.sshCommand`, `core.askPass`, `core.alternateRefsCommand`,
+  editors, signing and `http.extraHeader` overridden, submodules not
+  recursed and auto-gc off. A repository whose own config includes another
+  file (`include.path`, `includeIf`) or defines a filter, merge or diff
+  driver is refused, because `.gitattributes` in the work tree picks
+  which driver runs. Your global and system config are used as they are
+  (Windows needs `http.sslBackend` from the system config).
+- **Other transports.** Only https is spoken (`protocol.allow=never`,
+  `protocol.https.allow=always`, `protocol.file.allow=never`). GitHub ssh
+  remotes (`git@github.com:…`, `ssh://git@github.com/…`) are reached over
+  https through `url.https://github.com/.insteadOf` on git's command line,
+  so the repository's config is left alone; other ssh remotes are mapped
+  to https on the same host. Your ssh keys are never used.
+- **Pushes.** No force, no refspecs: the branch name is checked with
+  `git check-ref-format`, and `main`, `master`, the remote's default
+  branch and names outside `push_branch_prefixes` are refused. The
+  upstream is recorded after the push by the node (which can write
+  `.git/config`), so nothing in the sandbox has to.
+- **Author.** Commits take `user.name` and `user.email` from the
+  repository's or your config; an empty name, or one with `$(`, backquotes
+  or angle brackets in it, is replaced by `<host>/<session>
+  <noreply@switchworks.invalid>`.
+
+Each op has a time limit (1 minute for `status`, 5 for `sync` and
+`push`); git is run directly, with no shell, and never prompts
+(`GIT_TERMINAL_PROMPT=0`).
 
 ## Images and the vision probe
 

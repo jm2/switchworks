@@ -13,7 +13,7 @@
 
 Name:           switchworks
 # Packit replaces Version with the release tag minus its "v" (see .packit.yaml).
-Version:        0.1.6
+Version:        0.1.7
 Release:        1%{?dist}
 Summary:        Control plane for coding agents across your machines
 
@@ -99,6 +99,9 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/io.github.jm2.Switchworks.svg
 
 %changelog
+* Wed Oct 28 2026 Switchworks Contributors - 0.1.7-1
+- Update to 0.1.7.
+
 * Sun Oct 25 2026 Switchworks Contributors - 0.1.6-1
 - Update to 0.1.6.
 

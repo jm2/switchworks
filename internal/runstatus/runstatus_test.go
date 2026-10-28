@@ -162,3 +162,42 @@ func TestLock(t *testing.T) {
 	}
 	l2.Close()
 }
+
+// LockWait and WaitUnlocked wait for the holder to let go, as a restart
+// must for the old process to exit.
+func TestLockWait(t *testing.T) {
+	dir := t.TempDir()
+	if !WaitUnlocked(dir, 0) {
+		t.Fatal("no lock file: not free")
+	}
+	l, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if WaitUnlocked(dir, 300*time.Millisecond) {
+		t.Fatal("held lock reported free")
+	}
+	if _, err := LockWait(dir, 300*time.Millisecond); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lock while held: %v", err)
+	}
+	release := 500 * time.Millisecond
+	time.AfterFunc(release, func() { l.Close() })
+	start := time.Now()
+	if !WaitUnlocked(dir, 10*time.Second) {
+		t.Fatal("released lock not seen")
+	}
+	if d := time.Since(start); d < release-50*time.Millisecond {
+		t.Fatalf("free after %v, before the release", d)
+	}
+	// Probing left it free.
+	l2, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("lock after probe: %v", err)
+	}
+	time.AfterFunc(release, func() { l2.Close() })
+	l3, err := LockWait(dir, 10*time.Second)
+	if err != nil {
+		t.Fatalf("LockWait: %v", err)
+	}
+	l3.Close()
+}

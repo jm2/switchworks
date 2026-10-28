@@ -16,7 +16,7 @@ by the tools you already use, under your own sign-ins.
 
 ![A session waiting for approval](docs/img/web-ui.png)
 
-> **v0.1.6 alpha.** Switchworks is tested on Linux, and the v0.1.0 packages ran a five-host
+> **v0.1.7 alpha.** Switchworks is tested on Linux, and the v0.1.0 packages ran a five-host
 > fleet across Linux, macOS and Windows; the macOS and Windows packages have had little use
 > beyond that. Pre-built packages are on the
 > [Releases](https://github.com/jm2/switchworks/releases) page; per-area status and how each
@@ -658,12 +658,21 @@ and providers, fleet tools, and what each supports.
 and `codex.permissions`: a Codex permission profile for `workspace-write`
 sessions, which can give them the network while denying reads of your
 credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exposing-credentials)),
+`codex.session_env`: variables and `PATH` directories for sessions' commands
+(see [docs/harnesses.md](docs/harnesses.md#codex-session-environment)),
+`session_cache`: where each Codex session's own cache directory goes
+(see [docs/harnesses.md](docs/harnesses.md#codex-session-caches)),
 `files_dir`: where files received with messages go (default
 `<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)),
-`files_quota_mib`: how much of them the node keeps (default 1024), and
+`files_quota_mib`: how much of them the node keeps (default 1024),
 `attach_deny` and `attach_allow`: paths agents may never attach, and
 paths exempt from the rules on dot-files and credential-like names
-(see [docs/messaging.md](docs/messaging.md#images)).
+(see [docs/messaging.md](docs/messaging.md#images)), `git`: the agent
+token and branch rules of `workspace_git`, the git tool the node runs for
+its sessions (see [docs/harnesses.md](docs/harnesses.md#git-for-agents-workspace_git)),
+and `gpu_run`: on Windows, lets agents run GPU work on your desktop,
+confined, with the `gpu_run` tool (off by default; see
+[docs/harnesses.md](docs/harnesses.md#gpu-access)).
 
 ### Trying it without spending tokens
 
@@ -672,11 +681,15 @@ Responses API and the Anthropic Messages API, scripted by the prompt:
 
 ```bash
 swk dev mock-provider --codex-home /tmp/mock-home &
-swk dev run --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
+swk dev run --no-node-config --codex-home /tmp/mock-home --approval untrusted "RUN: touch x"
 ```
 
 `swk dev run` drives one turn of any harness directly, without a node or
-coordinator: a quick check that a harness works on a machine. With
+coordinator: a quick check that a harness works on a machine. Codex gets
+the codex settings of the node's `node.json` (`bin`, `args`, `config`,
+`lean`, `permissions`, `home`) when there is one, so it runs in the
+sandbox the node's sessions get; the `--codex-*` flags override them and
+`--no-node-config` leaves them out. With
 `--record FILE` it captures the raw protocol stream, in a file only you
 can read (0600; on Windows the file takes its folder's permissions, so
 keep it in your profile). Like the fleet commands, it strips terminal escapes and

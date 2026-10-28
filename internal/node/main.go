@@ -180,14 +180,13 @@ func mainEnroll(args []string, stdout, stderr io.Writer) int {
 // HarnessOptions builds adapter options from node config, writing harness
 // logs under dir/logs.
 func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.Options, error) {
-	codexConf, err := codexConfig(cfg)
-	if err != nil {
-		return harness.Options{}, err
-	}
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	hostCodexConfig(cfg, codexConf, logf)
+	o := harness.Options{AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args, Agy: cfg.Agy.Options, ACP: cfg.ACP, Logf: logf}
+	if err := CodexOptions(cfg, &o, logf); err != nil {
+		return harness.Options{}, err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
@@ -195,12 +194,36 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err != nil {
 		return harness.Options{}, err
 	}
-	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexConfig: codexConf, CodexPermissions: cfg.Codex.Permissions,
-		AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args, Agy: cfg.Agy.Options, ACP: cfg.ACP, Stderr: logFile, Logf: logf}
-	if cfg.Codex.Home != "" {
-		o.CodexEnv = map[string]string{"CODEX_HOME": cfg.Codex.Home}
-	}
+	o.Stderr = logFile
 	return o, nil
+}
+
+// CodexOptions sets o's Codex fields from node.json as the node's sessions
+// get them: codex.bin, codex.args, codex.config (with codex.lean and, on
+// Windows, the sandbox default), codex.permissions, codex.home,
+// codex.session_env and how threads get their session cache. `swk dev run`
+// uses it too, so it tests the sandbox and environment sessions get.
+func CodexOptions(cfg Config, o *harness.Options, logf func(string, ...any)) error {
+	codexConf, err := codexConfig(cfg)
+	if err != nil {
+		return err
+	}
+	env, err := codexEnv(cfg)
+	if err != nil {
+		return err
+	}
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	hostCodexConfig(cfg, codexConf, logf)
+	var configTOML []byte
+	if home := codexHome(cfg); home != "" {
+		configTOML, _ = os.ReadFile(filepath.Join(home, "config.toml"))
+	}
+	o.CodexBin, o.CodexArgs, o.CodexConfig, o.CodexPermissions = cfg.Codex.Bin, cfg.Codex.Args, codexConf, cfg.Codex.Permissions
+	o.CodexEnv = env
+	o.CodexCache = codexCache(cfg, codexConf, configTOML, logf)
+	return nil
 }
 
 func mainRun(args []string, stderr io.Writer) int {
@@ -226,7 +249,7 @@ func mainRun(args []string, stderr io.Writer) int {
 		logger.Printf("load config (run `swk node enroll -` first): %v", err)
 		return 1
 	}
-	lock, err := runstatus.Lock(*dir)
+	lock, err := runstatus.LockWait(*dir, runstatus.RestartWait)
 	if err != nil {
 		logger.Print(err)
 		return 1

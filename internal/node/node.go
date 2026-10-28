@@ -65,6 +65,9 @@ type Config struct {
 		// but denies reads of credentials. Without it they get codex's
 		// legacy workspace-write sandbox, which ignores profiles.
 		Permissions string `json:"permissions,omitempty"`
+		// SessionEnv sets variables, and adds PATH directories, for the
+		// commands sessions run (see SessionEnv).
+		SessionEnv SessionEnv `json:"session_env,omitzero"`
 	} `json:"codex"`
 	Agy struct {
 		Bin  string   `json:"bin,omitempty"`
@@ -91,6 +94,15 @@ type Config struct {
 		Args     []string `json:"args,omitempty"`    // default: ["mcp"]
 	} `json:"mcp"`
 
+	// ContinueInterrupted (default true): when the node starts again after
+	// going down during a session's turn (an upgrade, a reboot, a crash),
+	// or after its harness exited mid-turn and was restarted (Codex's
+	// app-server crashing), it gives the session a system message that
+	// starts a new turn, saying its previous turn was cut off, so the
+	// agent carries on instead of sitting idle until someone prompts it.
+	// false turns that off.
+	ContinueInterrupted *bool `json:"continue_interrupted,omitempty"`
+
 	// FilesDir is where files received with messages are written for the
 	// sessions to read (default: <user cache dir>/switchworks/files; see
 	// files.go). Keep it out of the directories a sandbox profile denies.
@@ -99,6 +111,14 @@ type Config struct {
 	// sessions together (default defaultFilesQuotaMiB; -1 for no cap).
 	// A message whose files would pass it is refused.
 	FilesQuotaMiB int64 `json:"files_quota_mib,omitempty"`
+
+	// SessionCache gives each Codex session a writable cache directory of
+	// its own (see sessioncache.go): Dir is where they go (default
+	// <user cache dir>/switchworks/session-cache); Disabled turns it off.
+	SessionCache struct {
+		Disabled bool   `json:"disabled,omitempty"`
+		Dir      string `json:"dir,omitempty"`
+	} `json:"session_cache,omitzero"`
 
 	// AttachDeny lists more files and directories agents may never attach
 	// (images, files), besides Switchworks's own and the credential
@@ -109,6 +129,36 @@ type Config struct {
 	// names that look like credentials (.env, id_ed25519) and on dot-files
 	// when a session works in the home directory. It never lifts a deny.
 	AttachAllow []string `json:"attach_allow,omitempty"`
+
+	// GPURun lets agents run GPU work through the node with the gpu_run
+	// tool (Windows only; see gpu.go). Off unless Enabled.
+	GPURun struct {
+		Enabled bool `json:"enabled,omitempty"`
+		// Network gives runs the client network (not loopback).
+		Network bool `json:"network,omitempty"`
+		// MaxSeconds caps a run's time limit (default and most
+		// maxGPUSeconds).
+		MaxSeconds int `json:"max_seconds,omitempty"`
+	} `json:"gpu_run"`
+
+	// Git configures workspace_git, the git tool the node runs for its
+	// sessions outside their sandbox (see git.go and docs/harnesses.md).
+	Git GitConfig `json:"git"`
+}
+
+// GitConfig is node.json's "git".
+type GitConfig struct {
+	// GHConfigDir is a gh config directory whose hosts.yml holds the
+	// scoped agent token (never the owner's). workspace_git pushes only
+	// with it set, through `gh auth git-credential` with GH_CONFIG_DIR
+	// pointing here; without it, push is refused. "~/" is the home
+	// directory.
+	GHConfigDir string `json:"gh_config_dir,omitempty"`
+	// PushBranchPrefixes, if set, are the only branch name prefixes
+	// workspace_git pushes, e.g. ["swk/<host>/"]; <host> and <session>
+	// stand for this host and the session's name. The remote's default
+	// branch, main and master are refused whatever these say.
+	PushBranchPrefixes []string `json:"push_branch_prefixes,omitempty"`
 }
 
 // spool compaction threshold.
@@ -136,6 +186,13 @@ type queuedMsg struct {
 	// ExpiresAt, when set, is when the message expires: past it, it is
 	// dropped undelivered rather than starting or joining a turn.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Quiet: it never starts a turn of its own. Steered into a running
+	// turn as usual, it otherwise waits here until a turn starts for
+	// another message (and goes in with it) or a person promotes it.
+	Quiet bool `json:"quiet,omitempty"`
+	// Promoted: a person asked for it now (OpPromote), so it may start a
+	// turn even if it is quiet.
+	Promoted bool `json:"promoted,omitempty"`
 	// Sending is set, and saved, before the message is handed to the
 	// harness (a new turn, or a promoted message's steer). It stays in the
 	// queue meanwhile, out of reach of promote, cancel and expiry; one
@@ -143,6 +200,10 @@ type queuedMsg struct {
 	// reported failed rather than delivered a second time.
 	Sending bool `json:"sending,omitempty"`
 }
+
+// wakes reports whether m may start a turn: it is not quiet, or a person
+// promoted it.
+func (m queuedMsg) wakes() bool { return !m.Quiet || m.Promoted }
 
 // expired reports whether m has an expiry and it has passed.
 func (m queuedMsg) expired(now time.Time) bool {
@@ -207,6 +268,11 @@ type record struct {
 	Seen      []string     `json:"seen,omitempty"`
 	Stopped   bool         `json:"stopped,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
+	// ActiveTurn is the turn running when the record was saved: saved as
+	// a turn starts and cleared as it completes, or as a person interrupts
+	// it. Set when the node starts, the turn was cut off by the node going
+	// down (see Config.ContinueInterrupted).
+	ActiveTurn string `json:"active_turn,omitempty"`
 }
 
 type session struct {
@@ -254,6 +320,10 @@ type session struct {
 	// gone in: when the turn starts (so they come before the turn's own
 	// events) or when Deliver returns.
 	announce []queuedMsg
+
+	// lostTurn: the running turn failed because the harness exited under
+	// it; once the harness's restart resumes the session, it is continued.
+	lostTurn bool
 
 	// Settled detection: busy is set when a turn starts and cleared once the
 	// session is idle with an empty queue, at which point session.settled is
@@ -373,6 +443,8 @@ type Node struct {
 	adapters map[string]adapter.Adapter
 	sessions map[string]*session
 
+	gpuRuns sync.Map // session id -> struct{}: its GPU run in progress (gpu.go)
+
 	connMu sync.Mutex
 	conn   *wire.Conn
 	wake   chan struct{}
@@ -398,8 +470,18 @@ type Node struct {
 
 	stateMu sync.Mutex
 	filesMu sync.Mutex // orders writeFiles, so the quota holds
-	closing chan struct{}
-	wg      sync.WaitGroup
+	// gitMu guards gitLocks (one workspace_git op at a time per
+	// repository) and pushed.json.
+	gitMu    sync.Mutex
+	gitLocks map[string]*sync.Mutex
+	// gitAllowLocal lets workspace_git fetch from and push to a local
+	// repository without credentials. Tests only.
+	gitAllowLocal bool
+	// gitGitHubBase replaces https://github.com/ as what GitHub ssh
+	// remotes are rewritten to. Tests only.
+	gitGitHubBase string
+	closing       chan struct{}
+	wg            sync.WaitGroup
 
 	status *runstatus.Reporter // status.json for `swk service status` and the tray
 }
@@ -441,6 +523,13 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 		n.persist()
 	}
 	n.forgetStopped()
+	live := map[string]bool{}
+	for _, s := range n.sessionList() {
+		if !s.rec.Stopped {
+			live[s.rec.ID] = true
+		}
+	}
+	n.sweepCaches(live)
 	n.status = runstatus.Start(dir, runstatus.Status{Role: "node", Host: cfg.Host,
 		Coordinator: cfg.CoordinatorNode, WebUI: webUIFor(cfg.CoordinatorAPI)})
 	n.wg.Add(3)
@@ -621,11 +710,16 @@ func (s *session) sink(ev adapter.Event) {
 	s.appendLocked(ev.Kind, ev.Payload)
 	idle := false
 	save := false
-	step := false // the running turn finished a step, with steers held for it
+	step := false           // the running turn finished a step, with steers held for it
+	var lost adapter.Handle // resumed after the harness exited mid-turn
+	lostBy := ""
 	switch ev.Kind {
 	case model.KindTurnStarted:
 		if p, ok := ev.Payload.(model.TurnStarted); ok {
-			s.activeTurn, s.busy = p.TurnID, true
+			s.activeTurn, s.busy, s.lostTurn = p.TurnID, true, false
+			if s.rec.ActiveTurn != p.TurnID {
+				s.rec.ActiveTurn, save = p.TurnID, true
+			}
 			// The turn the node's last delivery started.
 			s.carriedLocked(p.TurnID, s.nextTurn)
 			s.nextTurn = nil
@@ -634,6 +728,16 @@ func (s *session) sink(ev adapter.Event) {
 		if p, ok := ev.Payload.(model.TurnCompleted); ok {
 			if s.activeTurn == p.TurnID {
 				s.activeTurn = ""
+			}
+			// A turn that ends because the node is shutting down (its
+			// harness stopped), or because the harness process exited under
+			// it, stays recorded: it was cut off. After the harness's
+			// restart resumes the session, it is continued (lostTurn).
+			switch {
+			case p.HarnessExited && s.rec.ActiveTurn == p.TurnID:
+				s.lostTurn = true
+			case s.rec.ActiveTurn != "" && !s.n.isClosing():
+				s.rec.ActiveTurn, save = "", true
 			}
 			s.lastTurn, s.lastStatus = p.TurnID, p.Status
 			s.seenLocked(p)
@@ -661,6 +765,13 @@ func (s *session) sink(ev adapter.Event) {
 			ref := p.NativeRef
 			s.rec.NativeRef = &ref
 			save = true
+			// The harness restarted after exiting mid-turn and resumed the
+			// session (a node restart's resume sets s.h only afterwards,
+			// and continues the turn itself).
+			if p.Resumed && s.lostTurn && s.h != nil {
+				s.lostTurn = false
+				lost, lostBy = s.h, cutByHarness(s.rec.Harness)
+			}
 		}
 	case model.KindSessionStatus:
 		if p, ok := ev.Payload.(model.SessionStatus); ok {
@@ -678,7 +789,29 @@ func (s *session) sink(ev adapter.Event) {
 	if step {
 		go s.n.stepSteers(s)
 	}
+	if lost != nil {
+		go s.n.continueInterrupted(s, lost, time.Now(), lostBy)
+	}
 	s.n.wakeSender()
+}
+
+// cutByHarness is what cut a turn off when a harness of this kind exited
+// under it, for the message that continues it.
+func cutByHarness(harness string) string {
+	if harness == "codex" {
+		return "Codex restarted"
+	}
+	return harness + " restarted"
+}
+
+// isClosing reports whether the node is shutting down.
+func (n *Node) isClosing() bool {
+	select {
+	case <-n.closing:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *session) hasAtStepLocked() bool {
@@ -858,6 +991,7 @@ func (n *Node) resume(s *session) {
 	// image files of one.
 	_ = os.RemoveAll(n.scratchDir(rec.ID))
 	spec.ScratchDir = n.scratchDir(rec.ID)
+	spec.CacheDir = n.sessionCache(rec.Harness, rec.ID)
 	h, err := a.Resume(ctx, *rec.NativeRef, spec, s.sink)
 	if err != nil {
 		n.logf("session %s: resume failed: %v", rec.Path, err)
@@ -871,7 +1005,63 @@ func (n *Node) resume(s *session) {
 	s.mu.Unlock()
 	n.wakeSender()
 	n.logf("session %s resumed (%s %s)", rec.Path, rec.Harness, rec.NativeRef.ID)
+	n.continueInterrupted(s, h, time.Now(), "Switchworks restarted")
 	go n.tryDeliver(s)
+}
+
+// continueInterrupted queues a system message for a resumed session whose
+// turn was cut off (record.ActiveTurn) by the node going down, or by its
+// harness exiting, as cutBy says ("Switchworks restarted"), so a new turn
+// carries on with it, unless Config.ContinueInterrupted is false or the
+// harness kept the turn running. The record's turn is cleared in the same
+// save, so each interruption gets one message.
+func (n *Node) continueInterrupted(s *session, h adapter.Handle, now time.Time, cutBy string) {
+	s.mu.Lock()
+	turn := s.rec.ActiveTurn
+	s.mu.Unlock()
+	if turn == "" {
+		return
+	}
+	on := n.cfg.ContinueInterrupted == nil || *n.cfg.ContinueInterrupted
+	if on && s.turnRunning(h) {
+		on = false // the harness still runs it: nothing was cut off
+	}
+	s.mu.Lock()
+	if s.rec.Stopped || s.rec.ActiveTurn != turn {
+		s.mu.Unlock()
+		return
+	}
+	s.rec.ActiveTurn = ""
+	var msg queuedMsg
+	if on {
+		msg = queuedMsg{ID: ulid.New(), From: model.SystemSender, Kind: model.MsgSystem,
+			Text: fmt.Sprintf("Your previous turn (id %s) was cut off when %s at %s. Continue where you left off; check the state of anything you were running.",
+				turn, cutBy, now.UTC().Format("2006-01-02 15:04 UTC"))}
+		s.rec.Queue = enqueue(s.rec.Queue, msg, false)
+		s.reportQueueLocked()
+	}
+	path := s.rec.Path
+	s.mu.Unlock()
+	n.persist()
+	if on {
+		n.logf("session %s: its turn %s was cut off (%s); queued a message to continue it", path, turn, cutBy)
+		s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: model.ModeQueue})
+		go n.tryDeliver(s)
+	}
+}
+
+// interrupt cancels the session's running turn on purpose (a person's
+// interrupt, or a message sent with it): the record no longer holds it as
+// active, so a restart before the turn ends does not continue it.
+func (n *Node) interrupt(ctx context.Context, s *session, h adapter.Handle) error {
+	s.mu.Lock()
+	had := s.rec.ActiveTurn != ""
+	s.rec.ActiveTurn = ""
+	s.mu.Unlock()
+	if had {
+		n.persist()
+	}
+	return h.Interrupt(ctx)
 }
 
 func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, error) {
@@ -978,6 +1168,7 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	startSpec := s.rec.Spec
 	startSpec.MCP = n.mcpFor(s.rec.ID, s.rec.Path)
 	startSpec.ScratchDir = n.scratchDir(s.rec.ID)
+	startSpec.CacheDir = n.sessionCache(harnessName, s.rec.ID)
 	h, err := a.Start(ctx, startSpec, s.sink)
 	failStart := func(err error) (json.RawMessage, error) {
 		// The coordinator forgets a session whose spawn fails, so
@@ -996,7 +1187,7 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 		s.mu.Unlock()
 		_ = os.Remove(s.spoolPath())
 		_ = n.saveState()
-		n.dropImages(s.rec.ID)
+		n.dropSessionDirs(s.rec.ID)
 		return nil, err
 	}
 	if err != nil {
@@ -1279,7 +1470,13 @@ func formatMessage(m queuedMsg) string {
 	if m.ReplyTo != "" {
 		fmt.Fprintf(&b, " re=%s", m.ReplyTo)
 	}
+	if m.Quiet {
+		b.WriteString(" quiet=1")
+	}
 	b.WriteString("]\n")
+	if m.Quiet {
+		b.WriteString("(Quiet: for your information; it needs no answer, so do not reply just to acknowledge it.)\n")
+	}
 	switch kind {
 	case model.MsgAsk:
 		fmt.Fprintf(&b, "(%s is waiting for an answer: reply with the fleet_reply tool, message_id=%s.)\n", m.From, m.ID)
@@ -1441,7 +1638,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 		return nil, err
 	}
 	msg := queuedMsg{ID: m.ID, From: m.From, Via: m.Via, Owner: m.Owner, Text: m.Text, Kind: m.Kind, ReplyTo: m.ReplyTo, ReplyToText: m.ReplyToText,
-		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt}
+		Attachments: model.MetaOnly(images), ExpiresAt: m.ExpiresAt, Quiet: m.Quiet && m.Mode != model.ModeInterrupt}
 	caps := h.Caps()
 	steer := caps.Steer && (m.Mode == model.ModeSteer || (m.Mode == model.ModeAuto && s.turnRunning(h)))
 	if steer && m.Mode == model.ModeAuto && s.turnRunning(h) && strings.HasPrefix(m.From, "user:") {
@@ -1571,7 +1768,7 @@ func (n *Node) deliver(ctx context.Context, s *session, m *wire.MessageCmd) (jso
 	}
 	s.emit(model.KindMessageQueued, model.MessageEvent{MessageID: msg.ID, From: msg.From, Text: msg.Text, Mode: queued, Attachments: msg.Attachments})
 	if interrupt {
-		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+		if err := n.interrupt(ctx, s, h); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
 		}
 	}
@@ -1628,7 +1825,7 @@ func (n *Node) sweepQueues(now time.Time) {
 			n.gcFor(s, expired)
 		}
 		s.mu.Lock()
-		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && len(s.rec.Queue) > 0 && s.h.Status() == model.StatusIdle
+		stuck := !s.rec.Stopped && s.h != nil && !s.delivering && s.waitingLocked() && s.h.Status() == model.StatusIdle
 		kick := false
 		switch {
 		case !stuck:
@@ -1767,19 +1964,31 @@ func timedOut(ctx context.Context, err error) bool {
 
 // nextBatchLocked picks the queued messages the next turn carries: those
 // not being sent already, within batchLen, and only one if it is one that
-// failed in a batch (solo) or the batch would reach one.
+// failed in a batch (solo) or the batch would reach one. Quiet messages
+// never start a turn: with only those waiting there is no batch, and a
+// batch always holds a message that is not quiet (moved to the front if
+// the bounds would leave it out).
 func (s *session) nextBatchLocked() []queuedMsg {
 	var cands []queuedMsg
+	lead := -1 // the first message that may start a turn
 	for _, m := range s.rec.Queue {
 		if !m.Sending {
+			if lead < 0 && m.wakes() {
+				lead = len(cands)
+			}
 			cands = append(cands, m)
 		}
 	}
-	if len(cands) == 0 {
+	if lead < 0 {
 		return nil
 	}
 	if s.solo[cands[0].ID] {
+		// Retried alone even if quiet: it was in a batch a message that is
+		// not quiet started.
 		return cands[:1]
+	}
+	if lead >= batchLen(cands) {
+		cands = append([]queuedMsg{cands[lead]}, append(cands[:lead:lead], cands[lead+1:]...)...)
 	}
 	k := batchLen(cands)
 	for i := 1; i < k; i++ {
@@ -1789,6 +1998,28 @@ func (s *session) nextBatchLocked() []queuedMsg {
 		}
 	}
 	return cands[:k]
+}
+
+// sendingLocked reports whether a queued message is being handed to the
+// harness.
+func (s *session) sendingLocked() bool {
+	for _, m := range s.rec.Queue {
+		if m.Sending {
+			return true
+		}
+	}
+	return false
+}
+
+// waitingLocked reports whether a queued message would start a turn: one
+// that is not quiet, or being sent.
+func (s *session) waitingLocked() bool {
+	for _, m := range s.rec.Queue {
+		if m.Sending || m.wakes() {
+			return true
+		}
+	}
+	return false
 }
 
 // markLocked sets or clears Sending on the queued messages of batch. The
@@ -1854,7 +2085,7 @@ func (n *Node) tryDeliver(s *session) {
 		}
 		batch := s.nextBatchLocked()
 		if len(batch) == 0 {
-			if len(s.rec.Queue) > 0 {
+			if s.sendingLocked() {
 				s.mu.Unlock()
 				return // a promoted message is being steered in
 			}
@@ -2124,7 +2355,7 @@ func (n *Node) queueList(s *session) json.RawMessage {
 	res := wire.QueueResult{Messages: []wire.QueueEntry{}}
 	for i, m := range s.rec.Queue {
 		res.Messages = append(res.Messages, wire.QueueEntry{ID: m.ID, From: m.From, Kind: m.Kind, Owner: m.Owner,
-			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt, AtStep: m.AtStep})
+			Images: len(m.Attachments), Position: i, ExpiresAt: m.ExpiresAt, AtStep: m.AtStep, Quiet: m.Quiet})
 	}
 	return model.Marshal(res)
 }
@@ -2163,6 +2394,7 @@ func (s *session) promoteLocked(id string, steer bool) (queuedMsg, error) {
 	// if it would have expired before its turn came.
 	m.ExpiresAt = time.Time{}
 	m.Sending = steer
+	m.Promoted = true // asked for now: it starts a turn even if quiet
 	if steer {
 		q := append([]queuedMsg(nil), s.rec.Queue...)
 		q[i] = m
@@ -2239,7 +2471,7 @@ func (n *Node) promote(ctx context.Context, s *session, c *wire.QueuedCmd) (json
 	}
 	s.emit(model.KindMessagePromoted, model.MessageEvent{MessageID: msg.ID, From: msg.From, Mode: mode})
 	if mode == model.ModeInterrupt {
-		if err := h.Interrupt(ctx); err != nil && !errors.Is(err, adapter.ErrNotActive) {
+		if err := n.interrupt(ctx, s, h); err != nil && !errors.Is(err, adapter.ErrNotActive) {
 			n.logf("session %s: interrupt for message %s: %v", s.rec.Path, msg.ID, err)
 		}
 	}
@@ -2291,7 +2523,7 @@ func (n *Node) stop(ctx context.Context, s *session) error {
 	id := s.rec.ID
 	s.mu.Unlock()
 	n.wakeSender()
-	n.dropImages(id)
+	n.dropSessionDirs(id)
 	return n.saveState()
 }
 
@@ -2375,7 +2607,7 @@ func (n *Node) forgetStopped() {
 	}
 	for _, s := range gone {
 		_ = os.Remove(s.spoolPath())
-		n.dropImages(s.rec.ID)
+		n.dropSessionDirs(s.rec.ID)
 		n.logf("session %s: stopped, and its events are all with the coordinator; forgotten", s.rec.Path)
 	}
 	n.persist()
@@ -2440,7 +2672,7 @@ func (n *Node) handleCmd(cmd wire.Cmd) wire.Result {
 			if err != nil {
 				return err
 			}
-			return h.Interrupt(ctx)
+			return n.interrupt(ctx, s, h)
 		case wire.OpResolve:
 			if cmd.Resolve == nil {
 				return errors.New("resolve: missing body")

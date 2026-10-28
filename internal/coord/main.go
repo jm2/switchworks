@@ -288,7 +288,7 @@ func runCoordinator(parent context.Context, dir string, stderr io.Writer) int {
 		logger.Printf("load config (run `swk coordinator init` first): %v", err)
 		return 1
 	}
-	lock, err := runstatus.Lock(dir)
+	lock, err := runstatus.LockWait(dir, runstatus.RestartWait)
 	if err != nil {
 		logger.Print(err)
 		return 1

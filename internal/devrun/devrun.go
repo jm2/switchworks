@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,8 +24,11 @@ import (
 
 	"github.com/jm2/switchworks/internal/adapter"
 	"github.com/jm2/switchworks/internal/adapter/agyad"
+	"github.com/jm2/switchworks/internal/adapter/codexad"
 	"github.com/jm2/switchworks/internal/harness"
 	"github.com/jm2/switchworks/internal/model"
+	"github.com/jm2/switchworks/internal/node"
+	"github.com/jm2/switchworks/internal/paths"
 	"github.com/jm2/switchworks/internal/render"
 )
 
@@ -43,6 +47,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	codexBin := fs.String("codex-bin", "", "codex binary (default: codex on PATH)")
 	codexHome := fs.String("codex-home", "", "CODEX_HOME for app-server (default: codex's own)")
 	codexPerms := fs.String("codex-permissions", "", "codex permission profile (config.toml [permissions.<id>]) for -sandbox workspace-write, sent instead of the sandbox mode")
+	nodeDir := fs.String("node-dir", paths.NodeDir(), "node directory: codex gets the codex settings of its node.json (bin, args, config, lean, permissions, home), as the node's sessions do; the -codex-* flags override them")
+	noNode := fs.Bool("no-node-config", false, "ignore node.json: run codex with its own settings")
 	agyBin := fs.String("agy-bin", "", "agy binary (default: agy on PATH)")
 	agyPerTurn := fs.Bool("agy-per-turn", false, "agy: one process per turn instead of a long-lived stream-json process")
 	gooseBin := fs.String("goose-bin", "", "goose binary (default: goose on PATH)")
@@ -90,12 +96,24 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if *logs {
 		harnessStderr = render.Safe(rawStderr)
 	}
-	opts := harness.Options{CodexBin: *codexBin, CodexPermissions: *codexPerms, AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
+	opts := harness.Options{AgyBin: *agyBin, Agy: agyad.Options{PerTurn: *agyPerTurn}, Stderr: harnessStderr,
 		Logf: func(f string, a ...any) {
 			if *verbose {
 				fmt.Fprintf(stderr, "swk: "+f+"\n", a...)
 			}
 		}}
+	if *h == codexad.Harness && !*noNode {
+		if err := nodeCodexOptions(*nodeDir, &opts, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	if *codexBin != "" {
+		opts.CodexBin = *codexBin
+	}
+	if *codexPerms != "" {
+		opts.CodexPermissions = *codexPerms
+	}
 	if *codexHome != "" {
 		opts.CodexEnv = map[string]string{"CODEX_HOME": *codexHome}
 	}
@@ -177,6 +195,26 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+}
+
+// nodeCodexOptions gives opts the codex settings of dir's node.json, as
+// the node builds them for its sessions, and says on stderr which it
+// used: without them dev run tests a different sandbox than sessions get.
+func nodeCodexOptions(dir string, opts *harness.Options, stderr io.Writer) error {
+	file := filepath.Join(dir, "node.json")
+	cfg, err := node.LoadConfig(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(stderr, "swk: no %s: codex runs with its own settings, not a node's\n", file)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w (pass -no-node-config to run without it)", file, err)
+	}
+	if err := node.CodexOptions(cfg, opts, opts.Logf); err != nil {
+		return fmt.Errorf("%s: %w (pass -no-node-config to run without it)", file, err)
+	}
+	fmt.Fprintf(stderr, "swk: codex settings from %s, as the node's sessions get them (-no-node-config to ignore)\n", file)
+	return nil
 }
 
 // terminal filters what dev run and vision-probe print, as cli.Main does
