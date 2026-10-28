@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Reminders instead of polling** — `fleet_remind {in_seconds, text, id}` has the coordinator send
+  the calling session a `system` message after 60 s to 24 h, starting a turn if it is idle, so an
+  agent waiting on CI, a build or a person can end its turn instead of polling in it. A new reminder
+  with a pending one's id replaces it, `{cancel: id}` cancels one, reminders survive a coordinator
+  restart and are dropped when the session stops. `swk reminders <session>` and `GET
+  /v1/sessions/{id}/reminders` list them; an owner can cancel one. The `swk mcp` instructions now
+  say to wait with a reminder, to ask people with `wait_seconds` 0 and carry on, and to keep
+  acknowledgements quiet.
+
 ### Fixed
 
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
