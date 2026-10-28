@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -743,4 +744,121 @@ func TestEarlyNotesEvicted(t *testing.T) {
 	if got := len(a.early["later"].notes); got != earlyPerTh {
 		t.Fatalf("%d notes kept for one thread", got)
 	}
+}
+
+// A session's cache directory reaches its thread as per-thread overrides:
+// writable (a profile entry, or the legacy roots plus it) and named by the
+// variables the owner left, next to the fleet tools.
+func TestCacheConfig(t *testing.T) {
+	dir := "/c/01J00000000000000000000000"
+	env := []string{"XDG_CACHE_HOME", "CCACHE_DIR"}
+	mcp := &adapter.MCPServer{Name: "switchworks", Command: "swk"}
+	setEnv := map[string]any{"shell_environment_policy.set.XDG_CACHE_HOME": dir, "shell_environment_policy.set.CCACHE_DIR": dir}
+	with := func(m map[string]any, kv ...any) map[string]any {
+		out := map[string]any{}
+		for k, v := range m {
+			out[k] = v
+		}
+		for i := 0; i < len(kv); i += 2 {
+			out[kv[i].(string)] = kv[i+1]
+		}
+		return out
+	}
+	for name, c := range map[string]struct {
+		cfg  Config
+		spec adapter.StartSpec
+		want map[string]any
+	}{
+		"legacy keeps the roots": {
+			Config{Cache: Cache{Env: env, Roots: []string{"/srv/a", dir}, RootsKnown: true}},
+			adapter.StartSpec{Sandbox: "workspace-write", CacheDir: dir},
+			with(setEnv, "sandbox_workspace_write.writable_roots", []any{"/srv/a", dir}),
+		},
+		"legacy, roots unknown: env only": {
+			Config{Cache: Cache{Env: env}},
+			adapter.StartSpec{Sandbox: "workspace-write", CacheDir: dir},
+			setEnv,
+		},
+		"profile": {
+			Config{Permissions: "swk", Cache: Cache{Env: env, RootsKnown: true, ProfileOK: true}},
+			adapter.StartSpec{Sandbox: "workspace-write", CacheDir: dir},
+			with(setEnv, "permissions.swk.filesystem", map[string]any{dir: "write"}),
+		},
+		"profile table set with -c: env only": {
+			Config{Permissions: "swk", Cache: Cache{Env: env, RootsKnown: true}},
+			adapter.StartSpec{Sandbox: "workspace-write", CacheDir: dir},
+			setEnv,
+		},
+		"owner set CCACHE_DIR": {
+			Config{Cache: Cache{Env: []string{"XDG_CACHE_HOME"}, RootsKnown: true}},
+			adapter.StartSpec{Sandbox: "workspace-write", CacheDir: dir},
+			map[string]any{"shell_environment_policy.set.XDG_CACHE_HOME": dir, "sandbox_workspace_write.writable_roots": []any{dir}},
+		},
+		"full access: env only": {
+			Config{Cache: Cache{Env: env, RootsKnown: true}},
+			adapter.StartSpec{Sandbox: "danger-full-access", CacheDir: dir},
+			setEnv,
+		},
+		"read-only: nothing":   {Config{Cache: Cache{Env: env, RootsKnown: true}}, adapter.StartSpec{Sandbox: "read-only", CacheDir: dir}, nil},
+		"no directory":         {Config{Cache: Cache{Env: env, RootsKnown: true}}, adapter.StartSpec{Sandbox: "workspace-write"}, nil},
+		"read-only with tools": {Config{Cache: Cache{Env: env}}, adapter.StartSpec{Sandbox: "read-only", CacheDir: dir, MCP: mcp}, mcpConfig(mcp)},
+		"with tools": {
+			Config{Cache: Cache{Env: env}},
+			adapter.StartSpec{Sandbox: "danger-full-access", CacheDir: dir, MCP: mcp},
+			with(setEnv, "mcp_servers", mcpConfig(mcp)["mcp_servers"]),
+		},
+	} {
+		a := New(c.cfg)
+		got := a.threadConfig(c.spec)
+		gb, _ := json.Marshal(got)
+		wb, _ := json.Marshal(c.want)
+		if string(gb) != string(wb) {
+			t.Errorf("%s:\n got %s\nwant %s", name, gb, wb)
+		}
+	}
+}
+
+// app-server gets the overrides with the thread, at start and at resume,
+// under a profile and without one.
+func TestCacheDirThread(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	for perms, want := range map[string]string{
+		"":    `{"sandbox_workspace_write.writable_roots":["/srv/a",` + jsonStr(dir) + `],"shell_environment_policy.set.CCACHE_DIR":` + jsonStr(dir) + `}`,
+		"swk": `{"permissions.swk.filesystem":{` + jsonStr(filepath.ToSlash(dir)) + `:"write"},"shell_environment_policy.set.CCACHE_DIR":` + jsonStr(dir) + `}`,
+	} {
+		state := t.TempDir()
+		cfg := Config{Env: codextest.Env(state), Permissions: perms,
+			Cache: Cache{Env: []string{"CCACHE_DIR"}, Roots: []string{"/srv/a"}, RootsKnown: true, ProfileOK: true}}
+		check := func(h adapter.Handle, col *collector) {
+			t.Helper()
+			col.waitFor(t, 0, "idle", status(model.StatusIdle))
+			if err := h.Deliver(ctx, adapter.Input{Text: "THREADCONFIG"}, adapter.DeliverQueue); err != nil {
+				t.Fatal(err)
+			}
+			col.waitFor(t, 0, want, completedText(want))
+		}
+		a := newFakeWith(t, cfg)
+		col := &collector{}
+		spec := adapter.StartSpec{Name: "devbox/c", Cwd: "/work", Sandbox: "workspace-write", CacheDir: dir}
+		h, err := a.Start(ctx, spec, col.sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(h, col)
+		ref := h.Ref()
+		a.Close()
+		a2 := newFakeWith(t, cfg)
+		col2 := &collector{}
+		h2, err := a2.Resume(ctx, ref, spec, col2.sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(h2, col2)
+	}
+}
+
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

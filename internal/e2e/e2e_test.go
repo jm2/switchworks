@@ -129,6 +129,7 @@ func startNode(t *testing.T, dir, fakeState string) *runningNode {
 	// must not join the fleet.
 	cfg.Agy.Bin = "/nonexistent/agy"
 	cfg.FilesDir = filepath.Join(dir, "received-files") // not the real cache directory
+	cfg.SessionCache.Dir = filepath.Join(dir, "session-cache")
 	cfg.ACP = map[string]harness.ACPAgent{"goose": {Disabled: true}}
 	hopts, err := node.HarnessOptions(dir, cfg, func(f string, a ...any) { t.Logf("node: "+f, a...) })
 	if err != nil {

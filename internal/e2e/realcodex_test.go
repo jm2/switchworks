@@ -17,7 +17,7 @@ import (
 	"github.com/jm2/switchworks/internal/node"
 )
 
-func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *codextest.MockProvider) *runningNode {
+func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *codextest.MockProvider, opts ...func(dir string, cfg *node.Config)) *runningNode {
 	t.Helper()
 	tok, err := c.EnrollToken(context.Background(), host, time.Hour)
 	if err != nil {
@@ -33,12 +33,24 @@ func startRealNode(t *testing.T, c *apiclient.Client, host, bin string, mock *co
 	}
 	cfg.Codex.Bin = bin
 	cfg.FilesDir = filepath.Join(dir, "received-files")
+	cfg.SessionCache.Dir = filepath.Join(dir, "session-cache")
+	mockEnv, err := mock.WriteCodexHome(filepath.Join(dir, "codex-home"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Codex.Home = mockEnv["CODEX_HOME"] // the node reads its config.toml, not yours
+	for _, o := range opts {
+		o(dir, &cfg)
+	}
 	hopts, err := node.HarnessOptions(dir, cfg, func(f string, a ...any) { t.Logf(host+": "+f, a...) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hopts.CodexEnv, err = mock.WriteCodexHome(filepath.Join(dir, "codex-home")); err != nil {
-		t.Fatal(err)
+	if hopts.CodexEnv == nil {
+		hopts.CodexEnv = map[string]string{}
+	}
+	for k, v := range mockEnv {
+		hopts.CodexEnv[k] = v
 	}
 	n, err := node.New(dir, cfg, hopts, hopts.Logf)
 	if err != nil {

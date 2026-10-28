@@ -74,6 +74,7 @@ type server struct {
 	waiting  map[string]chan json.RawMessage // our request id -> response
 	threads  map[string]bool
 	sandbox  map[string]string // threadId -> sandbox and permissions of its last start or resume
+	config   map[string]string // threadId -> its last start's or resume's config overrides as JSON, the fleet tools left out
 	turns    map[string]*turn  // threadId -> active turn
 	turnSeq  int
 	initDone bool
@@ -138,7 +139,7 @@ func newID() string {
 func Run(in io.Reader, out io.Writer, stateDir string) {
 	s := &server{
 		out: json.NewEncoder(out), stateDir: stateDir,
-		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, sandbox: map[string]string{}, turns: map[string]*turn{},
+		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, sandbox: map[string]string{}, config: map[string]string{}, turns: map[string]*turn{},
 	}
 	s.loadThreads()
 	br := bufio.NewReaderSize(in, 1<<20)
@@ -268,6 +269,7 @@ func (s *server) handle(line []byte) {
 		s.mu.Lock()
 		s.saveThread(id)
 		s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
+		s.config[id] = threadConfig(p)
 		s.mu.Unlock()
 		cwd := str("cwd")
 		s.mcp.setConfig(id, parseMCPConfig(p))
@@ -281,6 +283,7 @@ func (s *server) handle(line []byte) {
 		ok := s.threads[id]
 		if ok {
 			s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
+			s.config[id] = threadConfig(p)
 		}
 		s.mu.Unlock()
 		if !ok {
@@ -437,6 +440,10 @@ func (s *server) runTurn(t *turn, text string) {
 		os.Exit(3)
 	case strings.Contains(text, "POLICY"):
 		reply = "policy: " + t.policy
+	case strings.Contains(text, "THREADCONFIG"):
+		s.mu.Lock()
+		reply = s.config[t.thread]
+		s.mu.Unlock()
 	case strings.Contains(text, "SANDBOX"):
 		s.mu.Lock()
 		reply = s.sandbox[t.thread]
@@ -508,4 +515,18 @@ func (s *server) runTurn(t *turn, text string) {
 	s.note("thread/status/changed", map[string]any{"threadId": t.thread, "status": map[string]any{"type": "idle"}})
 	s.note("turn/completed", map[string]any{"threadId": t.thread, "turn": map[string]any{"id": t.id, "items": []any{},
 		"status": status, "error": nil, "durationMs": 42}})
+}
+
+// threadConfig renders a thread/start or thread/resume's config overrides
+// as JSON (keys sorted), without the fleet tools' mcp_servers.
+func threadConfig(p map[string]any) string {
+	c, _ := p["config"].(map[string]any)
+	out := map[string]any{}
+	for k, v := range c {
+		if k != "mcp_servers" {
+			out[k] = v
+		}
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }

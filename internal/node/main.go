@@ -192,6 +192,11 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 		logf = func(string, ...any) {}
 	}
 	hostCodexConfig(cfg, codexConf, logf)
+	var configTOML []byte
+	if home := codexHome(cfg); home != "" {
+		configTOML, _ = os.ReadFile(filepath.Join(home, "config.toml"))
+	}
+	cache := codexCache(cfg, codexConf, configTOML, logf)
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		return harness.Options{}, err
 	}
@@ -199,7 +204,7 @@ func HarnessOptions(dir string, cfg Config, logf func(string, ...any)) (harness.
 	if err != nil {
 		return harness.Options{}, err
 	}
-	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexEnv: codexEnv, CodexConfig: codexConf, CodexPermissions: cfg.Codex.Permissions,
+	o := harness.Options{CodexBin: cfg.Codex.Bin, CodexArgs: cfg.Codex.Args, CodexEnv: codexEnv, CodexConfig: codexConf, CodexPermissions: cfg.Codex.Permissions, CodexCache: cache,
 		AgyBin: cfg.Agy.Bin, AgyArgs: cfg.Agy.Args, Agy: cfg.Agy.Options, ACP: cfg.ACP, Stderr: logFile, Logf: logf}
 	return o, nil
 }

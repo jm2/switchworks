@@ -232,7 +232,7 @@ func TestMissingImageFailsAlone(t *testing.T) {
 	withImage, plain := ulid.New(), ulid.New()
 	send(t, n, s, wire.MessageCmd{ID: withImage, From: "devbox/b", Text: "look", Attachments: []model.Attachment{{Name: "a.png", Data: testPNG(t, 2)}}})
 	send(t, n, s, wire.MessageCmd{ID: plain, From: "devbox/c", Text: "plain"})
-	n.dropImages(s.rec.ID)
+	n.dropSessionDirs(s.rec.ID)
 	h.setStatus(model.StatusIdle)
 	eventually(t, "the queue worked through", func() bool { return s.queueLen() == 0 && len(h.deliveries()) == 1 })
 	if f := s.events(model.KindMessageFailed); len(f) != 1 || !strings.Contains(f[0], withImage) {

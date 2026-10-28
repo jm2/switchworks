@@ -59,6 +59,7 @@ func startGooseNode(t *testing.T, c *apiclient.Client, host, bin string, mock *c
 		}
 	})
 	cfg.FilesDir = filepath.Join(dir, "received-files")
+	cfg.SessionCache.Dir = filepath.Join(dir, "session-cache")
 	g := &gooseNode{dir: dir, cfg: cfg}
 	g.run(t)
 	return g

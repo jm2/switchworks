@@ -103,6 +103,14 @@ type Config struct {
 	// A message whose files would pass it is refused.
 	FilesQuotaMiB int64 `json:"files_quota_mib,omitempty"`
 
+	// SessionCache gives each Codex session a writable cache directory of
+	// its own (see sessioncache.go): Dir is where they go (default
+	// <user cache dir>/switchworks/session-cache); Disabled turns it off.
+	SessionCache struct {
+		Disabled bool   `json:"disabled,omitempty"`
+		Dir      string `json:"dir,omitempty"`
+	} `json:"session_cache,omitzero"`
+
 	// AttachDeny lists more files and directories agents may never attach
 	// (images, files), besides Switchworks's own and the credential
 	// locations the node always denies (see attachPolicy). "~/" is the
@@ -444,6 +452,13 @@ func New(dir string, cfg Config, hopts harness.Options, logf func(string, ...any
 		n.persist()
 	}
 	n.forgetStopped()
+	live := map[string]bool{}
+	for _, s := range n.sessionList() {
+		if !s.rec.Stopped {
+			live[s.rec.ID] = true
+		}
+	}
+	n.sweepCaches(live)
 	n.status = runstatus.Start(dir, runstatus.Status{Role: "node", Host: cfg.Host,
 		Coordinator: cfg.CoordinatorNode, WebUI: webUIFor(cfg.CoordinatorAPI)})
 	n.wg.Add(3)
@@ -861,6 +876,7 @@ func (n *Node) resume(s *session) {
 	// image files of one.
 	_ = os.RemoveAll(n.scratchDir(rec.ID))
 	spec.ScratchDir = n.scratchDir(rec.ID)
+	spec.CacheDir = n.sessionCache(rec.Harness, rec.ID)
 	h, err := a.Resume(ctx, *rec.NativeRef, spec, s.sink)
 	if err != nil {
 		n.logf("session %s: resume failed: %v", rec.Path, err)
@@ -981,6 +997,7 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 	startSpec := s.rec.Spec
 	startSpec.MCP = n.mcpFor(s.rec.ID, s.rec.Path)
 	startSpec.ScratchDir = n.scratchDir(s.rec.ID)
+	startSpec.CacheDir = n.sessionCache(harnessName, s.rec.ID)
 	h, err := a.Start(ctx, startSpec, s.sink)
 	failStart := func(err error) (json.RawMessage, error) {
 		// The coordinator forgets a session whose spawn fails, so
@@ -999,7 +1016,7 @@ func (n *Node) spawn(ctx context.Context, cmd *wire.SpawnCmd) (json.RawMessage, 
 		s.mu.Unlock()
 		_ = os.Remove(s.spoolPath())
 		_ = n.saveState()
-		n.dropImages(s.rec.ID)
+		n.dropSessionDirs(s.rec.ID)
 		return nil, err
 	}
 	if err != nil {
@@ -2294,7 +2311,7 @@ func (n *Node) stop(ctx context.Context, s *session) error {
 	id := s.rec.ID
 	s.mu.Unlock()
 	n.wakeSender()
-	n.dropImages(id)
+	n.dropSessionDirs(id)
 	return n.saveState()
 }
 
@@ -2378,7 +2395,7 @@ func (n *Node) forgetStopped() {
 	}
 	for _, s := range gone {
 		_ = os.Remove(s.spoolPath())
-		n.dropImages(s.rec.ID)
+		n.dropSessionDirs(s.rec.ID)
 		n.logf("session %s: stopped, and its events are all with the coordinator; forgotten", s.rec.Path)
 	}
 	n.persist()
