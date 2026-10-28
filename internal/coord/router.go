@@ -1748,10 +1748,10 @@ func (r *router) onDelivered(sessionID, messageID, mode string) {
 		tr = trigger{hops: m.Hops}
 	case contains(tr.msgs, m.ID):
 		return // reported again (a delivery retried after a busy harness)
-	case mode == model.ModeSteer:
-		// It only adds to a turn it did not start, which keeps the count
-		// of what started it.
 	default:
+		// A steer counts too: two agents steering into each other's
+		// running turns are a chain like any other (max_hops is off by
+		// default, so this binds only an owner who sets it).
 		tr.hops = max(tr.hops, m.Hops)
 	}
 	if len(tr.msgs) < maxTriggerMsgs {

@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Steers count toward `max_hops` again** — 0.1.6 stopped a steer into a running turn from
+  raising its hop count, which let two agents steering into each other's turns loop past a
+  `max_hops` the owner had set. Steers count again; a person's message still starts it over.
 - **Codex turns resend the approval policy only when it changes** — Every `turn/start` carried the
   session's approval policy, which app-server applies as a thread settings update and records as
   `thread_settings_applied`, once per turn. It now goes only with the first turn after a change.

@@ -85,8 +85,8 @@ func TestHopsKeepTheDeepest(t *testing.T) {
 	}
 }
 
-// A deep steer into a running turn does not deepen it, and a person's
-// message, steered or not, starts the count over. Without max_hops agents
+// A deep steer into a running turn deepens it (steering loops are chains
+// too), and a person's message, steered or not, starts the count over. Without max_hops agents
 // may keep messaging each other however deep the chain.
 func TestHopsPersonAndSteer(t *testing.T) {
 	s := testServer(t, Guards{MaxHops: 8})
@@ -96,8 +96,8 @@ func TestHopsPersonAndSteer(t *testing.T) {
 
 	r.onDelivered(b.ID, storeMsg(t, s, b, 2).ID, "queue")
 	r.onDelivered(b.ID, storeMsg(t, s, b, 7).ID, model.ModeSteer)
-	if got := hops(); got != 2 {
-		t.Fatalf("after a deep steer: hops %d", got)
+	if got := hops(); got != 7 {
+		t.Fatalf("after a deep steer: hops %d, want 7 (steers count)", got)
 	}
 	r.onDelivered(b.ID, storeMsg(t, s, b, 6).ID, "queue")
 	r.onDelivered(b.ID, storeMsg(t, s, b, 0, func(m *model.Message) { m.From = "user:jm" }).ID, model.ModeSteer)

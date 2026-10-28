@@ -787,12 +787,12 @@ delivered (answered or not), failed or expired ones are dropped first, and
 stay dropped across a restart.
 
 People are not rate limited. With `max_hops` set, hops count from the
-messages that started the sender's current work: a person's message is hop
+messages behind the sender's current work: a person's message is hop
 0, the agent's message to another agent is hop 1, and so on. A turn that
-starts with several messages (a batch from the queue) counts from the
-deepest of them, so a shallow message cannot shorten a long chain. A steer
-into a running turn does not change its count (it did not start the turn),
-and a person's message, steered or not, starts it over at 0. After a
+takes in several messages (a batch from the queue, or steers into the
+running turn) counts from the deepest of them, so a shallow message cannot
+shorten a long chain, and two agents steering into each other's turns still
+reach the limit. A person's message, steered or not, starts it over at 0. After a
 coordinator restart it is rebuilt from the stored messages. A spawn counts
 as a hop too, so a loop of spawns and completion notices ends at
 `max_hops`. Without `max_hops` (the default), agents' messages are limited
