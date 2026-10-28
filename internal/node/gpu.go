@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -120,7 +121,9 @@ func (n *Node) gpuPlan(s *session, body []byte) (gpurun.Plan, error) {
 	}
 	pol := n.attachPolicy()
 	deny := append(append([]string{}, pol.Deny...), pol.Own...)
-	if err := gpurun.CheckWorkspace(ws, pol.Home, deny); err != nil {
+	// (A workspace holding the profiles folder holds home too.)
+	system := gpurun.SystemDirs(os.Getenv, pol.Home)
+	if err := gpurun.CheckWorkspace(ws, pol.Home, deny, system); err != nil {
 		return gpurun.Plan{}, err
 	}
 	runCwd, err := gpurun.ResolveCwd(ws, req.Cwd)
@@ -129,6 +132,14 @@ func (n *Node) gpuPlan(s *session, body []byte) (gpurun.Plan, error) {
 	}
 	prog, err := gpurun.FindProgram(req.Argv[0], runCwd)
 	if err != nil {
+		return gpurun.Plan{}, err
+	}
+	// Checked by its real path (links resolved, long names), as Windows
+	// will open it.
+	if prog, err = filepath.EvalSymlinks(prog); err != nil {
+		return gpurun.Plan{}, fmt.Errorf("%s: %w", req.Argv[0], err)
+	}
+	if err := gpurun.CheckProgramDir(prog, ws, gpurun.SystemDirs(os.Getenv, "")); err != nil {
 		return gpurun.Plan{}, err
 	}
 	ro, hidden := gpurun.Protected(ws, deny)

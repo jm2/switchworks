@@ -208,12 +208,23 @@ func fold(p string) string {
 	return p
 }
 
-// CheckWorkspace refuses a workspace the command must not be given: the
-// home directory or one above it (it holds the owner's credentials), or one
-// inside a denied path.
-func CheckWorkspace(ws, home string, deny []string) error {
+// CheckWorkspace refuses a workspace the command must not be given: a
+// volume root; the home directory or one above it (it holds the owner's
+// credentials); one inside a denied path; and one inside or above a system
+// directory (Windows, Program Files, ProgramData, the AppContainer
+// folders), whose files the node would otherwise
+// open up one by one.
+func CheckWorkspace(ws, home string, deny, system []string) error {
+	if filepath.Dir(ws) == ws {
+		return fmt.Errorf("the session works in %s, a volume root; GPU runs need a project directory", ws)
+	}
 	if home != "" && Within(ws, home) {
 		return fmt.Errorf("the session works in %s, which holds your home directory; GPU runs need a project directory", ws)
+	}
+	for _, s := range system {
+		if s != "" && (Within(s, ws) || Within(ws, s)) {
+			return fmt.Errorf("the session works in %s, which is or holds the system directory %s; GPU runs need a project directory", ws, s)
+		}
 	}
 	for _, d := range deny {
 		if d != "" && Within(d, ws) {
@@ -221,6 +232,37 @@ func CheckWorkspace(ws, home string, deny []string) error {
 		}
 	}
 	return nil
+}
+
+// SystemDirs are the directories CheckWorkspace keeps runs out of, from
+// getenv and home.
+func SystemDirs(getenv func(string) string, home string) []string {
+	var out []string
+	for _, k := range []string{"SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"} {
+		if v := getenv(k); v != "" {
+			out = append(out, filepath.Clean(v))
+		}
+	}
+	if home != "" {
+		out = append(out, filepath.Join(home, "AppData", "Local", "Packages"))
+	}
+	return out
+}
+
+// CheckProgramDir refuses a program outside the workspace and the system
+// directories. Windows opens a process's executable with the node's token,
+// not the container's, so without this a run could execute (and map, and
+// so read) any program the owner can read, in their profile too.
+func CheckProgramDir(prog, ws string, system []string) error {
+	if Within(ws, prog) {
+		return nil
+	}
+	for _, s := range system {
+		if s != "" && Within(s, prog) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s is outside the workspace and the system directories (Windows, Program Files); copy or build it into the workspace", prog)
 }
 
 // gitDepth is how deep under the workspace .git entries are looked for,
@@ -462,7 +504,11 @@ func (t *Tail) Write(p []byte) (int, error) {
 
 // String returns what is kept, as valid UTF-8 (a character cut at the
 // start is dropped).
-func (t *Tail) String() string { return strings.ToValidUTF8(string(t.buf), "�") }
+func (t *Tail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.ToValidUTF8(string(t.buf), "\uFFFD")
+}
 
 // Dropped is the number of bytes not kept.
 func (t *Tail) Dropped() int64 {

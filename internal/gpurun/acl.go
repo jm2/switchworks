@@ -18,9 +18,12 @@ import (
 type Mode int
 
 const (
-	ModeWrite  Mode = iota // read, write, create, delete
-	ModeRead               // read and execute only: .git
-	ModeHidden             // nothing: the deny list's entries
+	// modeRevoke removes the container's explicit ACEs: for entries it
+	// must not reach any more (a file since hard-linked).
+	modeRevoke Mode = iota - 1
+	ModeWrite       // read, write, create, delete
+	ModeRead        // read and execute only: .git
+	ModeHidden      // nothing: the deny list's entries
 )
 
 // ACE types and flags (winnt.h).
@@ -63,6 +66,8 @@ func wantACEs(m Mode, dir bool, sid []byte) []ACE {
 		fl = inheritFlags
 	}
 	switch m {
+	case modeRevoke:
+		return nil
 	case ModeRead:
 		return []ACE{{Type: aceDenied, Flags: fl, Mask: denyChange, SID: sid}, {Type: aceAllowed, Flags: fl, Mask: allowRead, SID: sid}}
 	case ModeHidden:
@@ -89,7 +94,11 @@ func PlanDACL(old []ACE, sid []byte, m Mode, dir bool) (out []ACE, changed bool)
 			have = append(have, a)
 		}
 	}
-	if len(have) == len(want) {
+	// A wanted deny must come first, before any allow that could also match
+	// the container (ALL APPLICATION PACKAGES).
+	denyFirst := len(want) == 0 || want[0].Type != aceDenied ||
+		len(old) > 0 && old[0].Flags&inheritedACE == 0 && old[0].forSID(sid) && old[0].Type == aceDenied
+	if len(have) == len(want) && denyFirst {
 		same := true
 		for i := range want {
 			// The deny and allow ACEs may be in either order among other

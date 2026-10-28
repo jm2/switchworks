@@ -62,6 +62,7 @@ func TestRunConfined(t *testing.T) {
 		"(type " + outside + " && echo OUTREAD)",
 		"(echo z> " + filepath.Dir(outside) + "\\planted.txt && echo OUTWRITE)",
 		"(type .git\\config && echo GITREAD)",
+		"(icacls .git\\config /grant *S-1-15-2-1:F && echo GITACL)",
 		"set",
 		"exit /b 7",
 	}, " & ")
@@ -80,7 +81,7 @@ func TestRunConfined(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(ws, "out.txt")); err != nil || !strings.HasPrefix(string(b), "x") {
 		t.Errorf("workspace not writable: %q %v", b, err)
 	}
-	for _, s := range []string{"GITWRITE", "GITRENAME", "HIDDENREAD", "hunter2", "OUTREAD", "owner's", "OUTWRITE", "s3cr3t"} {
+	for _, s := range []string{"GITWRITE", "GITRENAME", "HIDDENREAD", "hunter2", "OUTREAD", "owner's", "OUTWRITE", "s3cr3t", "GITACL"} {
 		if strings.Contains(res.Stdout, s) {
 			t.Errorf("the run could: %s", s)
 		}

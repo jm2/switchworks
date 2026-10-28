@@ -17,11 +17,12 @@ import (
 	"unsafe"
 )
 
-// Capability SIDs given with Plan.Network: internetClient and
-// privateNetworkClientServer. Loopback stays closed to AppContainers either
+// Capability SIDs given with Plan.Network: internetClient, outbound to the
+// internet only. Not privateNetworkClientServer, which would also open the
+// LAN and inbound connections. Loopback stays closed to AppContainers either
 // way (no loopback exemption), so a run cannot reach the node's local API or
 // other services on the host.
-var networkCapabilities = []string{"S-1-15-3-1", "S-1-15-3-3"}
+var networkCapabilities = []string{"S-1-15-3-1"}
 
 // grantMu serialises the workspace walks.
 var grantMu sync.Mutex
@@ -335,7 +336,7 @@ func start(p Plan, sid uintptr, folder string, job, stdin, stdout, stderr syscal
 		syscall.CloseHandle(pi.Process)
 		return nil, fmt.Errorf("AssignProcessToJobObject: %w", err)
 	}
-	if r, _, err := procResumeThread.Call(uintptr(pi.Thread)); r == ^uintptr(0) {
+	if r, _, err := procResumeThread.Call(uintptr(pi.Thread)); uint32(r) == 0xFFFFFFFF {
 		procTerminateJobObject.Call(uintptr(job), 1)
 		syscall.CloseHandle(pi.Process)
 		return nil, fmt.Errorf("ResumeThread: %w", err)

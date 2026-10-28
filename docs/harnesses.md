@@ -499,8 +499,10 @@ confined:
   remove the container's SID (the node log's "GPU run" lines name the
   workspace; `Get-Acl` shows the SID, `S-1-15-2-…`) with
   `icacls <dir> /remove:g *<SID> /T /L`.
-- It has no network unless `gpu_run.network` is `true`. Loopback is
-  closed either way, so it can't reach the node's local API.
+- It has no network unless `gpu_run.network` is `true`, which opens
+  outbound internet connections only (`internetClient`): not your LAN,
+  not inbound. Loopback is closed either way, so it can't reach the
+  node's local API.
 - It runs in a job with UI limits: no access to other programs' windows,
   no clipboard, no new or switched desktops, no logoff or shutdown, no
   system-wide settings. Low integrity also blocks sending input or
@@ -511,10 +513,22 @@ confined:
   exits or its time limit passes (default 5 minutes, at most
   `gpu_run.max_seconds`, up to 30), the job ends everything it started.
 
-Refused: sessions with a `read-only` sandbox, sessions working in your
-home directory (or above it) or inside a denied path, a `cwd` outside the
-working directory, programs on the deny list, and batch files (run them
-through `cmd.exe /d /c`). Each session can have one run at a time.
+Refused: sessions with a `read-only` sandbox; sessions working in a
+volume root, in your home directory or above it, inside a denied path,
+or in or above Windows, `Program Files`, `ProgramData` or the
+AppContainer folders; a `cwd` outside the working directory; batch files
+(run them through `cmd.exe /d /c`); and programs outside the working
+directory and the Windows and `Program Files` folders. Windows opens a
+program's executable with the node's rights, not the container's, so
+without that last rule a run could start any program in your profile.
+Each session can have one run at a time.
+
+Hard-linked files get no access: inside `.git` (after `git clone
+--local`, say) they get a deny, which also applies under their other
+names, so git inside the run may fail there. Package stores that hard-link
+(pnpm, some cargo setups) are unreachable from runs. A program that
+misbehaves only in a run (input methods, full-screen swap chains) may be
+hitting the job's limit on other processes' windows; report it.
 
 What stays possible, so weigh it before turning this on:
 
@@ -531,7 +545,10 @@ What stays possible, so weigh it before turning this on:
   program does.
 
 Direct3D in an AppContainer is what UWP games do, but test your program
-there before relying on it. A program that writes its saves under your
+there before relying on it. Also check on the host that a run cannot
+change the ACL of a `.git` file you own (the owner's implicit rights
+should not apply to the container, but verify it before trusting
+`.git` protection). A program that writes its saves under your
 profile should take its paths from `APPDATA` or `LOCALAPPDATA`; anything
 that reads the real profile through known-folder APIs will get "access
 denied".

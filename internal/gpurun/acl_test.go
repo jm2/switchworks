@@ -49,6 +49,27 @@ func TestPlanDACL(t *testing.T) {
 	}
 }
 
+func TestPlanDACLDenyFirst(t *testing.T) {
+	sid, aap := []byte{1, 2, 3}, []byte{7}
+	// An earlier allow for all AppContainers ahead of the deny: re-planned
+	// so the deny leads.
+	old := []ACE{{Type: aceAllowed, Mask: fileAllAccess, SID: aap},
+		{Type: aceDenied, Mask: denyChange, SID: sid}, {Type: aceAllowed, Mask: allowRead, SID: sid}}
+	out, changed := PlanDACL(old, sid, ModeRead, false)
+	if !changed || out[0].Type != aceDenied || !out[0].forSID(sid) {
+		t.Fatalf("%v %+v", changed, out)
+	}
+	// Revoke drops the container's explicit ACEs and keeps inherited ones.
+	inh := ACE{Type: aceAllowed, Flags: inheritedACE, Mask: allowWrite, SID: sid}
+	out, changed = PlanDACL(append(out, inh), sid, modeRevoke, false)
+	if !changed || len(out) != 2 || out[0].forSID(sid) {
+		t.Fatalf("revoke: %+v", out)
+	}
+	if _, changed := PlanDACL(out, sid, modeRevoke, false); changed {
+		t.Error("revoke applied twice")
+	}
+}
+
 func TestPathMode(t *testing.T) {
 	ro := []string{filepath.FromSlash("/w/.git")}
 	hid := []string{filepath.FromSlash("/w/keys"), filepath.FromSlash("/w/.git/secret")}

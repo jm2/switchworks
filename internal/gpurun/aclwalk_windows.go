@@ -41,6 +41,11 @@ func grant(ws string, sid []byte, readOnly, hidden []string) (skipped int, err e
 	if err == nil && rinfo.FileAttributes&fileAttributeReparse != 0 {
 		err = fmt.Errorf("%s is a link", ws)
 	}
+	// The workspace's own path, not one a junction on the way leads
+	// elsewhere: the walk's expected paths start from it.
+	if err == nil && !strings.EqualFold(rootFinal, filepath.Clean(ws)) {
+		err = fmt.Errorf("it leads to %s (a junction or link on the way?)", rootFinal)
+	}
 	if err == nil {
 		err = setDACL(root, sid, ModeWrite, true)
 	}
@@ -113,6 +118,9 @@ func grantEntry(p, final string, sid []byte, m Mode) (isDir bool, err error) {
 	}
 	if !isDir && fi.NumberOfLinks > 1 {
 		if m == ModeWrite {
+			// Take back what an earlier run gave, while it had one name;
+			// removing the container's ACEs costs the other names nothing.
+			_ = setDACL(h, sid, modeRevoke, false)
 			return false, errLink
 		}
 		// The deny reaches the file under all its names, which costs

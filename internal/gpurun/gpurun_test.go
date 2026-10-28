@@ -76,14 +76,15 @@ func abs(p string) string {
 func TestCheckWorkspace(t *testing.T) {
 	home := abs("/home/u")
 	deny := []string{abs("/home/u/.ssh"), abs("/home/u/secret")}
-	if err := CheckWorkspace(abs("/home/u/src/game"), home, deny); err != nil {
+	sys := []string{abs("/Windows"), abs("/Program Files")}
+	if err := CheckWorkspace(abs("/home/u/src/game"), home, deny, sys); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS == "windows" && CheckWorkspace(`c:\HOME\u`, home, nil) == nil {
+	if runtime.GOOS == "windows" && CheckWorkspace(`c:\HOME\u`, home, nil, nil) == nil {
 		t.Error("case")
 	}
-	for _, ws := range []string{"/home/u", "/home", "/", "/home/u/secret", "/home/u/secret/x"} {
-		if ws = abs(ws); CheckWorkspace(ws, home, deny) == nil {
+	for _, ws := range []string{"/home/u", "/home", "/", "/home/u/secret", "/home/u/secret/x", "/Windows", "/Windows/Temp", "/Program Files/Game"} {
+		if ws = abs(ws); CheckWorkspace(ws, home, deny, sys) == nil {
 			t.Errorf("%s accepted", ws)
 		}
 	}
@@ -114,6 +115,25 @@ func TestProtected(t *testing.T) {
 	}
 	if !reflect.DeepEqual(hidden, wantHidden) {
 		t.Errorf("hidden %q, want %q", hidden, wantHidden)
+	}
+}
+
+func TestProgramDir(t *testing.T) {
+	env := map[string]string{"SystemRoot": abs("/Windows"), "ProgramFiles": abs("/Program Files")}
+	sys := SystemDirs(func(k string) string { return env[k] }, abs("/home/u"))
+	if len(sys) != 3 || sys[2] != filepath.Join(abs("/home/u"), "AppData", "Local", "Packages") {
+		t.Fatalf("%q", sys)
+	}
+	ws := abs("/home/u/src/game")
+	for _, p := range []string{"/home/u/src/game/build/g.exe", "/Windows/System32/cmd.exe", "/Program Files/Tool/t.exe"} {
+		if err := CheckProgramDir(abs(p), ws, sys); err != nil {
+			t.Error(err)
+		}
+	}
+	for _, p := range []string{"/home/u/AppData/Local/Programs/Python/python.exe", "/home/u/.ssh/x.exe", "/opt/g"} {
+		if CheckProgramDir(abs(p), ws, sys) == nil {
+			t.Errorf("%s accepted", p)
+		}
 	}
 }
 
