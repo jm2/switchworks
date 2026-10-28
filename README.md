@@ -664,12 +664,15 @@ credentials (see [docs/harnesses.md](docs/harnesses.md#codex-network-without-exp
 (see [docs/harnesses.md](docs/harnesses.md#codex-session-caches)),
 `files_dir`: where files received with messages go (default
 `<user cache dir>/switchworks/files`; see [docs/messaging.md](docs/messaging.md#files)),
-`files_quota_mib`: how much of them the node keeps (default 1024), and
+`files_quota_mib`: how much of them the node keeps (default 1024),
 `attach_deny` and `attach_allow`: paths agents may never attach, and
 paths exempt from the rules on dot-files and credential-like names
-(see [docs/messaging.md](docs/messaging.md#images)), and `git`: the agent
+(see [docs/messaging.md](docs/messaging.md#images)), `git`: the agent
 token and branch rules of `workspace_git`, the git tool the node runs for
-its sessions (see [docs/harnesses.md](docs/harnesses.md#git-for-agents-workspace_git)).
+its sessions (see [docs/harnesses.md](docs/harnesses.md#git-for-agents-workspace_git)),
+and `gpu_run`: on Windows, lets agents run GPU work on your desktop,
+confined, with the `gpu_run` tool (off by default; see
+[docs/harnesses.md](docs/harnesses.md#gpu-access)).
 
 ### Trying it without spending tokens
 

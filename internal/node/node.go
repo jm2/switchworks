@@ -130,6 +130,17 @@ type Config struct {
 	// when a session works in the home directory. It never lifts a deny.
 	AttachAllow []string `json:"attach_allow,omitempty"`
 
+	// GPURun lets agents run GPU work through the node with the gpu_run
+	// tool (Windows only; see gpu.go). Off unless Enabled.
+	GPURun struct {
+		Enabled bool `json:"enabled,omitempty"`
+		// Network gives runs the client network (not loopback).
+		Network bool `json:"network,omitempty"`
+		// MaxSeconds caps a run's time limit (default and most
+		// maxGPUSeconds).
+		MaxSeconds int `json:"max_seconds,omitempty"`
+	} `json:"gpu_run"`
+
 	// Git configures workspace_git, the git tool the node runs for its
 	// sessions outside their sandbox (see git.go and docs/harnesses.md).
 	Git GitConfig `json:"git"`
@@ -431,6 +442,8 @@ type Node struct {
 	mu       sync.Mutex
 	adapters map[string]adapter.Adapter
 	sessions map[string]*session
+
+	gpuRuns sync.Map // session id -> struct{}: its GPU run in progress (gpu.go)
 
 	connMu sync.Mutex
 	conn   *wire.Conn

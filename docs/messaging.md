@@ -49,6 +49,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | `fleet_locks` | the locks held now, with holder, note, expiry and waiters (`prefix` to filter) |
 | `fleet_remind` | `{in_seconds (60–86400), text, id?}`: a `system` message with `text` comes back to this session after the delay, starting a turn if it is idle; a new one with a pending one's `id` replaces it; `{cancel: id}` cancels one (see [Reminders](#reminders)) |
 | `workspace_git` | git on the session's own repository, run by its node outside the sandbox (not through the coordinator): `status`, `sync` (fetch, then rebase or fast-forward onto the upstream, carrying uncommitted work), `commit`, `push` (never main, master or the remote's default branch) and `branch_delete`; see [Git for agents](harnesses.md#git-for-agents-workspace_git) |
+| `gpu_run` | Windows nodes with `gpu_run.enabled` only: run a command where it can use the GPU, confined, and get its exit code and output (see [GPU access](harnesses.md#gpu-access)) |
 
 ## Addresses
 

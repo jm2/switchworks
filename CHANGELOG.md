@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoped agent token through `gh` (`git.gh_config_dir` in `node.json`; `git.push_branch_prefixes`
   can restrict branch names), never the owner's credentials or ssh keys: GitHub ssh remotes go over
   https. Hooks, fsmonitor and other repository-configured commands never run.
+- **GPU runs on Windows** — `gpu_run` (off unless `node.json` sets `gpu_run.enabled`): Codex's
+  Windows sandbox runs commands on a private desktop where Direct3D can't reach the display, so an
+  agent can ask its node to run a command on your desktop instead. The command runs in an
+  AppContainer that can write the session's working directory (`.git` read-only, the deny list's
+  files unreadable) and can't open your profile. It has no network unless `gpu_run.network` is set,
+  and runs in a job with UI limits (no other windows, no clipboard, no desktop switching) and a time
+  limit; its exit code and output come back. See the GPU access section of docs/harnesses.md for
+  what it still allows.
 
 ### Fixed
 

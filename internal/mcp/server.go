@@ -3,11 +3,12 @@
 // Package mcp is `swk mcp`: a stdio MCP server that gives an agent session
 // its fleet tools (fleet_list, fleet_send, fleet_ask, fleet_reply,
 // fleet_inbox, fleet_spawn, fleet_status, fleet_stop, fleet_remind, and the
-// lock tools in locks.go), and workspace_git. The harness starts it inside
-// the session with SWK_NODE_URL, SWK_SESSION and SWK_TOKEN set by the node;
-// every call is forwarded to the node's local API, and fleet calls from
-// there to the coordinator. workspace_git is run by the node itself,
-// outside the sandbox.
+// lock tools in locks.go), workspace_git, and gpu_run when the node takes
+// GPU runs. The harness starts it inside the session with SWK_NODE_URL,
+// SWK_SESSION and SWK_TOKEN set by the node; every call is forwarded to
+// the node's local API, and fleet calls from there to the coordinator.
+// workspace_git and gpu_run are run by the node itself, outside the
+// sandbox.
 package mcp
 
 import (
@@ -25,6 +26,7 @@ import (
 
 	"github.com/jm2/switchworks/internal/attach"
 	"github.com/jm2/switchworks/internal/fleet"
+	"github.com/jm2/switchworks/internal/gpurun"
 	"github.com/jm2/switchworks/internal/jsonrpc"
 	"github.com/jm2/switchworks/internal/model"
 	"github.com/jm2/switchworks/internal/version"
@@ -40,6 +42,7 @@ const (
 	envSession     = "SWK_SESSION"
 	envSessionPath = "SWK_SESSION_PATH"
 	envToken       = "SWK_TOKEN"
+	envGPURun      = "SWK_GPU_RUN"
 )
 
 // NodeClient calls the node's local API for one session.
@@ -48,6 +51,8 @@ type NodeClient struct {
 	Session string
 	Token   string
 	HTTP    *http.Client
+	// GPU is set when the node takes GPU runs: the server offers gpu_run.
+	GPU bool
 }
 
 type localResponse struct {
@@ -73,11 +78,28 @@ var localHTTP = &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepA
 
 // Do performs one fleet operation ("list", "send", ...).
 func (c *NodeClient) Do(ctx context.Context, op string, args any) (json.RawMessage, error) {
+	return c.post(ctx, "/v1/fleet/"+op, args)
+}
+
+// RunGPU asks the node for a GPU run and waits for its result.
+func (c *NodeClient) RunGPU(ctx context.Context, req gpurun.Request) (gpurun.Result, error) {
+	var res gpurun.Result
+	data, err := c.post(ctx, "/v1/gpu/run", req)
+	if err != nil {
+		return res, err
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return res, fmt.Errorf("bad response from the swk node: %w", err)
+	}
+	return res, nil
+}
+
+func (c *NodeClient) post(ctx context.Context, path string, args any) (json.RawMessage, error) {
 	b, err := json.Marshal(args)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.URL, "/")+"/v1/fleet/"+op, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.URL, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +270,28 @@ var Tools = []Tool{
 		}, "op")},
 }
 
+// gpuTool is offered when the node takes GPU runs (Windows nodes with
+// gpu_run.enabled).
+var gpuTool = Tool{Name: "gpu_run", Title: "Run a command with the GPU",
+	Description: `Run a command where it can use the GPU, and get its exit code and output. Use it for work that fails in your sandbox for want of a GPU or a display: Direct3D 9/11/12, OpenGL or Vulkan programs, games and their tests, renderers, GPU benchmarks. Never work around the sandbox instead (no starting programs on the user's desktop by other means, no simulated keystrokes or mouse input).
+
+The node runs the command on the user's interactive desktop, so its windows show on their screen, inside a Windows AppContainer: your working directory is readable and writable (every .git read-only, the deny list's files hidden), the user's profile and other files are out of reach, there is no network unless the node allows it (never loopback), no clipboard, no access to other programs' windows, no stdin. The command and everything it starts is killed when the command exits or its time limit passes. The program must run unattended: give it a test or scripted mode, and have it write screenshots or logs into your working directory to inspect afterwards. Only the last 64 KiB of stdout and of stderr come back. The environment is a fixed minimal one (system paths; TEMP, APPDATA and LOCALAPPDATA in the container's own folder) plus env.`,
+	InputSchema: obj(map[string]any{
+		"argv": map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string"},
+			"description": `The program and its arguments, e.g. ["build/game.exe", "--test-frames", "300"]. A bare name is looked up on the node's PATH; a path is relative to cwd. Batch files: ["cmd.exe", "/d", "/c", "run.bat"].`},
+		"cwd":             str("Working directory, relative to yours (default: yours). It must be inside your working directory."),
+		"env":             map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables to add."},
+		"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 1800, "description": "Time limit (default 300; the node may allow less)."},
+	}, "argv"),
+	Annotations: map[string]bool{"destructiveHint": true}}
+
+func (s *Server) tools() []Tool {
+	if s.node.GPU {
+		return append(append([]Tool{}, Tools...), gpuTool)
+	}
+	return Tools
+}
+
 const instructions = `You are one agent session in a Switchworks fleet: other agents run in sessions on several machines. Use the fleet_* tools to see them (fleet_list), message them (fleet_send), ask them questions and wait for answers (fleet_ask), and start helpers (fleet_spawn). Messages from other sessions arrive as input that starts with "[switchworks msg=... from=... kind=...]"; one turn can carry several, each with its own header. When kind=ask, answer with fleet_reply using that msg id. Messages start turns on their own, so there is no need to poll fleet_inbox. When you report progress with fleet_send, give each update the same supersedes key (e.g. "status:gate5") so a newer one replaces an older one the target has not received yet, and set ttl_seconds on a note that is only useful for a short while.`
 
 // waitInstructions are added to instructions: how to wait without
@@ -293,7 +337,8 @@ func Serve(r io.Reader, w io.Writer, node *NodeClient, logf func(string, ...any)
 
 // Main implements `swk mcp`.
 func Main(stdin io.Reader, stdout, stderr io.Writer) int {
-	node := &NodeClient{URL: os.Getenv(envNodeURL), Session: os.Getenv(envSession), Token: os.Getenv(envToken)}
+	node := &NodeClient{URL: os.Getenv(envNodeURL), Session: os.Getenv(envSession), Token: os.Getenv(envToken),
+		GPU: os.Getenv(envGPURun) == "1"}
 	logf := func(f string, a ...any) { fmt.Fprintf(stderr, "swk mcp: "+f+"\n", a...) }
 	if node.URL == "" || node.Session == "" || node.Token == "" {
 		logf("missing %s/%s/%s: swk mcp is started by a swk node inside a managed session", envNodeURL, envSession, envToken)
@@ -343,7 +388,7 @@ func (s *Server) HandleRequest(id json.RawMessage, method string, params json.Ra
 	case "ping":
 		_ = s.conn.Reply(id, map[string]any{})
 	case "tools/list":
-		_ = s.conn.Reply(id, map[string]any{"tools": Tools})
+		_ = s.conn.Reply(id, map[string]any{"tools": s.tools()})
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -537,6 +582,11 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (st
 		}
 		text, structured := pretty(data)
 		return text, structured, nil
+	case "gpu_run":
+		if !s.node.GPU {
+			return "", nil, fmt.Errorf("unknown tool %q", name)
+		}
+		return s.gpuRun(ctx, raw)
 	default:
 		if text, structured, ok, err := s.lockCall(ctx, name, raw); ok {
 			return text, structured, err
@@ -660,4 +710,62 @@ func (s *Server) ask(ctx context.Context, a fleet.AskArgs) (string, any, error) 
 		text = string(b)
 	}
 	return text, res, nil
+}
+
+// gpuRun asks the node for a GPU run. It is not retried: the command may
+// have run.
+func (s *Server) gpuRun(ctx context.Context, raw json.RawMessage) (string, any, error) {
+	var req gpurun.Request
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if len(raw) == 0 || dec.Decode(&req) != nil {
+		return "", nil, errors.New(`bad arguments: give argv, a list of strings, and optionally cwd, env and timeout_seconds`)
+	}
+	if err := gpurun.Validate(req, 24*time.Hour); err != nil { // the node applies its own limit
+		return "", nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, req.Timeout()+2*time.Minute)
+	defer cancel()
+	res, err := s.node.RunGPU(cctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	return FormatGPUResult(res), res, nil
+}
+
+// FormatGPUResult is a run's result as the model reads it.
+func FormatGPUResult(r gpurun.Result) string {
+	var b strings.Builder
+	code := fmt.Sprintf("%d", r.ExitCode)
+	if r.ExitCode >= 0x80000000 {
+		code += fmt.Sprintf(" (0x%08X)", uint32(r.ExitCode))
+	}
+	if r.TimedOut {
+		fmt.Fprintf(&b, "Timed out after %.1fs and was killed (exit code %s).\n", float64(r.DurationMS)/1000, code)
+	} else {
+		fmt.Fprintf(&b, "Exit code %s after %.1fs.\n", code, float64(r.DurationMS)/1000)
+	}
+	if r.Skipped > 0 {
+		fmt.Fprintf(&b, "%d workspace entries were not made reachable (links, hard links, or ACLs the node cannot change).\n", r.Skipped)
+	}
+	for _, st := range []struct {
+		name    string
+		text    string
+		dropped int64
+	}{{"stdout", r.Stdout, r.StdoutDropped}, {"stderr", r.Stderr, r.StderrDropped}} {
+		if st.text == "" && st.dropped == 0 {
+			fmt.Fprintf(&b, "\n%s: (empty)\n", st.name)
+			continue
+		}
+		if st.dropped > 0 {
+			fmt.Fprintf(&b, "\n%s (last %d bytes; %d before them dropped):\n", st.name, len(st.text), st.dropped)
+		} else {
+			fmt.Fprintf(&b, "\n%s:\n", st.name)
+		}
+		b.WriteString(st.text)
+		if !strings.HasSuffix(st.text, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
