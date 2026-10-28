@@ -169,6 +169,8 @@ type QueueEntry struct {
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
 	// AtStep: it goes into the running turn at the turn's next step.
 	AtStep bool `json:"at_step,omitempty"`
+	// Quiet: it waits for a turn that starts for another message.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // SpawnCmd carries the coordinator's session record and the request.
@@ -216,6 +218,9 @@ type MessageCmd struct {
 	// from 0.1.5 drops it from the session's queue undelivered once past it
 	// (message.expired). Older nodes ignore it and keep it until delivered.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Quiet: it never starts a turn of its own (model.Message.Quiet). A
+	// node before 0.1.7 ignores it and delivers the message as usual.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // DeliverResult is the data of a successful deliver (or promote) command.

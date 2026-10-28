@@ -15,6 +15,32 @@ Steering is a Codex feature. For the others, a message sent to a running
 turn (the default mode, `auto`, or `--steer`) is queued for the next turn,
 together with any other waiting messages.
 
+## Turns cut off by a restart
+
+A turn running when the node goes down (an upgrade, a reboot, a crash)
+does not survive it: Codex records it as interrupted, and the resumed
+session would sit idle until someone prompted it. The node saves each
+session's running turn in `state.json` as it starts, and clears it as the
+turn ends or as a person interrupts it (Stop in the web UI, `swk
+interrupt`, a message sent with `interrupt`). A turn that ends because the
+node is shutting down stays saved. When the node starts again and has
+resumed such a session, it queues one `system` message from `swk`, which
+starts a new turn:
+
+```
+[switchworks msg=01M40… from=swk kind=system]
+Your previous turn (id 019a…) was cut off when Switchworks restarted at 2026-10-28 03:12 UTC. Continue where you left off; check the state of anything you were running.
+```
+
+The same goes for a turn cut off while the node keeps running, when
+Codex's app-server crashes under it: the adapter restarts app-server and
+resumes the thread, and the message then says the turn "was cut off when
+Codex restarted". It goes once per interruption, together with any
+messages that waited in the queue, and never to a stopped session or one
+whose harness still runs the turn. Set `"continue_interrupted": false` in `node.json` to turn it
+off. A node upgraded from a version before 0.1.7 has no saved turn yet, so
+a turn its restart for the upgrade cut off is not continued.
+
 ## Models without a translation proxy
 
 DeepSeek and Xiaomi MiMo work in both Codex and goose without a proxy.
@@ -146,6 +172,17 @@ both in `config` and by a `-c` in `args` stops the node at start, as
 does a `null` value. Overrides apply to every Codex session on the node
 and take precedence over `config.toml`; restart the node after changing
 them.
+
+A turn carries the session's approval policy (`turn/start`'s
+`approvalPolicy`) only when it differs from the thread's: after a policy
+change (`swk policy`, the web UI's Approvals menu), not on every turn.
+app-server applies any `turn/start` override as a thread settings update
+and records a `thread_settings_applied` event for it; with the same policy
+each time, that was one per turn. `thread/start` and `thread/resume` still
+carry the policy, the sandbox (or permission profile) and the fleet tools'
+MCP config, since the node checks the sandbox the thread reports and a
+restarted node gives the tools a new address and credential; Codex records
+its settings once at every resume whatever it is sent.
 
 When app-server fails to start, the node log has the end of what it
 wrote to stderr, which usually says why (an unknown argument, a

@@ -77,6 +77,11 @@ type SendArgs struct {
 	// from the same sender to the same session that is still pending or
 	// queued, which becomes superseded.
 	Supersedes string `json:"supersedes,omitempty"`
+	// Quiet: the message never starts a turn of its own. A running turn
+	// takes it as usual (mode auto); an idle target keeps it queued until
+	// its next turn starts for another reason. For acknowledgements and
+	// FYIs that need no action now.
+	Quiet bool `json:"quiet,omitempty"`
 	// Images are image files on the sender's host, as an agent names them
 	// in a fleet tool. The sender's node reads them (under the session's
 	// working directory only) and replaces them with Attachments; they

@@ -24,11 +24,11 @@ is not used.
 | Method | Used for | Notes |
 | --- | --- | --- |
 | `thread/start` | new session | `cwd, model, modelProvider, approvalPolicy (untrusted, on-request, never), sandbox (read-only, workspace-write, danger-full-access), serviceName`; returns `thread` plus effective `model`, `modelProvider` and `cwd` |
-| `thread/resume` | node restart, app-server crash | `threadId, excludeTurns: true` |
+| `thread/resume` | node restart, app-server crash | `threadId, excludeTurns: true`, with `approvalPolicy`, `sandbox` or `permissions`, and the MCP `config`; Codex checkpoints the thread's settings (`thread_settings_applied`) on every resume |
 | `thread/name/set` | label the thread with the session path | |
 | `thread/unsubscribe` | stop | thread unloads after 30 min idle with no subscribers |
 | `thread/list`, `thread/read` | observing sessions | typed, not yet used |
-| `turn/start` | queue delivery | `threadId, input: [{type: "text", text}], clientUserMessageId` |
+| `turn/start` | queue delivery | `threadId, input: [{type: "text", text}], clientUserMessageId`; `approvalPolicy` only when it differs from the thread's, since any override is applied as a thread settings update (`thread_settings_applied`) |
 | `turn/steer` | steer delivery | needs `expectedTurnId` = the active turn |
 | `turn/interrupt` | interrupt | `threadId, turnId`; the turn ends with status `interrupted` |
 

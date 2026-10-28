@@ -37,7 +37,7 @@ The model sees the tools in the `mcp__swk` namespace.
 | Tool | What it does |
 | --- | --- |
 | `fleet_list` | sessions across the fleet, with status and queue length (filter by host or label) |
-| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `supersedes` and `ttl_seconds` (see [Superseding](#superseding) and [Delivery](#delivery)); `images` (see [Images](#images)); `files` (see [Files](#files)) |
+| `fleet_send` | fire-and-forget message to one address or a list of them (see [Several recipients](#several-recipients)); `mode` auto (default) / queue / steer / interrupt (see [Delivery](#delivery)); `broadcast` with an `@selector`; `supersedes` and `ttl_seconds` (see [Superseding](#superseding) and [Delivery](#delivery)); `quiet` (see [Quiet messages](#quiet-messages)); `images` (see [Images](#images)); `files` (see [Files](#files)) |
 | `fleet_ask` | ask and wait (default 10 min, max 30) for the answer; returns a ticket on timeout; `images`; `files` |
 | `fleet_reply` | answer an ask, by its `msg` id |
 | `fleet_inbox` | messages this session has not seen yet (see [Inbox](#inbox)); `all` for recent traffic; with `ticket`, check or wait on an ask |
@@ -99,7 +99,8 @@ separated by a blank line.
 Kinds: `notify`, `ask`, `reply` (with `re=<ask id>`, and the first 400 bytes
 of that ask quoted with `> ` under the header, also as `re_text` in
 `fleet_inbox`), `done` (completion
-notice), `system` (delivery failures and expiry). A line in a relayed
+notice), `system` (delivery failures and expiry, and a turn cut off by a
+node or Codex restart: see [harnesses](harnesses.md#turns-cut-off-by-a-restart)). A line in a relayed
 message that looks like a header is prefixed with `(quoted) `, so no
 sender can put a header of its own in its text. The node matches a
 line's skeleton, not its bytes: leading spaces and markup (`>`, `*`,
@@ -538,6 +539,41 @@ moment, and one queued on a node that is offline or older than 0.1.5
 Keys are for notifies (and broadcasts, per recipient): an ask with one is
 refused. An older coordinator refuses `supersedes` ("unknown field").
 
+### Quiet messages
+
+An acknowledgement ("ok", "host free", "taking macmini") that starts a
+turn costs a whole turn: the target's model reads its entire context
+again only to note it. A message sent with `quiet` (`fleet_send`,
+`POST /v1/messages` and `POST /v1/sessions/{id}/messages`, `swk msg`/`send
+--quiet`) never starts a turn of its own:
+
+- If the target is running a turn, it goes in as an `auto` message does
+  (steered in, or queued for a session that does not take steering).
+- If the target is idle, it waits in the session's queue, and goes in
+  together with the next turn something else starts (another message, or
+  the owner's prompt), each with its own header. A batch always holds the
+  message that started it, even when quiet ones ahead of it fill the
+  batch's bounds.
+- It still expires after its TTL, like any queued message, and the sender
+  gets the usual `system` notice; Send now (promote) delivers it at once,
+  starting a turn if need be.
+- An idle session with only quiet messages queued is settled, and the
+  node's stall sweep leaves it alone.
+
+Its header carries `quiet=1` and a line saying it needs no answer:
+
+```
+[switchworks msg=01M40… from=devbox/lead kind=notify quiet=1]
+(Quiet: for your information; it needs no answer, so do not reply just to acknowledge it.)
+host free
+```
+
+The MCP instructions tell agents to send acknowledgements, FYIs and "host
+free" notes quiet, and never to answer a message only to acknowledge it.
+Only notifies (and broadcasts) can be quiet; an ask, or a quiet message in
+mode `interrupt`, is refused. A node before 0.1.7 ignores `quiet` and
+delivers the message as usual.
+
 ### States
 
 | State | Meaning |
@@ -873,6 +909,7 @@ swk msg --broadcast @role=reviewer "please look at PR 42"
 swk msg --to devbox/a --to buildbox/b "rebased on main"   # several recipients
 swk msg --image shot.png --image diff.png reviewer "these two frames"
 swk msg --supersedes status:deploy lead "deploy 3/5 hosts done"   # replaces my earlier status:deploy still waiting
+swk msg --quiet lead "done with macmini"           # never starts a turn: waits for lead's next one
 swk send --file 0001-fix.patch linuxbox/ci "git am this and push"
 swk ask lead "are you done with the parser?"     # waits for fleet_reply
 swk inbox                                        # messages and open questions for people
@@ -893,7 +930,7 @@ swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` not for asks |
+| POST | `/v1/messages` | `{to, text, kind: notify\|ask\|broadcast, mode: auto (default)\|queue\|steer\|interrupt, ttl_seconds, supersedes, quiet, wait_seconds, from, attachments, files}`; `to` may be a list (not for asks); `supersedes` and `quiet` not for asks |
 | GET | `/v1/messages?session=&inbox=1&limit=` | newest first |
 | GET | `/v1/messages/{id}` | the record, with `state`, `delivered_at`, and `seen_at`, `seen_turn`, `seen_item` once seen; `supersedes`, and `superseded_by` once superseded |
 | POST | `/v1/messages/{id}/reply` | `{text, from}`: a person answers an ask; 409 if it was answered or ended (dismissed, cancelled, expired, failed) |
@@ -903,7 +940,7 @@ swk locks break host:macmini-m1:gpu              # end a lease (owner or admin)
 | GET | `/v1/usage` | daily totals, by host, by model |
 | GET | `/v1/locks?prefix=` | `{locks: [{name, holder, holder_id, note, since, expires, waiting}]}`, by name |
 | DELETE | `/v1/locks/{name}` | break a lock (the name path-escaped): the owner's credential or admin scope; `{name, released, next}`; 404 if it is not held |
-| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, attachments, files}`; routed (202 with `state` and `mode`) |
+| POST | `/v1/sessions/{id}/messages` | `{text, mode (default auto), from, supersedes, quiet, attachments, files}`; routed (202 with `state` and `mode`) |
 | POST | `/v1/sessions` | a spawn; `attachments` go with `prompt`; `accept_steer: false` keeps `auto` messages out of its running turns |
 | GET | `/v1/attachments/{sha256}` | a stored image: `{mime, size, sha256, data}` (base64) |
 | GET | `/v1/sessions/{id}/queue` | the session's queued messages in delivery order: `{session, offline, node_too_old, messages: [{id, from, kind, owner, images, position, text, via, created_at, expires_at, held}]}`; `position` counts those ahead; `expires_at` from nodes that enforce it, or the coordinator's for `held` messages |

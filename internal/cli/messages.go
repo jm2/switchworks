@@ -85,6 +85,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	from := fs.String("from", "", "sender (default user:cli)")
 	ttl := fs.Duration("ttl", 0, "expire if undelivered after this long (default 24h)")
 	supersedes := fs.String("supersedes", "", "a key (e.g. status:build): replaces your earlier message with this key that is still waiting")
+	quiet := fs.Bool("quiet", false, "never start a turn: go into the running turn, or wait for the next one (acknowledgements, FYIs)")
 	images := addImageFlag(fs)
 	fileArgs := addFileFlag(fs)
 	var to imageFlag
@@ -105,7 +106,7 @@ func cmdMsg(args []string, stdout, stderr io.Writer) int {
 	if len(to) == 0 {
 		to, pos = imageFlag{pos[0]}, pos[1:]
 	}
-	pm := apiclient.PostMessage{From: *from, Text: strings.Join(pos, " "), Mode: *mode, TTLSeconds: int(ttl.Seconds()), Supersedes: *supersedes}
+	pm := apiclient.PostMessage{From: *from, Text: strings.Join(pos, " "), Mode: *mode, TTLSeconds: int(ttl.Seconds()), Supersedes: *supersedes, Quiet: *quiet}
 	if len(to) == 1 {
 		pm.To = to[0]
 	} else {

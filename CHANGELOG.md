@@ -24,9 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /v1/sessions/{id}/reminders` list them; an owner can cancel one. The `swk mcp` instructions now
   say to wait with a reminder, to ask people with `wait_seconds` 0 and carry on, and to keep
   acknowledgements quiet.
+- **Quiet messages** — `quiet` on `fleet_send`, the API and `swk msg`/`send --quiet`: the message
+  never starts a turn of its own. A running turn takes it as usual; an idle session keeps it queued
+  until its next turn starts for something else (or a person sends it now), and it still expires.
+  The MCP instructions tell agents to send acknowledgements and FYIs quiet and never to reply just
+  to acknowledge, which cost a whole turn of context each.
+- **Turns cut off by a restart continue** — A session whose turn was running when the node went
+  down (an upgrade, a reboot), or when Codex's app-server crashed under it, gets one `system`
+  message once it is resumed, starting a new turn that tells the agent to carry on and check what
+  it was running, instead of sitting idle until someone prompts it. Not for turns a person
+  interrupted, nor stopped sessions; `"continue_interrupted": false` in `node.json` turns it off.
 
 ### Fixed
 
+- **Codex turns resend the approval policy only when it changes** — Every `turn/start` carried the
+  session's approval policy, which app-server applies as a thread settings update and records as
+  `thread_settings_applied`, once per turn. It now goes only with the first turn after a change.
 - **Replies say which ask they answer** — A reply reaches the asking agent with the first 400 bytes
   of its ask quoted under the header, and `fleet_inbox` lists it as `re_text`, so an agent with
   several questions out can tell "1. yes" to one apart from another without looking it up.

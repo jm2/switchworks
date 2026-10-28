@@ -25,6 +25,7 @@ package codextest
 
 import (
 	"bufio"
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -74,6 +75,7 @@ type server struct {
 	waiting  map[string]chan json.RawMessage // our request id -> response
 	threads  map[string]bool
 	sandbox  map[string]string // threadId -> sandbox and permissions of its last start or resume
+	policy   map[string]string // threadId -> its approval policy
 	turns    map[string]*turn  // threadId -> active turn
 	turnSeq  int
 	initDone bool
@@ -87,7 +89,9 @@ type turn struct {
 	stop    chan string // receives "interrupted" or steer text
 	images  [][]byte    // image inputs, read when the turn started
 	content []any       // the input as sent, echoed in the userMessage item
-	policy  string      // the turn's approvalPolicy override, if any
+	policy  string      // the approval policy it runs with
+	// override is the turn's approvalPolicy override, if any.
+	override string
 }
 
 // readInput decodes a turn's UserInput list: the text of the first text
@@ -138,7 +142,7 @@ func newID() string {
 func Run(in io.Reader, out io.Writer, stateDir string) {
 	s := &server{
 		out: json.NewEncoder(out), stateDir: stateDir,
-		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, sandbox: map[string]string{}, turns: map[string]*turn{},
+		waiting: map[string]chan json.RawMessage{}, threads: map[string]bool{}, sandbox: map[string]string{}, policy: map[string]string{}, turns: map[string]*turn{},
 	}
 	s.loadThreads()
 	br := bufio.NewReaderSize(in, 1<<20)
@@ -205,7 +209,7 @@ func threadObj(id, cwd string, status string) map[string]any {
 	}
 }
 
-func startResp(id, cwd, sandbox string) map[string]any {
+func startResp(id, cwd, sandbox, policy string) map[string]any {
 	typ := map[string]string{"read-only": "readOnly", "danger-full-access": "dangerFullAccess"}[sandbox]
 	if typ == "" {
 		typ = "workspaceWrite"
@@ -215,7 +219,7 @@ func startResp(id, cwd, sandbox string) map[string]any {
 	}
 	return map[string]any{
 		"thread": threadObj(id, cwd, "idle"), "model": "fake-model", "modelProvider": "fake", "cwd": cwd,
-		"approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": map[string]any{"type": typ},
+		"approvalPolicy": policy, "approvalsReviewer": "user", "sandbox": map[string]any{"type": typ},
 	}
 }
 
@@ -268,27 +272,31 @@ func (s *server) handle(line []byte) {
 		s.mu.Lock()
 		s.saveThread(id)
 		s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
+		s.policy[id] = cmp.Or(str("approvalPolicy"), "on-request")
+		policy := s.policy[id]
 		s.mu.Unlock()
 		cwd := str("cwd")
 		s.mcp.setConfig(id, parseMCPConfig(p))
 		// Real app-server sends the response and thread/started back to back;
 		// emit the notification first to exercise early-notification buffering.
 		s.note("thread/started", map[string]any{"thread": threadObj(id, cwd, "idle")})
-		s.reply(m.ID, startResp(id, cwd, str("sandbox")))
+		s.reply(m.ID, startResp(id, cwd, str("sandbox"), policy))
 	case "thread/resume":
 		id := str("threadId")
 		s.mu.Lock()
 		ok := s.threads[id]
 		if ok {
 			s.sandbox[id] = "sandbox=" + str("sandbox") + " permissions=" + str("permissions")
+			s.policy[id] = cmp.Or(str("approvalPolicy"), s.policy[id], "on-request")
 		}
+		policy := s.policy[id]
 		s.mu.Unlock()
 		if !ok {
 			s.fail(m.ID, -32600, "thread not found: "+id)
 			return
 		}
 		s.mcp.setConfig(id, parseMCPConfig(p))
-		s.reply(m.ID, startResp(id, "/resumed", str("sandbox")))
+		s.reply(m.ID, startResp(id, "/resumed", str("sandbox"), policy))
 	case "thread/name/set":
 		s.reply(m.ID, map[string]any{})
 	case "thread/unsubscribe":
@@ -307,7 +315,11 @@ func (s *server) handle(line []byte) {
 			return
 		}
 		s.turnSeq++
-		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4), images: images, content: content, policy: str("approvalPolicy")}
+		if o := str("approvalPolicy"); o != "" {
+			s.policy[tid] = o
+		}
+		t := &turn{id: fmt.Sprintf("turn-%d", s.turnSeq), thread: tid, stop: make(chan string, 4), images: images, content: content,
+			policy: s.policy[tid], override: cmp.Or(str("approvalPolicy"), "none")}
 		s.turns[tid] = t
 		s.mu.Unlock()
 		s.reply(m.ID, map[string]any{"turn": map[string]any{"id": t.id, "items": []any{}, "status": "inProgress", "error": nil}})
@@ -436,7 +448,7 @@ func (s *server) runTurn(t *turn, text string) {
 	case strings.Contains(text, "CRASH"):
 		os.Exit(3)
 	case strings.Contains(text, "POLICY"):
-		reply = "policy: " + t.policy
+		reply = "policy: " + t.policy + " override: " + t.override
 	case strings.Contains(text, "SANDBOX"):
 		s.mu.Lock()
 		reply = s.sandbox[t.thread]
