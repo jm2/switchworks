@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Session status icons in the sidebar** — each session in the host tree (and the phone home
+  list) shows its state in the gap left of its name, under the host icon: a turning arc while it
+  works or starts, a ring while idle, an alert in amber when it needs approval and in red on an
+  error, and a faint dashed ring when it is offline or stopped. The arc holds still for people who
+  ask for reduced motion.
+
+### Fixed
+
+- **A resume no longer resets a session's age** — `updated_at`, the "last activity" age in the
+  sidebar and in `fleet_status`, moves only on the session's own activity (turns, items, messages,
+  approvals, errors). The registration, status, policy and queue events a node sends when it
+  restarts, resumes or reconnects a session leave it alone, so a resumed session that has said
+  nothing new keeps the age of its last response.
+
 ## [0.1.7] — 2026-10-28
 
 ### Added

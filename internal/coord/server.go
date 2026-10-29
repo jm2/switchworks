@@ -685,6 +685,20 @@ func (s *Server) route(ev model.Event) {
 	}
 }
 
+// touches reports whether an event is the session doing something, which
+// moves its updated_at (the age the UI and fleet_status show). Bookkeeping a
+// node sends when it starts, resumes or reconnects a session (registration,
+// status, policy, queue counts) does not: a resumed session that has said
+// nothing new keeps the age of its last response.
+func touches(kind string) bool {
+	switch kind {
+	case model.KindSessionRegistered, model.KindSessionStatus, model.KindSessionPolicy,
+		model.KindSessionQueue, model.KindSessionSettled, model.KindUsage:
+		return false
+	}
+	return true
+}
+
 // project updates the session record from one event, and the fleet's
 // daily token total from usage events. An event at or below the record's
 // ProjectedSeq is already in it.
@@ -720,7 +734,9 @@ func (s *Server) project(ev model.Event) {
 		}
 		before, applied = *sess, true
 		sess.ProjectedSeq = ev.Seq
-		sess.UpdatedAt = ev.TS
+		if touches(ev.Kind) {
+			sess.UpdatedAt = ev.TS
+		}
 		switch ev.Kind {
 		case model.KindSessionRegistered:
 			var p model.SessionRegistered

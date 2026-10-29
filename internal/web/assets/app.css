@@ -139,7 +139,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .host-row.off { color: var(--faint); }
 .host-row .icon-btn { width: 30px; height: 30px; }
 .sess-row {
-  display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 39px; border-radius: 10px; color: var(--ink);
+  position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 39px; border-radius: 10px; color: var(--ink);
   min-height: 34px;
 }
 .sess-row:hover { background: var(--hover); text-decoration: none; }
@@ -149,6 +149,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .sess-row .queued { min-width: 20px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .sess-row .queued.many { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .sess-row.stopped .name { color: var(--faint); }
+/* session status, in the gap under the host icon */
+.sess-state { position: absolute; left: 14px; top: 50%; width: 14px; height: 14px; margin-top: -7px; display: flex; color: var(--faint); }
+.sess-state svg.i { width: 14px; height: 14px; stroke-width: 2; }
+.sess-state.active, .sess-state.starting { color: var(--accent); }
+.sess-state.active svg.i, .sess-state.starting svg.i { animation: spin 1.1s linear infinite; }
+.sess-state.waiting_approval { color: var(--warn); }
+.sess-state.error { color: var(--bad); }
+.sess-state.stopped, .sess-state.gone, .sess-state.offline { opacity: .6; }
+.sess-state.stopped svg.i, .sess-state.gone svg.i, .sess-state.offline svg.i { stroke-dasharray: 2.5 3; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .none { padding: 4px 12px 8px 39px; color: var(--faint); font-size: 14px; }
 /* status mark: a quiet dot, coloured only when it needs attention or is working */
 .mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: transparent; }
@@ -221,7 +231,7 @@ h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 26px 0 10px
 .attention .mark { width: 8px; height: 8px; }
 .home .host-row { padding-left: 4px; font-size: 16px; }
 .home .sess-row { padding-left: 33px; align-items: flex-start; flex-wrap: wrap; row-gap: 0; }
-.home .sess-row .mark { margin-top: 9px; }
+.home .sess-row .sess-state { left: 6px; top: 17px; }
 .home .sess-row .age { margin-top: 1px; }
 .home .sess-row .preview {
   flex-basis: 100%; padding-left: 15px; color: var(--muted); font-size: 14px;
@@ -524,4 +534,5 @@ body.login { display: grid; place-items: center; min-height: 100vh; padding: 16p
 @media (prefers-reduced-motion: reduce) {
   .side { transition: none; }
   .flash { animation: none; }
+  .sess-state svg.i { animation: none !important; }
 }

@@ -373,6 +373,8 @@ const ICONS = {
   auto: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18',
   reply: 'M10 8L5 12l5 4M5 12h9a5 5 0 0 1 5 5v1',
   image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
+  ring: 'M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14z',
+  spin: 'M12 5a7 7 0 1 1-7 7',
 };
 
 function icon(name, cls) {
@@ -384,6 +386,15 @@ function icon(name, cls) {
   path.setAttribute('d', ICONS[name] || '');
   svg.append(path);
   return svg;
+}
+
+// A session row's status, drawn in the gap left of its name: a turning arc
+// while it works, a ring while idle, an alert when it needs someone.
+const stateIcon = {active: 'spin', starting: 'spin', waiting_approval: 'alert', error: 'alert'};
+function sessState(s) {
+  const label = statusLabel[s.status] || s.status;
+  return h('span', {class: 'sess-state ' + s.status, role: 'img', 'aria-label': label, title: label},
+    icon(stateIcon[s.status] || 'ring'));
 }
 
 function iconBtn(name, label, onclick, attrs) {
@@ -459,7 +470,7 @@ function renderSide() {
         icon('host'), h('span', {class: 'name', text: host.id, title: host.id}),
         host.connected ? iconLink('plus', `New session on ${host.id}`, spawnHref(host.id)) : null),
       list.length ? list.map((s) => h('a', {class: 'sess-row' + (s.id === current.session ? ' on' : ''), href: '#/s/' + s.id},
-        h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
+        sessState(s),
         h('span', {class: 'name', text: s.name, title: s.name}),
         s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
         h('span', {class: 'age', text: ago(s.updated_at)})))
@@ -659,7 +670,7 @@ function fleetView() {
             : `offline, last seen ${ago(host.last_seen)} ago`}),
           host.connected ? iconLink('plus', `New session on ${host.id}`, spawnHref(host.id)) : null),
         list.length ? list.map((s) => h('a', {class: 'sess-row' + (liveSession(s) ? '' : ' stopped'), href: '#/s/' + s.id},
-          h('span', {class: 'mark ' + s.status, title: statusLabel[s.status] || s.status}),
+          sessState(s),
           h('span', {class: 'name', text: s.name, title: s.name}),
           s.queued ? h('span', {class: 'queued' + (s.queued >= 20 ? ' many' : ''), title: `${s.queued} queued for the next turn`, text: s.queued}) : null,
           h('span', {class: 'age', text: ago(s.updated_at)}),
