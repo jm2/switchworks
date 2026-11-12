@@ -2,7 +2,7 @@ module github.com/jm2/switchworks
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 // Report Windows junctions and mount points as symlinks, so the symlink
 // checks that confine agent-spawned sessions to a directory (and the agy

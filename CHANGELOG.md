@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Windows on ARM** — releases include `switchworks-windows-aarch64-setup.exe` and
+  `swk-<version>-windows-arm64.zip`, built and test-installed on an ARM64 runner.
 - **Session status icons in the sidebar** — each session in the host tree (and the phone home
   list) shows its state in the gap left of its name, under the host icon: a turning arc while it
   works or starts, a ring while idle, an alert in amber when it needs approval and in red on an
@@ -22,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approvals, errors). The registration, status, policy and queue events a node sends when it
   restarts, resumes or reconnects a session leave it alone, so a resumed session that has said
   nothing new keeps the age of its last response.
+
+### Security
+
+- **Go 1.27.4** — Builds use Go 1.27.4, which fixes GO-2026-6859 in `net/http`.
+
 
 ## [0.1.7] — 2026-10-28
 

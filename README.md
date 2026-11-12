@@ -180,8 +180,9 @@ ln -s /Applications/Switchworks.app/Contents/MacOS/swk ~/.local/bin/swk
 
 ### Windows
 
-`switchworks-windows-x86_64-setup.exe` installs for your user only, without administrator
-rights, into `%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
+`switchworks-windows-x86_64-setup.exe` (`switchworks-windows-aarch64-setup.exe` on Windows on
+ARM) installs for your user only, without administrator rights, into
+`%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
 `swkw.exe` (the same program without a console window, which the node's logon task runs) and
 `swk-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
 Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swk`. The
@@ -245,7 +246,7 @@ on each machine's `PATH`, for example `~/.local/bin/swk` on Linux and macOS or
 
 ### Prerequisites
 
-- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.3, if yours is older;
+- Go 1.27 or newer (the `go` command fetches the exact toolchain in `go.mod`, 1.27.4, if yours is older;
   Fedora's `golang` package sets `GOTOOLCHAIN=local`, so build there with `GOTOOLCHAIN=auto make build`)
 - `make` (optional; the targets are short `go build` commands)
 
