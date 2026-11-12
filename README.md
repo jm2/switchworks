@@ -180,8 +180,9 @@ ln -s /Applications/Switchworks.app/Contents/MacOS/swk ~/.local/bin/swk
 
 ### Windows
 
-`switchworks-windows-x86_64-setup.exe` installs for your user only, without administrator
-rights, into `%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
+`switchworks-windows-x86_64-setup.exe` (`switchworks-windows-aarch64-setup.exe` on Windows on
+ARM) installs for your user only, without administrator rights, into
+`%LOCALAPPDATA%\Programs\Switchworks`: `swk.exe` (added to your `PATH`),
 `swkw.exe` (the same program without a console window, which the node's logon task runs) and
 `swk-tray.exe` (the notification-area icon, started at sign-in if you keep that option).
 Uninstalling removes the logon tasks and keeps your configuration in `%AppData%\swk`. The

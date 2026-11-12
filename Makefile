@@ -1,8 +1,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.7-dev)
 LDFLAGS := -s -w -X github.com/jm2/switchworks/internal/version.Version=$(VERSION)
-TARGETS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64
+TARGETS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64
 # swk-tray is built for Linux and Windows; macOS has the Swift menu-bar app.
-TRAY_TARGETS := linux/amd64 linux/arm64 windows/amd64
+TRAY_TARGETS := linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
 .PHONY: build tray test test-codex vet fmt-check cross bindir deb image clean
 
@@ -27,7 +27,7 @@ test-codex: vet
 	SWK_CODEX_IT=1 go test -race ./...
 
 # dist/swk-<os>-<arch>[.exe], dist/swk-tray-<os>-<arch>[.exe], and
-# dist/swkw-windows-amd64.exe: swk built as a Windows GUI program, which
+# dist/swkw-windows-<arch>.exe: swk built as a Windows GUI program, which
 # the logon task runs so no console window opens.
 cross:
 	@mkdir -p dist

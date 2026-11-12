@@ -354,9 +354,19 @@ jobs:
   # Builds the installer, installs it for the current user without elevation,
   # registers and removes the node's logon task, and uninstalls.
   package-windows:
-    name: Package (Windows installer)
-    runs-on: windows-2025
+    name: Package (Windows installer, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            goarch: amd64
+            runner: windows-2025
+          - arch: aarch64
+            goarch: arm64
+            runner: windows-11-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -368,12 +378,15 @@ jobs:
 
       - name: Build swk.exe, swkw.exe and swk-tray.exe
         shell: pwsh
+        env:
+          GOARCH: ${{ matrix.goarch }}
         run: |
           $env:CGO_ENABLED = '0'
           $ld = '-s -w -X github.com/jm2/switchworks/internal/version.Version=v0.0.0-ci'
-          go build -trimpath -ldflags "$ld" -o dist\windows-amd64\swk.exe .\cmd\swk
-          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swkw.exe .\cmd\swk
-          go build -trimpath -ldflags "$ld -H=windowsgui" -o dist\windows-amd64\swk-tray.exe .\cmd\swk-tray
+          $out = "dist\windows-$env:GOARCH"
+          go build -trimpath -ldflags "$ld" -o $out\swk.exe .\cmd\swk
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o $out\swkw.exe .\cmd\swk
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o $out\swk-tray.exe .\cmd\swk-tray
 
       - name: Install Inno Setup
         shell: pwsh
@@ -383,14 +396,19 @@ jobs:
 
       - name: Build the installer
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          iscc /Qp /DAppVersion=0.0.0-ci /DAppNumericVersion=0.0.0.0 "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
+          iscc /Qp /DAppVersion=0.0.0-ci /DAppNumericVersion=0.0.0.0 "/DArch=$env:ARCH" "/DSourceDir=$PWD\dist\windows-$env:GOARCH" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install, register the logon task, uninstall
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          $setup = Start-Process out\switchworks-windows-x86_64-setup.exe -Wait -PassThru `
+          $setup = Start-Process "out\switchworks-windows-$env:ARCH-setup.exe" -Wait -PassThru `
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchworks'

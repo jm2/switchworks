@@ -89,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          for target in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
+          for target in linux-amd64 linux-arm64 darwin-arm64 windows-amd64 windows-arm64; do
             name="swk-${GITHUB_REF_NAME}-${target}"
             stage="stage/$name"
             mkdir -p "$stage"
@@ -123,10 +123,13 @@ jobs:
       - name: Stage binaries for the installer and app jobs
         run: |
           set -euo pipefail
-          mkdir -p bin/windows-amd64 bin/darwin-arm64
-          cp dist/swk-windows-amd64.exe bin/windows-amd64/swk.exe
-          cp dist/swkw-windows-amd64.exe bin/windows-amd64/swkw.exe
-          cp dist/swk-tray-windows-amd64.exe bin/windows-amd64/swk-tray.exe
+          mkdir -p bin/darwin-arm64
+          for arch in amd64 arm64; do
+            mkdir -p "bin/windows-$arch"
+            cp "dist/swk-windows-$arch.exe" "bin/windows-$arch/swk.exe"
+            cp "dist/swkw-windows-$arch.exe" "bin/windows-$arch/swkw.exe"
+            cp "dist/swk-tray-windows-$arch.exe" "bin/windows-$arch/swk-tray.exe"
+          done
           cp dist/swk-darwin-arm64 bin/darwin-arm64/swk
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -142,6 +145,11 @@ jobs:
         with:
           name: bin-windows-amd64
           path: bin/windows-amd64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-windows-arm64
+          path: bin/windows-arm64/
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -239,21 +247,31 @@ jobs:
           path: out/switchworks-x86_64.pkg.tar.zst
           if-no-files-found: error
 
+  # Each installer is built and test-installed on its own architecture.
   windows:
-    name: Windows installer (x86_64)
+    name: Windows installer (${{ matrix.arch }})
     needs: build
-    runs-on: windows-2025
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
       contents: read
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            goarch: amd64
+            runner: windows-2025
+          - arch: aarch64
+            goarch: arm64
+            runner: windows-11-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: bin-windows-amd64
-          path: dist/windows-amd64
+          name: bin-windows-${{ matrix.goarch }}
+          path: dist/windows-${{ matrix.goarch }}
       - name: Install Inno Setup
         shell: pwsh
         run: |
@@ -266,14 +284,18 @@ jobs:
         env:
           VERSION: ${{ needs.build.outputs.version }}
           NUMERIC: ${{ needs.build.outputs.numeric }}
+          ARCH: ${{ matrix.arch }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          iscc /Qp "/DAppVersion=$env:VERSION" "/DAppNumericVersion=$env:NUMERIC" `
-            "/DSourceDir=$PWD\dist\windows-amd64" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
+          iscc /Qp "/DAppVersion=$env:VERSION" "/DAppNumericVersion=$env:NUMERIC" "/DArch=$env:ARCH" `
+            "/DSourceDir=$PWD\dist\windows-$env:GOARCH" "/DOutputDir=$PWD\out" build-aux\inno\switchworks.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install, check and uninstall it (per user, no elevation)
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          $setup = Start-Process out\switchworks-windows-x86_64-setup.exe -Wait -PassThru `
+          $setup = Start-Process "out\switchworks-windows-$env:ARCH-setup.exe" -Wait -PassThru `
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=addtopath', '/ALLOWELEVATED=1'
           if ($setup.ExitCode -ne 0) { throw "setup exited $($setup.ExitCode)" }
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Switchworks'
@@ -283,7 +305,10 @@ jobs:
           & (Join-Path $app 'swk.exe') version
           $un = Start-Process (Join-Path $app 'unins000.exe') -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
           if ($un.ExitCode -ne 0) { throw "uninstall exited $($un.ExitCode)" }
+      # The winget manifest lists the x64 installer only (Windows on ARM runs
+      # it emulated); the arm64 installer is a release asset.
       - name: Render winget manifests
+        if: matrix.arch == 'x86_64'
         shell: bash
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -292,11 +317,12 @@ jobs:
           build-aux/winget/render.sh "$VERSION" "$sha" winget
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: windows-x86_64
-          path: out/switchworks-windows-x86_64-setup.exe
+          name: windows-${{ matrix.arch }}
+          path: out/switchworks-windows-${{ matrix.arch }}-setup.exe
           if-no-files-found: error
       # Not a release asset: submit these to microsoft/winget-pkgs by hand.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.arch == 'x86_64'
         with:
           name: winget-manifests
           path: winget/
@@ -348,12 +374,14 @@ jobs:
             "swk-${GITHUB_REF_NAME}-linux-arm64.tar.gz"
             "swk-${GITHUB_REF_NAME}-darwin-arm64.tar.gz"
             "swk-${GITHUB_REF_NAME}-windows-amd64.zip"
+            "swk-${GITHUB_REF_NAME}-windows-arm64.zip"
             switchworks-amd64.deb
             switchworks-arm64.deb
             switchworks-x86_64.rpm
             switchworks-aarch64.rpm
             switchworks-x86_64.pkg.tar.zst
             switchworks-windows-x86_64-setup.exe
+            switchworks-windows-aarch64-setup.exe
             switchworks-macos-aarch64.dmg
             switchworks-coordinator.container
           )

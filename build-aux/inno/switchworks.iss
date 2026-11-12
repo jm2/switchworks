@@ -15,6 +15,8 @@
 ;   AppNumericVersion — its four-part numeric form, e.g. "0.2.0.0"
 ;   SourceDir         — folder with swk.exe, swkw.exe and swk-tray.exe
 ;   OutputDir         — where to write the installer
+;   Arch              — x86_64 (the default) or aarch64; SourceDir must hold
+;                       binaries built for it
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
@@ -27,6 +29,16 @@
 #endif
 #ifndef OutputDir
   #define OutputDir "..\..\dist"
+#endif
+#ifndef Arch
+  #define Arch "x86_64"
+#endif
+#if Arch == "aarch64"
+  #define InnoArch "arm64"
+#elif Arch == "x86_64"
+  #define InnoArch "x64compatible"
+#else
+  #error Arch must be x86_64 or aarch64
 #endif
 
 [Setup]
@@ -62,7 +74,7 @@ DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\swk-tray.exe
 UninstallDisplayName=Switchworks
 OutputDir={#OutputDir}
-OutputBaseFilename=switchworks-windows-x86_64-setup
+OutputBaseFilename=switchworks-windows-{#Arch}-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 SetupIconFile=..\..\data\switchworks.ico
@@ -74,8 +86,8 @@ CloseApplications=yes
 CloseApplicationsFilter=swk.exe,swkw.exe,swk-tray.exe
 RestartApplications=no
 SetupLogging=yes
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#InnoArch}
+ArchitecturesInstallIn64BitMode={#InnoArch}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

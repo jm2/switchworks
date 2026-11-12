@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Windows on ARM** — releases include `switchworks-windows-aarch64-setup.exe` and
+  `swk-<version>-windows-arm64.zip`, built and test-installed on an ARM64 runner.
 - **Session status icons in the sidebar** — each session in the host tree (and the phone home
   list) shows its state in the gap left of its name, under the host icon: a turning arc while it
   works or starts, a ring while idle, an alert in amber when it needs approval and in red on an
