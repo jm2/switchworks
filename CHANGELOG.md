@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarts, resumes or reconnects a session leave it alone, so a resumed session that has said
   nothing new keeps the age of its last response.
 
+### Security
+
+- **Go 1.27.4** — Builds use Go 1.27.4, which fixes GO-2026-6859 in `net/http`.
+
+
 ## [0.1.7] — 2026-10-28
 
 ### Added
